@@ -24,6 +24,7 @@
  *   STEADY_WATCH_MS=12000
  *   SCRAPER_COLD=1
  *   WARM_REPEAT=1
+ *   FAILOVER_SOURCE_TYPE=dash
  *   CHROMIUM_EXECUTABLE_PATH=/root/.cache/ms-playwright/.../chrome-headless-shell
  */
 
@@ -273,6 +274,7 @@ const TITLE_LIMIT = envInt("TITLE_LIMIT", FIXTURES.length);
 const PLAYBACK_LIMIT = envInt("PLAYBACK_LIMIT", 6);
 const SCRAPER_COLD = envFlag("SCRAPER_COLD", true);
 const WARM_REPEAT = envFlag("WARM_REPEAT", true);
+const FAILOVER_SOURCE_TYPE = (process.env.FAILOVER_SOURCE_TYPE || "").trim().toLowerCase();
 
 function envInt(name: string, fallback: number): number {
   const n = Number(process.env[name] || "");
@@ -649,14 +651,29 @@ async function forcedFailoverProbe(
   calls: ApiCall[],
   activeServerName: string | null,
   getActiveSession: () => string | null,
-  getRecoverySession: (sinceMs: number, excludeSession: string) => string | null
+  getRecoverySession: (sinceMs: number, excludeSession: string) => string | null,
+  desiredSourceType = ""
 ): Promise<Record<string, unknown>> {
+  const forcedSelection = desiredSourceType
+    ? await selectFailureSource(page, started, calls, desiredSourceType)
+    : null;
+  const currentServerName =
+    (await readActiveServerName(page).catch(() => null)) || activeServerName;
   const before = await readBrowserState(page, started);
   const failedSession = getActiveSession() || sessionId(before?.src || "");
   if (!before || !failedSession || !before.duration || before.duration < 180) {
-    return { attempted: false, reason: "active HLS session or duration unavailable" };
+    return {
+      attempted: false,
+      reason: "active HLS session or duration unavailable",
+      forcedSelection,
+    };
   }
-  const beforeSource = findAttachedSource(before, calls, failedSession, activeServerName);
+  const beforeSource = findAttachedSource(
+    before,
+    calls,
+    failedSession,
+    currentServerName
+  );
   let injectedFailures = 0;
   await page.route("**/*", async (route) => {
     if (route.request().url().includes(`/api/hls/${failedSession}`)) {
@@ -689,7 +706,7 @@ async function forcedFailoverProbe(
     if (Date.now() >= nextUiCheckAt) {
       nextUiCheckAt = Date.now() + 1_000;
       const candidateName = await readActiveServerName(page).catch(() => null);
-      if (candidateName && candidateName !== activeServerName) {
+      if (candidateName && candidateName !== currentServerName) {
         recoveredServerName = candidateName;
       }
     }
@@ -719,10 +736,108 @@ async function forcedFailoverProbe(
     recovered: Boolean(recovered),
     recoveryMs: recovered ? Date.now() - wallStart : null,
     beforeSource,
-    beforeServerName: activeServerName,
+    beforeServerName: currentServerName,
+    forcedSelection,
     afterServerName: recoveredServerName,
     afterSource: findAttachedSource(recovered, calls, recoveredSession, recoveredServerName),
     final: publicBrowserState(recovered ?? (await readBrowserState(page, started))),
+  };
+}
+
+async function selectFailureSource(
+  page: Page,
+  started: number,
+  calls: ApiCall[],
+  desiredSourceType: string
+): Promise<Record<string, unknown>> {
+  const candidates = calls
+    .flatMap((call) => call._sources || [])
+    .filter(
+      (source, index, all) =>
+        source.type.toLowerCase() === desiredSourceType &&
+        source.probeOk !== false &&
+        all.findIndex((candidate) => candidate.id === source.id) === index
+    );
+  const source = candidates[0];
+  if (!source) {
+    return {
+      requestedType: desiredSourceType,
+      selected: false,
+      reason: "no matching source in playback roster",
+    };
+  }
+
+  const serverName = getServerDisplayName(
+    source.provider,
+    source.label,
+    source.id
+  );
+  await page.mouse.move(100, 100);
+  const open = page.locator('button[title="Servers"]').first();
+  if ((await open.count()) === 0) {
+    return {
+      requestedType: desiredSourceType,
+      selected: false,
+      source: publicSource(source),
+      serverName,
+      reason: "Servers control unavailable",
+    };
+  }
+  await open.click({ timeout: 3_000 }).catch(() => {});
+  const dialog = page.locator('[role="dialog"][aria-label="Servers"]');
+  await dialog.waitFor({ state: "visible", timeout: 3_000 }).catch(() => {});
+  let target = dialog.getByRole("button", { name: serverName, exact: true });
+  if ((await target.count()) === 0) {
+    await dialog
+      .getByRole("button", { name: /Show \d+ more servers?/i })
+      .click()
+      .catch(() => {});
+    target = dialog.getByRole("button", { name: serverName, exact: true });
+  }
+  if ((await target.count()) === 0) {
+    await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
+    return {
+      requestedType: desiredSourceType,
+      selected: false,
+      source: publicSource(source),
+      serverName,
+      reason: "matching server row unavailable",
+    };
+  }
+
+  const wallStart = Date.now();
+  await target.click();
+  let firstHealthy: BrowserState | null = null;
+  while (Date.now() - wallStart < 30_000) {
+    const state = await readBrowserState(page, started);
+    const activeName = await readActiveServerName(page).catch(() => null);
+    if (
+      state &&
+      activeName === serverName &&
+      state.readyState >= 2 &&
+      !state.paused &&
+      state.videoWidth > 0
+    ) {
+      if (firstHealthy && state.currentTime > firstHealthy.currentTime + 0.3) {
+        return {
+          requestedType: desiredSourceType,
+          selected: true,
+          source: publicSource(source),
+          serverName,
+          readyMs: Date.now() - wallStart,
+        };
+      }
+      firstHealthy = state;
+    }
+    await page.waitForTimeout(500);
+  }
+  return {
+    requestedType: desiredSourceType,
+    selected: false,
+    source: publicSource(source),
+    serverName,
+    reason: "selected source did not become healthy",
+    readyMs: Date.now() - wallStart,
   };
 }
 
@@ -754,6 +869,17 @@ async function playbackScenario(
   >();
   const cdpProperties: Record<string, string> = {};
   const cdpMessages: string[] = [];
+  const playbackFailures: string[] = [];
+
+  page.on("console", (message) => {
+    const text = message.text();
+    if (
+      text.startsWith("[playback-failure]") &&
+      playbackFailures.length < 30
+    ) {
+      playbackFailures.push(text.slice(0, 1_000));
+    }
+  });
 
   await page.addInitScript(() => {
     const events = [
@@ -918,8 +1044,8 @@ async function playbackScenario(
       .filter(([, stats]) => stats.mediaCount > 0 && stats.lastMediaStatus >= 200 && stats.lastMediaStatus < 400)
       .sort(
         (a, b) =>
-          b[1].mediaCount - a[1].mediaCount ||
           b[1].lastMediaAt - a[1].lastMediaAt ||
+          b[1].mediaCount - a[1].mediaCount ||
           b[1].count - a[1].count
       );
     return ranked[0]?.[0] || null;
@@ -992,7 +1118,8 @@ async function playbackScenario(
           apiCalls,
           steadyActiveServerName || firstActiveServerName,
           activeMediaSession,
-          recoveryMediaSession
+          recoveryMediaSession,
+          FAILOVER_SOURCE_TYPE
         )
       : null;
   const finalState = await readBrowserState(page, started);
@@ -1029,6 +1156,7 @@ async function playbackScenario(
     networkSummary: summarizeNetwork(network),
     decoderProperties: cdpProperties,
     mediaMessages: cdpMessages,
+    playbackFailures,
     seek,
     forcedFailover: failover,
     navigationError,
@@ -1176,6 +1304,7 @@ async function main(): Promise<void> {
         playbackLimit: PLAYBACK_LIMIT,
         scraperCold: SCRAPER_COLD,
         warmRepeat: WARM_REPEAT,
+        failoverSourceType: FAILOVER_SOURCE_TYPE || null,
         firstFrameTimeoutMs: FIRST_FRAME_TIMEOUT_MS,
         steadyWatchMs: STEADY_WATCH_MS,
       },

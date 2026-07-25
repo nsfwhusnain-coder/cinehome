@@ -60,20 +60,42 @@ function providerToken(lowerProvider: string): string {
   return lowerProvider;
 }
 
-/** "Phoenix 2" → { token: "phoenix", instance: 2 }; "Share 1080p" / "Vienna"
- * → instance 1 (a bare trailing INTEGER word is a multi-CDN capture index,
- * never a quality token, which always carries a trailing "p"/"K"). */
+/** "Phoenix 2" → { token: "phoenix", instance: 2 }; "Share 1080p" → token
+ * "share"; "Cinema AR 1080" → token "cinema-ar". Resolution words never
+ * become identity, but meaningful words after the first one do. The previous
+ * first-word-only parser collapsed every CinemaOS locale/CDN row to "Eos",
+ * making the UI unable to identify or deterministically select a source. */
 function parseLabelToken(label: string): { token: string; instance: number } {
   const parts = label.trim().split(/\s+/);
-  const token = (parts[0] ?? "").toLowerCase();
-  const rest = parts.slice(1).join(" ");
-  const instance = /^\d+$/.test(rest) ? Number(rest) : 1;
+  const trailing = parts.at(-1) ?? "";
+  const trailingNumber = /^\d+$/.test(trailing) ? Number(trailing) : null;
+  // Capture indices are small ("Phoenix 2"). Bare video heights are common
+  // in provider labels ("Cinema AR 1080") and are quality, not identity.
+  const hasTrailingInstance =
+    trailingNumber != null && trailingNumber > 0 && trailingNumber < 100;
+  const instance = hasTrailingInstance ? Number(trailing) : 1;
+  const withoutInstance = hasTrailingInstance ? parts.slice(0, -1) : parts;
+  const semantic = withoutInstance.filter(
+    (part) => !/^(?:auto|4k|\d{3,4}p|\d{3,4})$/i.test(part)
+  );
+  const token = semantic.join("-").toLowerCase() || (parts[0] ?? "").toLowerCase();
   return { token, instance };
 }
 
 function resolveEmbedToken(provider: string, label?: string): { token: string; instance: number } {
   const rawLabel = (label ?? "").trim();
-  if (rawLabel && !isGenericLabel(rawLabel)) return parseLabelToken(rawLabel);
+  if (rawLabel && !isGenericLabel(rawLabel)) {
+    const parsed = parseLabelToken(rawLabel);
+    // CinemaOS occasionally returns a generic "Cinema" label without a
+    // locale/CDN suffix. Keep it disjoint from Vixsrc's curated "Luna" → Eos.
+    if (
+      parsed.token === "cinema" &&
+      provider.trim().toLowerCase().includes("cinemaos")
+    ) {
+      return { token: "cinema-main", instance: parsed.instance };
+    }
+    return parsed;
+  }
   return { token: providerToken(provider.trim().toLowerCase()), instance: 1 };
 }
 

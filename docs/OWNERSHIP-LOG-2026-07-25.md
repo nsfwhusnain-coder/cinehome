@@ -161,4 +161,34 @@ Verification before deploy:
   (render-time ref mirroring and synchronous effect state). No new lint class
   was introduced; that pre-existing debt remains to be resolved separately.
 
-The application change has not yet been deployed at this log point.
+Deployment:
+
+- Authoritative commit: `8776bd192f010669f301254cd772c525e0832e8c`.
+- Production image:
+  `sha256:8f33394c7a1d70410b7582da3cafb64c99a0f18b3dae1ca07e256519a183a212`.
+- Checked-in deploy script completed its disk preflight (217.5 GiB free),
+  image build, container replacement, internal scraper health, and published
+  HTTP health check.
+- Post-deploy database integrity remained `ok`. Users stayed at 13 and
+  watchlist rows at 17. Progress rose from 79 to 82 and cached streams from
+  66 to 115 due to the authenticated baseline runs themselves.
+- Two post-deploy generic forced-death runs recovered (2/2). Warm recovery was
+  2,805 ms; the cold run took 26,105 ms, which is too slow and is still under
+  investigation rather than being claimed as complete.
+
+### Server identity collision (pending deploy)
+
+The deterministic DASH-selection smoke exposed seven distinct CinemaOS rows
+all rendered with the same Greek name, `Eos`. The first-word-only label parser
+collapsed `Cinema AR 1080`, `Cinema FR 1080`, and every peer to one identity;
+`Eos` also collided with Vixsrc/Luna. This made the UI ambiguous and prevented
+deterministic source selection.
+
+- Server identity now strips quality words/numbers but preserves meaningful
+  label suffixes: `Cinema AR 1080` becomes semantic token `cinema-ar`.
+- Generic CinemaOS `Cinema` gets a separate `cinema-main` token.
+- The current seven CinemaOS variants produce seven stable, distinct Greek
+  names and none collides with Luna.
+- Quality enrichment (`Cinema AR 720` → `Cinema AR 1080`) does not rename the
+  logical server.
+- Server-name plus attempt-controller focused tests: 21 passed, 0 failed.

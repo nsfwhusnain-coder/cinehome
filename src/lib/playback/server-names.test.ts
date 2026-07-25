@@ -65,6 +65,31 @@ describe("getServerDisplayName — Greek theme", () => {
     expect(name).not.toMatch(/II|III|\d/);
   });
 
+  it("gives every CinemaOS locale/CDN row a distinct stable identity", () => {
+    const labels = [
+      "Cinema AR 1080",
+      "Cinema FR 1080",
+      "Cinema HI 1080",
+      "Cinema PT 1080",
+      "Cinema RU 1080",
+      "Cinema XX 1080",
+      "Cinema",
+    ];
+    const names = labels.map((label, index) =>
+      getServerDisplayName(
+        "CinemaOS",
+        label,
+        `cinemaos-${label.toLowerCase().replace(/\s+/g, "-")}-${index}`
+      )
+    );
+    expect(new Set(names).size).toBe(labels.length);
+    expect(names).not.toContain(getServerDisplayName("Vixsrc", "Luna"));
+    // Quality enrichment must not rename the same logical locale/CDN.
+    expect(getServerDisplayName("CinemaOS", "Cinema AR 720")).toBe(
+      getServerDisplayName("CinemaOS", "Cinema AR 1080")
+    );
+  });
+
   it("routes Real-Debrid and TorBox sources through the disjoint premium pool", () => {
     const rdNative4k = getServerDisplayName("Debrid", "4K • Debrid", "debrid-tt1-movie-0-0-native-2160");
     const rdSafari4k = getServerDisplayName("Debrid", "4K • Debrid · Safari", "debrid-tt1-movie-0-0-safari-2160");
