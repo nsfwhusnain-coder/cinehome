@@ -299,8 +299,14 @@ function candidateHashIdentity(candidate: DebridCandidate): string | null {
   return candidate.infoHash ? `hash:${candidate.infoHash.toLowerCase()}` : null;
 }
 
+function releaseTitleIdentity(title: string): string | null {
+  const normalized = title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return normalized ? `title:${normalized}` : null;
+}
+
 function cachedIdentities(record: CachedStreamRecord, safeUrl: string): string[] {
-  const identities = [`url:${safeUrl}`];
+  const titleIdentity = releaseTitleIdentity(record.title);
+  const identities = [`url:${safeUrl}`, ...(titleIdentity ? [titleIdentity] : [])];
   if (/^[a-f0-9]{40}$/i.test(record.source)) {
     identities.push(`hash:${record.source.toLowerCase()}`);
   } else if (record.source) {
@@ -317,14 +323,19 @@ function buildRdSlotOptions(
   const available = (items: DebridCandidate[]) => {
     const seen = new Set<string>();
     return items.filter((candidate) => {
-      const identity = candidateHashIdentity(candidate);
-      if (identity && occupiedIdentities.has(identity)) return false;
+      const hashIdentity = candidateHashIdentity(candidate);
+      const titleIdentity = releaseTitleIdentity(candidate.title);
+      const identities = [
+        ...(hashIdentity ? [hashIdentity] : []),
+        ...(titleIdentity ? [titleIdentity] : []),
+        ...(candidate.url ? [`candidate-url:${candidate.url}`] : []),
+      ];
+      if (identities.some((identity) => occupiedIdentities.has(identity))) return false;
       // Torrentio can return the same hash more than once under slightly
       // different labels. Deduplicate before lane allocation or those copies
       // can still land in separate concurrent slots.
-      const candidateIdentity = identity ?? (candidate.url ? `candidate-url:${candidate.url}` : null);
-      if (candidateIdentity && seen.has(candidateIdentity)) return false;
-      if (candidateIdentity) seen.add(candidateIdentity);
+      if (identities.some((identity) => seen.has(identity))) return false;
+      identities.forEach((identity) => seen.add(identity));
       return true;
     });
   };

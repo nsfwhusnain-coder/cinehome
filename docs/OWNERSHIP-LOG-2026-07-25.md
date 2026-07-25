@@ -395,3 +395,8 @@ First live deployment and follow-up:
   retried forever. Regression coverage includes omitted hashes, different
   filenames for the same hash, legacy URL-only rows, post-redirect duplicate
   rejection, and invalidation when no replacement resolves.
+- One more live pass proved that RD can rotate the final direct URL for the
+  same legacy release. URL equality therefore cannot bridge every pre-fix row
+  to a newly hash-identified candidate. A normalized ASCII release-title key
+  now acts as that migration bridge (empty/non-ASCII-only keys are ignored);
+  it is used only for deduplication, never as proof that media is healthy.

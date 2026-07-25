@@ -372,13 +372,15 @@ describe("Real-Debrid roster — full + fast paths", () => {
     for (const slot of slots) {
       const duplicate1080 = slot === "native-1080-1" || slot === "native-1080-2";
       const url = duplicate1080
-        ? `http://127.0.0.1:${server.port}/cdn/${NATIVE_1080_HASHES[0]}.mp4`
+        ? `http://127.0.0.1:${server.port}/cdn/legacy-rotated-yify.mp4`
         : `http://127.0.0.1:${server.port}/cdn/cached-${slot}.mp4`;
       cacheStore.set(`${IMDB}|movie|0|0|${slot}|realdebrid`, {
-        title: `Cached ${slot}`,
-        // Legacy rows can contain only the final direct URL, with no hash.
-        // The resolver must still reject a newly-resolved candidate that
-        // redirects back to this occupied object.
+        title: duplicate1080
+          ? "Movie.2024.1080p.WEB-DL.H264-GRP0"
+          : `Cached ${slot}`,
+        // Legacy rows can contain only a now-rotated direct URL, with no hash.
+        // The normalized release title must bridge identity to the fresh
+        // candidate even though its new redirect target differs.
         source: duplicate1080 ? url : slot,
         url,
         compat: slot === "safari-2160" ? "safari" : "native",
