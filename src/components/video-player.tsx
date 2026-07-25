@@ -903,6 +903,7 @@ export function VideoPlayer({
   onSelectEpisode,
 }: Props) {
   const [activeSource, setActiveSource] = useState<PlaybackSource | null>(null);
+  const [sourceReloadGeneration, setSourceReloadGeneration] = useState(0);
   const orderedSources = useMemo(() => {
     // Full roster for switching — do not strip unprobed or probe-failed rows.
     // Auto-pick / failover still prefer probe.ok via sortSourcesForPicker + pickDefault.
@@ -1565,6 +1566,23 @@ export function VideoPlayer({
       // Re-resolve by id against `orderedSources` (never client-probe-augmented).
       const resolved = orderedSourcesRef.current.find((s) => s.id === source.id) ?? source;
       const video = videoRef.current;
+      const current = activeSourceRef.current;
+      const sameMediaIdentity =
+        current?.id === resolved.id && current.url === resolved.url;
+      const sameSourceHealthy =
+        sameMediaIdentity &&
+        !failedSourceIdsRef.current.has(resolved.id) &&
+        !video?.error;
+      if (sameSourceHealthy) {
+        // Clicking the already-live row may refresh metadata/preference, but
+        // must not invalidate its generation token. With unchanged id+URL
+        // React intentionally keeps the engine mounted, so invalidation here
+        // used to leave the next real media error permanently ownerless.
+        setActiveSource(resolved);
+        if (opts?.userPick) setPreferredProvider(preferenceKey(resolved));
+        setServerDisplayName(getServerDisplayName(resolved.provider, resolved.label));
+        return;
+      }
       // Capture live position when available; never wipe an existing resume target
       // with t≈0 (common when the element was already torn down mid-failover).
       const t = video?.currentTime ?? 0;
@@ -1585,6 +1603,13 @@ export function VideoPlayer({
         setIsSwitchingServer(true);
       }
       setActiveSource(resolved);
+      if (sameMediaIdentity) {
+        // A failed same-URL manual retry needs an explicit setup-effect key;
+        // setting the same source object/id/url alone does not remount media.
+        failedSourceIdsRef.current.delete(resolved.id);
+        setFailedSourceIds((prev) => prev.filter((id) => id !== resolved.id));
+        setSourceReloadGeneration((generation) => generation + 1);
+      }
       // Only persist preference on explicit user pick — auto failover must not stick Luna forever.
       if (opts?.userPick) {
         setPreferredProvider(preferenceKey(resolved));
@@ -2716,6 +2741,7 @@ export function VideoPlayer({
   }, [
     effectiveSrc,
     activeSource?.id,
+    sourceReloadGeneration,
     hasStream,
     effectiveStreamType,
     resetStream,

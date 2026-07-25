@@ -27,6 +27,7 @@
  *   TARGET_SOURCE_TYPE=mp4
  *   TARGET_SOURCE_PROVIDER=Debrid
  *   TARGET_SOURCE_ID_INCLUDES=native-1080
+ *   TARGET_RESELECT_ACTIVE=1
  *   SKIP_FAILOVER=1
  *   FAILOVER_SOURCE_TYPE=dash
  *   FAILOVER_SOURCE_PROVIDER=CinemaOS
@@ -295,6 +296,7 @@ const TARGET_SOURCE_PROVIDER = (
 const TARGET_SOURCE_ID_INCLUDES = (
   process.env.TARGET_SOURCE_ID_INCLUDES || ""
 ).trim().toLowerCase();
+const TARGET_RESELECT_ACTIVE = envFlag("TARGET_RESELECT_ACTIVE", false);
 const SKIP_FAILOVER = envFlag("SKIP_FAILOVER", false);
 const FIXTURE_FILTER = (process.env.FIXTURE_FILTER || "").trim().toLowerCase();
 
@@ -850,7 +852,8 @@ async function selectRosterSource(
   calls: ApiCall[],
   desiredSourceType: string,
   desiredProvider = "",
-  desiredIdIncludes = ""
+  desiredIdIncludes = "",
+  reselectActive = false
 ): Promise<Record<string, unknown>> {
   const byId = new Map<string, SourceSummary>();
   for (const source of calls.flatMap((call) => call._sources || [])) {
@@ -927,6 +930,31 @@ async function selectRosterSource(
       serverName,
       reason: "matching server row unavailable",
     };
+  }
+
+  if (!reselectActive && (await target.textContent())?.includes("Live")) {
+    const first = await readBrowserState(page, started);
+    await page.waitForTimeout(500);
+    const second = await readBrowserState(page, started);
+    if (
+      first &&
+      second &&
+      second.readyState >= 2 &&
+      !second.paused &&
+      second.currentTime > first.currentTime + 0.2
+    ) {
+      await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
+      return {
+        requestedType: desiredSourceType,
+        requestedProvider: desiredProvider || null,
+        requestedIdIncludes: desiredIdIncludes || null,
+        selected: true,
+        alreadyActive: true,
+        source: publicSource(source),
+        serverName,
+        readyMs: 0,
+      };
+    }
   }
 
   if (await target.isDisabled()) {
@@ -1260,7 +1288,8 @@ async function playbackScenario(
           apiCalls,
           TARGET_SOURCE_TYPE,
           TARGET_SOURCE_PROVIDER,
-          TARGET_SOURCE_ID_INCLUDES
+          TARGET_SOURCE_ID_INCLUDES,
+          TARGET_RESELECT_ACTIVE
         )
       : null;
   const targetReady =
@@ -1291,6 +1320,16 @@ async function playbackScenario(
           FAILOVER_SOURCE_TYPE
         )
       : null;
+  const finalEventMetrics = await page
+    .evaluate(() => {
+      const metrics = (
+        window as typeof window & {
+          __cineOwnershipMetrics?: { events?: Array<Record<string, unknown>> };
+        }
+      ).__cineOwnershipMetrics;
+      return metrics?.events || [];
+    })
+    .catch(() => [] as Array<Record<string, unknown>>);
   const finalState = await readBrowserState(page, started);
   const body = await page.locator("body").innerText().catch(() => "");
   const safeApiCalls = apiCalls.map(stripPrivate);
@@ -1326,6 +1365,7 @@ async function playbackScenario(
     decoderProperties: cdpProperties,
     mediaMessages: cdpMessages,
     playbackFailures,
+    mediaEvents: finalEventMetrics.slice(-50),
     targetSelection,
     seek,
     forcedFailover: failover,
@@ -1487,6 +1527,7 @@ async function main(): Promise<void> {
         targetSourceType: TARGET_SOURCE_TYPE || null,
         targetSourceProvider: TARGET_SOURCE_PROVIDER || null,
         targetSourceIdIncludes: TARGET_SOURCE_ID_INCLUDES || null,
+        targetReselectActive: TARGET_RESELECT_ACTIVE,
         skipFailover: SKIP_FAILOVER,
         fixtureFilter: FIXTURE_FILTER || null,
         firstFrameTimeoutMs: FIRST_FRAME_TIMEOUT_MS,
