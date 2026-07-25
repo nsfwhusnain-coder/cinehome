@@ -175,9 +175,18 @@ export function ServersPanel({
                 <button
                   type="button"
                   onClick={() => onSelect(server.id)}
-                  aria-label={
-                    server.failed ? `${server.name} — unavailable, tap to retry` : server.name
-                  }
+                  data-source-id={server.id}
+                  aria-label={[
+                    server.name,
+                    server.qualityLabel,
+                    server.failed
+                      ? "unavailable, tap to retry"
+                      : server.active
+                        ? "live"
+                        : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" — ")}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[13px] transition-colors",
                     !server.active && "border-transparent hover:border-white/10 hover:bg-white/[0.08]",

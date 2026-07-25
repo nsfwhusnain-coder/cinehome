@@ -243,3 +243,32 @@ Verification so far:
 - Production build passed.
 - `tsc --noEmit` has no new errors; only the two pre-existing
   `debrid-credentials.test.ts` fetch-cast errors remain.
+
+Deployment and first measurement:
+
+- Deployed as authoritative commit
+  `4fb9405cad79ddb97a7a10be3ab4ab346dd823ab`; production image
+  `sha256:1367afa1cfeca4b9f13cda0786218ff45a2581359fb6ab27577c394874bbf2fd`.
+- Post-deploy health, SQLite integrity, and user invariants passed: 13 users,
+  17 watchlist rows, 82 progress rows, 115 cached debrid streams.
+- Fresh eight-film sample (mainstream, new releases, classics, international,
+  obscure): 8/8 API resolution and 8/8 with debrid.
+- Full resolution improved from the 21-title baseline p50 9,023 ms / p95
+  11,841 ms to p50 6,470 ms / p95 8,284 ms in the first post-change
+  eight-title slice. This is a 28.3% p50 and 30.0% p95 reduction. The slowest
+  item was still 12,964 ms and remains under investigation.
+- The repaired direct cold-fast path (now genuinely bypassing cache) measured
+  p50 3,670 ms / p95 4,510 ms across those eight titles.
+- Seven of eight full responses now defaulted to working Luna HLS rather than
+  the previously false-positive CinemaOS DASH. Coherence exposed one real
+  480p DASH source whose expanded media segment passed the new probe; it is
+  being exercised separately through the real player.
+
+### Accessible row identity (pending deploy)
+
+Coherence also exposed two CinemaOS quality variants sharing the same friendly
+Greek server name. The visible resolution badges distinguished the rows, but
+their accessible names did not and automation could not address either row
+unambiguously. Server rows now expose their stable source ID in
+`data-source-id`, and their accessible label includes friendly name, quality,
+and live/failure state. Names remain stable while row identity is exact.

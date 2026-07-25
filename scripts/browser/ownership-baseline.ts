@@ -25,6 +25,7 @@
  *   SCRAPER_COLD=1
  *   WARM_REPEAT=1
  *   FAILOVER_SOURCE_TYPE=dash
+ *   FIXTURE_FILTER=Coherence
  *   CHROMIUM_EXECUTABLE_PATH=/root/.cache/ms-playwright/.../chrome-headless-shell
  */
 
@@ -275,6 +276,14 @@ const PLAYBACK_LIMIT = envInt("PLAYBACK_LIMIT", 6);
 const SCRAPER_COLD = envFlag("SCRAPER_COLD", true);
 const WARM_REPEAT = envFlag("WARM_REPEAT", true);
 const FAILOVER_SOURCE_TYPE = (process.env.FAILOVER_SOURCE_TYPE || "").trim().toLowerCase();
+const FIXTURE_FILTER = (process.env.FIXTURE_FILTER || "").trim().toLowerCase();
+
+function selectedFixtures(): Fixture[] {
+  if (!FIXTURE_FILTER) return FIXTURES;
+  return FIXTURES.filter((fixture) =>
+    fixture.label.toLowerCase().includes(FIXTURE_FILTER)
+  );
+}
 
 function envInt(name: string, fallback: number): number {
   const n = Number(process.env[name] || "");
@@ -470,8 +479,9 @@ async function resolutionMatrix(context: BrowserContext): Promise<Array<Record<s
   const page = await context.newPage();
   try {
     await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    for (const [index, fixture] of FIXTURES.slice(0, TITLE_LIMIT).entries()) {
-      console.log(`[resolution ${index + 1}/${Math.min(TITLE_LIMIT, FIXTURES.length)}] ${fixture.label}`);
+    const fixtures = selectedFixtures().slice(0, TITLE_LIMIT);
+    for (const [index, fixture] of fixtures.entries()) {
+      console.log(`[resolution ${index + 1}/${fixtures.length}] ${fixture.label}`);
       const [fast, full] = await Promise.all([
         apiPlayback(page, fixture, true),
         apiPlayback(page, fixture, false),
@@ -802,13 +812,13 @@ async function selectFailureSource(
   await open.click({ timeout: 3_000 }).catch(() => {});
   const dialog = page.locator('[role="dialog"][aria-label="Servers"]');
   await dialog.waitFor({ state: "visible", timeout: 3_000 }).catch(() => {});
-  let target = dialog.getByRole("button", { name: serverName, exact: true });
+  let target = dialog.locator(`button[data-source-id="${source.id}"]`);
   if ((await target.count()) === 0) {
     await dialog
       .getByRole("button", { name: /Show \d+ more servers?/i })
       .click()
       .catch(() => {});
-    target = dialog.getByRole("button", { name: serverName, exact: true });
+    target = dialog.locator(`button[data-source-id="${source.id}"]`);
   }
   if ((await target.count()) === 0) {
     await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
@@ -1127,7 +1137,7 @@ async function playbackScenario(
 
   const seek = firstFrame && fixture.seek ? await seekProbe(page, started) : null;
   const failover =
-    firstFrame && fixture.failover
+    firstFrame && (fixture.failover || Boolean(FAILOVER_SOURCE_TYPE))
       ? await forcedFailoverProbe(
           page,
           started,
@@ -1197,7 +1207,9 @@ function summarizeNetwork(network: Array<Record<string, unknown>>): Record<strin
 }
 
 async function playbackMatrix(context: BrowserContext): Promise<Array<Record<string, unknown>>> {
-  const fixtures = FIXTURES.filter((fixture) => fixture.browser).slice(0, PLAYBACK_LIMIT);
+  const fixtures = selectedFixtures()
+    .filter((fixture) => fixture.browser)
+    .slice(0, PLAYBACK_LIMIT);
   const results: Array<Record<string, unknown>> = [];
   for (const [index, fixture] of fixtures.entries()) {
     console.log(`[playback ${index + 1}/${fixtures.length}] cold ${fixture.label}`);
@@ -1321,6 +1333,7 @@ async function main(): Promise<void> {
         scraperCold: SCRAPER_COLD,
         warmRepeat: WARM_REPEAT,
         failoverSourceType: FAILOVER_SOURCE_TYPE || null,
+        fixtureFilter: FIXTURE_FILTER || null,
         firstFrameTimeoutMs: FIRST_FRAME_TIMEOUT_MS,
         steadyWatchMs: STEADY_WATCH_MS,
       },
