@@ -328,6 +328,33 @@ describe("Real-Debrid roster — full + fast paths", () => {
       | { url?: string }
       | undefined;
     expect(cached?.url).not.toContain(SMALL_CLIP_HASH);
+    expect(new Set(sources.map((source) => source.url)).size).toBe(sources.length);
+  });
+
+  it("full path: collapses duplicate warm slots and refills with an unoccupied release", async () => {
+    const slots = ["native-2160", "safari-2160", "native-1080-1", "native-1080-2", "native-1080-3"];
+    for (const slot of slots) {
+      const duplicate1080 = slot === "native-1080-1" || slot === "native-1080-2";
+      const source = duplicate1080 ? NATIVE_1080_HASHES[0] : slot;
+      const url = duplicate1080
+        ? `http://127.0.0.1:${server.port}/cdn/${NATIVE_1080_HASHES[0]}.mp4`
+        : `http://127.0.0.1:${server.port}/cdn/cached-${slot}.mp4`;
+      cacheStore.set(`${IMDB}|movie|0|0|${slot}|realdebrid`, {
+        title: `Cached ${slot}`,
+        source,
+        url,
+        compat: slot === "safari-2160" ? "safari" : "native",
+      });
+    }
+    mockTorrentioStreams(buildStreams());
+
+    const sources = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(sources.length).toBe(5);
+    expect(new Set(sources.map((source) => source.url)).size).toBe(5);
+    const refilled = cacheStore.get(`${IMDB}|movie|0|0|native-1080-2|realdebrid`) as
+      | { source?: string }
+      | undefined;
+    expect(refilled?.source).not.toBe(NATIVE_1080_HASHES[0]);
   });
 
   it("fast path: cold cache is CACHE-ONLY — returns [] immediately (no live network in the awaited path), then backgrounds the full roster resolve", async () => {

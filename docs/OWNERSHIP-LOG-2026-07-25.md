@@ -350,3 +350,25 @@ Verification before deployment:
 - Production image build passed.
 - `tsc --noEmit` produced no new diagnostics; only the two pre-existing
   `debrid-credentials.test.ts` fetch-cast errors remain.
+
+First live deployment and follow-up:
+
+- Deployed as authoritative commit
+  `0b807955b5ec24f5fbdcece7be749ea697fedeb1`; production image
+  `sha256:374a95cc481dead765dc0b3b68282d4e238fccc5277e206901c834860e911639`.
+- A fresh authenticated Fight Club matrix resolved successfully with debrid.
+  The structured log conclusively rejected the old cached row at 1,184,727
+  bytes, and the DB row self-healed from the generic movie pack to the
+  full-length YIFY release without manual deletion.
+- The same live run caught other bad 1.18â€“2.12 MB season-pack file selections
+  for Attack on Titan, The Office, and The Witcher while ordinary user/home
+  prefetches were running. This confirms the defect was systemic and the new
+  boundary is protecting real traffic, not only the original fixture.
+- That first repair exposed a roster-allocation bug: `native-1080-1` fell
+  through to the release already cached in `native-1080-2`, producing two
+  source IDs for one URL. Missing 1080p slots now divide only the unoccupied
+  ranked candidates into disjoint fallback lanes. Existing duplicate warm
+  rows are collapsed, logged as `debrid_duplicate_slot_rejected`, and refilled
+  with a distinct release. Resolution remains parallel.
+- Focused validation/roster coverage after the allocator change: 13 passed.
+  Entire playback/debrid suite: 212 passed, zero failed.

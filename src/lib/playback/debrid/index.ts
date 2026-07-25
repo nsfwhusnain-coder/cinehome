@@ -290,21 +290,53 @@ function safariCandidatesAt(candidates: DebridCandidate[], height: 1080 | 2160):
 
 /**
  * Per-slot ranked candidate options — already-ranked lists (torrentio.ts
- * ranks by resolution+seeders+container per class), just partitioned by
- * class/height and, for the three native-1080p slots, offset so each slot's
- * PRIMARY pick is a genuinely different release (slot i tries
- * `native1080[i]` first, falling through the remaining ranked list only if
- * that candidate's resolve fails).
+ * ranks by resolution+seeders+container per class). Missing native-1080
+ * slots divide the unoccupied pool into disjoint fallback lanes, so
+ * concurrent workers cannot resolve one release into multiple server rows.
  */
-function buildRdSlotOptions(candidates: DebridCandidate[]): Record<DebridSlot, DebridCandidate[]> {
-  const native1080 = nativeCandidatesAt(candidates, 1080);
-  return {
-    "native-2160": nativeCandidatesAt(candidates, 2160),
-    "safari-2160": safariCandidatesAt(candidates, 2160),
-    "native-1080-1": native1080.slice(0),
-    "native-1080-2": native1080.slice(1),
-    "native-1080-3": native1080.slice(2),
+function candidateHashIdentity(candidate: DebridCandidate): string | null {
+  return candidate.infoHash ? `hash:${candidate.infoHash.toLowerCase()}` : null;
+}
+
+function cachedIdentities(record: CachedStreamRecord, safeUrl: string): string[] {
+  const identities = [`url:${safeUrl}`];
+  if (/^[a-f0-9]{40}$/i.test(record.source)) {
+    identities.push(`hash:${record.source.toLowerCase()}`);
+  } else if (record.source) {
+    identities.push(`source:${record.source}`);
+  }
+  return identities;
+}
+
+function buildRdSlotOptions(
+  candidates: DebridCandidate[],
+  missing: DebridSlot[],
+  occupiedIdentities: Set<string>
+): Record<DebridSlot, DebridCandidate[]> {
+  const available = (items: DebridCandidate[]) =>
+    items.filter((candidate) => {
+      const identity = candidateHashIdentity(candidate);
+      return !identity || !occupiedIdentities.has(identity);
+    });
+  const result: Record<DebridSlot, DebridCandidate[]> = {
+    "native-2160": available(nativeCandidatesAt(candidates, 2160)),
+    "safari-2160": available(safariCandidatesAt(candidates, 2160)),
+    "native-1080-1": [],
+    "native-1080-2": [],
+    "native-1080-3": [],
   };
+
+  // The old overlapping slices meant a fallback in slot 1 could select the
+  // primary candidate for slot 2, yielding duplicate server rows. Divide the
+  // remaining ranked pool among only the slots that are missing. Each slot
+  // keeps ordered fallbacks, all missing slots still resolve concurrently,
+  // and no candidate can be claimed by two workers in the same request.
+  const nativeSlots = missing.filter((slot) => slot.startsWith("native-1080")) as DebridSlot[];
+  const native1080 = available(nativeCandidatesAt(candidates, 1080));
+  nativeSlots.forEach((slot, slotIndex) => {
+    result[slot] = native1080.filter((_, candidateIndex) => candidateIndex % nativeSlots.length === slotIndex);
+  });
+  return result;
 }
 
 /**
@@ -398,7 +430,7 @@ async function readCachedRdSlots(
   keyBase: KeyBase,
   rdToken: string,
   validationTimeoutMs: number = RD_MEDIA_VALIDATION_TIMEOUT_MS
-): Promise<{ hits: PlaybackSource[]; missing: DebridSlot[] }> {
+): Promise<{ hits: PlaybackSource[]; missing: DebridSlot[]; occupiedIdentities: Set<string> }> {
   const cachedBySlot = await Promise.all(
     RD_SLOTS.map((slot) => getFreshCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" }))
   );
@@ -412,9 +444,13 @@ async function readCachedRdSlots(
   );
   const hits: PlaybackSource[] = [];
   const missing: DebridSlot[] = [];
+  const occupiedIdentities = new Set<string>();
   RD_SLOTS.forEach((slot, i) => {
     const { hit, safeUrl, validation } = validatedBySlot[i] ?? {};
-    if (hit && safeUrl && validation?.acceptable) {
+    const identities = hit && safeUrl ? cachedIdentities(hit, safeUrl) : [];
+    const duplicatesExistingHit = identities.some((identity) => occupiedIdentities.has(identity));
+    if (hit && safeUrl && validation?.acceptable && !duplicatesExistingHit) {
+      identities.forEach((identity) => occupiedIdentities.add(identity));
       hits.push(
         toRdPlaybackSource(
           slot,
@@ -432,9 +468,21 @@ async function readCachedRdSlots(
       if (hit && validation && !validation.acceptable) {
         logRejectedRdMedia(hit, validation, keyBase.mediaType, "cache", keyBase.imdbId, slot);
       }
+      if (hit && validation?.acceptable && duplicatesExistingHit) {
+        console.warn(
+          JSON.stringify({
+            event: "debrid_duplicate_slot_rejected",
+            provider: "realdebrid",
+            mediaType: keyBase.mediaType,
+            imdbId: keyBase.imdbId,
+            slot,
+            title: hit.title,
+          })
+        );
+      }
     }
   });
-  return { hits, missing };
+  return { hits, missing, occupiedIdentities };
 }
 
 /**
@@ -452,7 +500,7 @@ async function resolveRealDebridSlots(
   rdToken: string,
   preFetchedCandidates?: DebridCandidate[]
 ): Promise<{ sources: PlaybackSource[]; candidates: DebridCandidate[] }> {
-  const { hits, missing } = await readCachedRdSlots(keyBase, rdToken);
+  const { hits, missing, occupiedIdentities } = await readCachedRdSlots(keyBase, rdToken);
   if (!missing.length) return { sources: hits, candidates: preFetchedCandidates ?? [] };
 
   const deadline = Date.now() + RD_FULL_DEADLINE_MS;
@@ -466,7 +514,7 @@ async function resolveRealDebridSlots(
       rdToken,
     }));
 
-  const slotOptions = buildRdSlotOptions(candidates);
+  const slotOptions = buildRdSlotOptions(candidates, missing, occupiedIdentities);
   const resolvedPerSlot = await mapWithConcurrency(missing, RESOLVE_CONCURRENCY, async (slot) => {
     const options = slotOptions[slot];
     if (!options?.length) return null;
