@@ -176,7 +176,7 @@ Deployment:
   2,805 ms; the cold run took 26,105 ms, which is too slow and is still under
   investigation rather than being claimed as complete.
 
-### Server identity collision (pending deploy)
+### Server identity collision
 
 The deterministic DASH-selection smoke exposed seven distinct CinemaOS rows
 all rendered with the same Greek name, `Eos`. The first-word-only label parser
@@ -192,3 +192,54 @@ deterministic source selection.
 - Quality enrichment (`Cinema AR 720` → `Cinema AR 1080`) does not rename the
   logical server.
 - Server-name plus attempt-controller focused tests: 21 passed, 0 failed.
+- Deployed as authoritative commit
+  `035f9c176ca0c80865654424ecc78b7cf88fb050`; production image
+  `sha256:f7bf15a2c657d3e93505b83de8dbca3d1117edb187389b85171a9e3b18ddb111`.
+- Post-deploy health was green, SQLite integrity remained `ok`, and the data
+  invariants remained 13 users / 17 watchlist / 82 progress rows.
+
+### Source fan-out and false DASH health (pending deploy)
+
+The first deterministic post-identity DASH run found a deeper availability
+failure:
+
+- CinemaOS `Cinema AR 1080` was selected by the full resolver as its measured
+  default, but never produced a frame. The player correctly failed it and
+  moved through Luna to a third server.
+- The DASH probe's `firstDashMediaUrl` rejected any ordinary
+  `$RepresentationID$`, `$Number$`, `$Bandwidth$`, or `$Time$` template. It
+  then fell back to requesting the MPD itself and counted the XML bytes as a
+  successful media segment. This was the reason a dead DASH source could beat
+  a working HLS source.
+- The fallback debrid source reported a 30.058-second duration for a feature
+  film. Resume-to-1,200-seconds clamped immediately to its end, so it is not a
+  valid recovery. That remains an active quality-path defect, not a passing
+  failover.
+
+The source-resolution change under verification:
+
+- Expands standard DASH templates and probes a real first media URL. An
+  unresolved MPD is now `dash_media_unresolved`, never a false success.
+- Replaces the full path's
+  `Promise.all(CinePro, Luna, CinemaOS)` gate with independent provider arms:
+  first useful result plus a 2.5-second quality grace, 7.5-second hard wall,
+  and additive late-result cache enrichment.
+- Emits request-keyed provider outcomes with provider, status, count, latency,
+  and whether the result arrived after the response.
+- Fixes an enrichment race that was observed collapsing a 19-source cache back
+  to the five-source snapshot taken when browser enrichment began.
+- Makes `nocache=1` a genuine fresh resolve for fast and full requests instead
+  of silently returning the cache when it was full or when `fast=1`.
+- Reduces raw and per-user signed-source cache TTLs from 20 minutes to three
+  minutes. Partial cache TTL is 1.5 seconds and playback fetches are `no-store`,
+  so the existing two-second progressive poll can see late results instead of
+  replaying a cached partial response for 45–120 seconds.
+
+Verification so far:
+
+- New provider-race and DASH-template tests: 9 passed.
+- Entire scraper suite: 168 passed.
+- Playback/proxy/debrid suite: 233 passed.
+- Production build passed.
+- `tsc --noEmit` has no new errors; only the two pre-existing
+  `debrid-credentials.test.ts` fetch-cast errors remain.

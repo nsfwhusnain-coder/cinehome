@@ -58,13 +58,13 @@ export async function cachedFetch<T>(
 
 /**
  * Per-user playback response cache (proxy URLs embed HLS session ids).
- * Complete resolves: 20m warm. Partial: short so progressive poll can advance.
+ * Complete resolves: 3m warm. Partial: short so progressive poll can advance.
  */
 const playbackStore = new Map<string, { value: unknown; until: number }>();
-/** Complete resolve TTL — cross-title warm within the 15–30m product window. */
-export const PLAYBACK_TTL_MS = 20 * 60 * 1000;
-/** Partial resolve TTL — long enough to de-dupe storms, short enough to re-poll. */
-export const PLAYBACK_PARTIAL_TTL_MS = 45_000;
+/** Match the 3m scraper TTL so expired signed links are never kept for 20m. */
+export const PLAYBACK_TTL_MS = 3 * 60 * 1000;
+/** Below the client's 2s poll interval so progressive results can actually advance. */
+export const PLAYBACK_PARTIAL_TTL_MS = 1_500;
 
 export function getCachedPlayback<T>(key: string): T | null {
   const hit = playbackStore.get(key);
@@ -105,8 +105,9 @@ export function playbackCacheKey(
  * only HLS session + proxy URLs minted after are user-scoped.
  */
 const rawScrapeStore = new Map<string, { value: unknown; until: number }>();
-export const RAW_SCRAPE_TTL_MS = 20 * 60 * 1000;
-export const RAW_SCRAPE_PARTIAL_TTL_MS = 45_000;
+/** Raw signed provider links follow the scraper's short-lived source cache. */
+export const RAW_SCRAPE_TTL_MS = 3 * 60 * 1000;
+export const RAW_SCRAPE_PARTIAL_TTL_MS = 1_500;
 
 export function rawScrapeCacheKey(
   mediaType: string,

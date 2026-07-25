@@ -138,7 +138,7 @@ export async function GET(
     if (cached) {
       return NextResponse.json(cached, {
         headers: {
-          "Cache-Control": "private, max-age=120",
+          "Cache-Control": "private, no-store",
           "X-Playback-Cache": "HIT",
         },
       });
@@ -204,7 +204,7 @@ export async function GET(
 
   return NextResponse.json(result, {
     headers: {
-      "Cache-Control": "private, max-age=120",
+      "Cache-Control": "private, no-store",
       "X-Playback-Cache": "MISS",
     },
   });

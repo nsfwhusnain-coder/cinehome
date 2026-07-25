@@ -282,16 +282,86 @@ function isLikelyMediaSegment(bytes: number, status: number, sampleText?: string
   return true;
 }
 
-function firstDashMediaUrl(mpd: string, baseUrl: string): string | null {
-  // Prefer initialization / media templates or BaseURL + segment paths.
-  const init = mpd.match(/initialization="([^"]+)"/i)?.[1];
-  if (init && !init.includes("$")) return resolveUrl(baseUrl, init);
-  const media = mpd.match(/\bmedia="([^"]+)"/i)?.[1];
-  if (media && !media.includes("$")) return resolveUrl(baseUrl, media);
-  const base = mpd.match(/<BaseURL>([^<]+)<\/BaseURL>/i)?.[1]?.trim();
-  if (base) {
-    const abs = resolveUrl(baseUrl, base);
-    if (/\.(mp4|m4s|cmfv)(\?|$)/i.test(abs)) return abs;
+function xmlAttr(fragment: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return fragment.match(new RegExp(`\\b${escaped}="([^"]+)"`, "i"))?.[1] ?? null;
+}
+
+function expandDashTemplate(
+  template: string,
+  values: {
+    representationId: string;
+    bandwidth: string;
+    number: number;
+    time: number;
+  }
+): string | null {
+  const expanded = template
+    .replace(/\$\$/g, "\u0000")
+    .replace(
+      /\$(RepresentationID|Bandwidth|Number|Time)(?:%0(\d+)d)?\$/g,
+      (_match, key: string, widthRaw?: string) => {
+        const raw =
+          key === "RepresentationID"
+            ? values.representationId
+            : key === "Bandwidth"
+              ? values.bandwidth
+              : String(key === "Number" ? values.number : values.time);
+        const width = Number(widthRaw || 0);
+        return width > 0 ? raw.padStart(width, "0") : raw;
+      }
+    )
+    .replace(/\u0000/g, "$");
+  return expanded.includes("$") ? null : expanded;
+}
+
+/**
+ * Resolve a real first DASH media URL. Returning the MPD itself made a quick,
+ * 200-byte manifest look like a successful segment whenever SegmentTemplate
+ * used normal `$RepresentationID$` / `$Number$` placeholders.
+ */
+export function firstDashMediaUrl(mpd: string, manifestUrl: string): string | null {
+  const representation =
+    [...mpd.matchAll(/<Representation\b([^>]*)>/gi)].find((match) =>
+      /\b(?:height|mimeType="video|contentType="video|codecs="(?:avc|hvc|hev|vp|av01))/i.test(
+        match[1] || ""
+      )
+    ) ?? mpd.match(/<Representation\b([^>]*)>/i);
+  const repAttrs = representation?.[1] ?? "";
+  const representationId = xmlAttr(repAttrs, "id") ?? "";
+  const bandwidth = xmlAttr(repAttrs, "bandwidth") ?? "";
+
+  const segmentTemplate =
+    [...mpd.matchAll(/<SegmentTemplate\b([^>]*)>/gi)].find((match) =>
+      /\bmedia="/i.test(match[1] || "")
+    )?.[1] ?? "";
+  const media = xmlAttr(segmentTemplate, "media");
+  const initialization = xmlAttr(segmentTemplate, "initialization");
+  const startNumber = Number(xmlAttr(segmentTemplate, "startNumber") || "1");
+  const firstTimelineTime = Number(
+    mpd.match(/<S\b[^>]*\bt="(\d+)"/i)?.[1] || "0"
+  );
+
+  const baseValues = [...mpd.matchAll(/<BaseURL[^>]*>([^<]+)<\/BaseURL>/gi)]
+    .map((match) => match[1]?.trim())
+    .filter((value): value is string => Boolean(value));
+  let resolvedBase = manifestUrl;
+  for (const value of baseValues.slice(0, 2)) {
+    resolvedBase = resolveUrl(resolvedBase, value);
+    if (/\.(?:mp4|m4s|cmfv)(?:\?|$)/i.test(resolvedBase)) {
+      return resolvedBase;
+    }
+  }
+
+  for (const template of [media, initialization]) {
+    if (!template) continue;
+    const expanded = expandDashTemplate(template, {
+      representationId,
+      bandwidth,
+      number: Number.isFinite(startNumber) ? startNumber : 1,
+      time: Number.isFinite(firstTimelineTime) ? firstTimelineTime : 0,
+    });
+    if (expanded) return resolveUrl(resolvedBase, expanded);
   }
   return null;
 }
@@ -506,7 +576,12 @@ async function probeOne(entry: ProbeableEntry): Promise<ProbeResult> {
         cacheProbeResult(key, result);
         return result;
       }
-      const mediaUrl = firstDashMediaUrl(mpd.text, entry.url) ?? entry.url;
+      const mediaUrl = firstDashMediaUrl(mpd.text, entry.url);
+      if (!mediaUrl) {
+        const result = failResult("dash_media_unresolved", mpd.ttfbMs);
+        cacheProbeResult(key, result);
+        return result;
+      }
       const mediaHeaders = buildHeaders(entry, mediaUrl);
       const seg = await timedFetch(mediaUrl, mediaHeaders, { range: true });
       const minOk = seg.bytes >= PROBE_MIN_BYTES_MP4;

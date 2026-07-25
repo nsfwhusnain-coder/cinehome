@@ -55,6 +55,7 @@ import {
 } from "./providers/stream-mime";
 import { isDebugEnabled, recordDebugCapture, flushDebugDump } from "./debug-dump";
 import { raceWithHardTimeout } from "./enrich-timeout";
+import { raceProviderArms } from "./provider-race";
 import {
   effectiveMaxHeight as rankEffectiveMaxHeight,
   pickDefaultStreamUrl as rankPickDefaultStreamUrl,
@@ -1953,6 +1954,10 @@ async function resolveCinemaosEntries(
 const FAST_FIRST_GRACE_MS = 2_500;
 /** Hard ceiling for the entire fast multi-API race (client timeout is 8s). */
 const FAST_MAX_WAIT_MS = 7_500;
+/** Full requests use the same progressive fan-out instead of gating on CinePro. */
+const FULL_FIRST_GRACE_MS = 2_500;
+/** Leave time inside the route budget for measured probes and serialization. */
+const FULL_API_MAX_WAIT_MS = 7_500;
 
 /**
  * Fast path: race multi-API providers (no Playwright) so TTFF is stable for TV.
@@ -2433,7 +2438,11 @@ function scheduleBackgroundEnrich(
   // Hard timeout guarantees the promise settles — UI must never await forever.
   const enrichWork = enrichMissingSources(seed, tmdbId, mediaType, season, episode).then(
     async (enriched) => {
-      let merged = buildMergedResult(enriched);
+      // `seed` is a snapshot. Provider arms may settle while the browser wave
+      // runs, so merge the latest cache too. The replacement write previously
+      // collapsed a 19-source roster back to the five entries in the snapshot.
+      const latest = getCached(key)?.sources ?? [];
+      let merged = buildMergedResult([...latest, ...enriched]);
       if (merged.streamUrl) {
         merged = await applyLatencyProbes(merged);
         merged = { ...merged, partial: undefined };
@@ -2527,7 +2536,7 @@ async function scrapeStream(
   const key = cacheKey(tmdbId, mediaType, season, episode);
   const cached = getCached(key);
   const underCap = cached != null && cached.sources.length < MAX_SOURCES;
-  const bypassCache = options.noCache && !options.fast && underCap;
+  const bypassCache = options.noCache && cached != null;
 
   if (cached && !bypassCache) {
     logAt("info", `[cache] hit for ${key} (${cached.sources.length} source(s))`);
@@ -2549,30 +2558,13 @@ async function scrapeStream(
   }
 
   if (cached && bypassCache) {
-    logAt("info", `[scrape] nocache re-enrich for ${key} (had ${cached.sources.length})`);
+    logAt(
+      "info",
+      `[scrape] nocache fresh resolve for ${key} (discarding ${cached.sources.length} cached)`
+    );
+    resultCache.delete(key);
+    removeFromResultCacheOrder(key);
     enrichCompletedKeys.delete(key);
-    if (!options.fast) {
-      // Sync: APIs only. Playwright runs in scheduleBackgroundEnrich (force).
-      const enriched = await enrichMissingSources(
-        cached.sources,
-        tmdbId,
-        mediaType,
-        season,
-        episode,
-        { skipPlaywright: true }
-      );
-      let merged = buildMergedResult(enriched);
-      if (merged.streamUrl) {
-        merged = await applyLatencyProbes(merged);
-        setCachedResult(key, merged);
-        captureScrapeTiming(key, false, Date.now() - scrapeStarted);
-        scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode, { force: true });
-        return {
-          ...merged,
-          partial: merged.sources.length < PARTIAL_CLEAR_MIN || undefined,
-        };
-      }
-    }
   }
 
   if (options.fast) {
@@ -2649,12 +2641,39 @@ async function scrapeStream(
     }
   );
 
-  const [earlyCinepro, earlyLuna, earlyCinemaos] = await Promise.all([
-    cineproPromise,
-    lunaPromise,
-    cinemaosPromise,
-  ]);
-  let collected = [...earlyCinepro, ...earlyLuna, ...earlyCinemaos];
+  const fullRace = await raceProviderArms<SourceEntry>(
+    [
+      { provider: "cinepro", run: () => cineproPromise },
+      { provider: "vixsrc", run: () => lunaPromise },
+      { provider: "cinemaos", run: () => cinemaosPromise },
+      { provider: "vidlink", run: () => vidlinkPromise },
+      { provider: "notorrent", run: () => notorrentPromise },
+    ],
+    {
+      firstHitGraceMs: FULL_FIRST_GRACE_MS,
+      maxWaitMs: FULL_API_MAX_WAIT_MS,
+      onLateEntries: (provider, entries) => {
+        const late = mergeIntoCache(key, entries);
+        if (late) {
+          logAt(
+            "info",
+            `[scrape] late full ${provider} +${entries.length} -> ${late.sources.length} total for ${key}`
+          );
+        }
+      },
+      onOutcome: (outcome) => {
+        logAt(
+          outcome.status === "error" ? "warn" : "info",
+          `[provider] request=${key} provider=${outcome.provider} status=${outcome.status} count=${outcome.count} ms=${outcome.ms} late=${outcome.late}${outcome.error ? ` error=${outcome.error}` : ""}`
+        );
+      },
+    }
+  );
+  logAt(
+    "info",
+    `[scrape] full API race -> ${fullRace.entries.length} source(s) in ${fullRace.totalMs}ms (first@${fullRace.firstHitMs ?? "-"}ms)`
+  );
+  let collected = fullRace.entries;
   let merged = buildMergedResult(collected);
 
   if (merged.streamUrl) {
@@ -2662,16 +2681,8 @@ async function scrapeStream(
       "info",
       `[scrape] primary hit (${merged.sources.length}) — enriching toward ${MIN_SOURCES_TARGET}+ for ${key}`
     );
-    const [earlyVidlink, earlyNotorrent] = await Promise.all([vidlinkPromise, notorrentPromise]);
-    if (earlyVidlink.length) {
-      collected = [...collected, ...earlyVidlink];
-      logAt("info", `[scrape] early VidLink +${earlyVidlink.length}`);
-    }
-    if (earlyNotorrent.length) {
-      collected = [...collected, ...earlyNotorrent];
-      logAt("info", `[scrape] early NoTorrent +${earlyNotorrent.length}`);
-    }
-    // Sync path: API-only (no Playwright). PW runs in scheduleBackgroundEnrich.
+    // All API providers already participated in the progressive race. Do not
+    // re-await a slow arm after a healthy peer won.
     collected = await enrichMissingSources(
       collected,
       tmdbId,
@@ -2679,8 +2690,8 @@ async function scrapeStream(
       season,
       episode,
       {
-        skipVidlink: earlyVidlink.length > 0,
-        skipNotorrent: earlyNotorrent.length > 0,
+        skipVidlink: true,
+        skipNotorrent: true,
         skipPlaywright: true,
       }
     );
@@ -2690,6 +2701,13 @@ async function scrapeStream(
       return { streamUrl: null, sources: [], error: merged.error || "Enrichment failed" };
     }
     merged = await applyLatencyProbes(merged);
+    const latestWhileProbing = getCached(key);
+    if (latestWhileProbing?.sources.length) {
+      merged = buildMergedResult([
+        ...latestWhileProbing.sources,
+        ...merged.sources,
+      ]);
+    }
     setCachedResult(key, merged);
     logAt(
       "info",
@@ -2712,20 +2730,8 @@ async function scrapeStream(
   }
 
   logAt("info", `[scrape] Luna miss — resolving background APIs + embeds for ${key}`);
-  // cinemaosPromise already joined into collected above; still await peers.
-  const [earlyVidlinkMiss, earlyNotorrentMiss] = await Promise.all([
-    vidlinkPromise,
-    notorrentPromise,
-  ]);
-  if (earlyVidlinkMiss.length) {
-    collected = [...collected, ...earlyVidlinkMiss];
-    logAt("info", `[scrape] early VidLink +${earlyVidlinkMiss.length} on Luna miss`);
-  }
-  if (earlyNotorrentMiss.length) {
-    collected = [...collected, ...earlyNotorrentMiss];
-    logAt("info", `[scrape] early NoTorrent +${earlyNotorrentMiss.length} on Luna miss`);
-  }
-  // Sync: APIs only. Playwright fills the roster in background enrich.
+  // Every API arm already had an independent chance in the race. Browser
+  // discovery continues in the background rather than blocking this request.
   collected = await enrichMissingSources(
     collected,
     tmdbId,
@@ -2733,8 +2739,8 @@ async function scrapeStream(
     season,
     episode,
     {
-      skipVidlink: earlyVidlinkMiss.length > 0,
-      skipNotorrent: earlyNotorrentMiss.length > 0,
+      skipVidlink: true,
+      skipNotorrent: true,
       skipPlaywright: true,
     }
   );
@@ -2758,8 +2764,16 @@ async function scrapeStream(
     return merged;
   }
 
+  scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode, {
+    force: true,
+  });
   captureScrapeTiming(key, false, Date.now() - scrapeStarted);
-  return { streamUrl: null, sources: [], error: merged.error || "All sources failed" };
+  return {
+    streamUrl: null,
+    sources: [],
+    error: merged.error || "No source yet — background resolution is in progress.",
+    partial: true,
+  };
 }
 
 function buildHealthPayload(): Record<string, unknown> {

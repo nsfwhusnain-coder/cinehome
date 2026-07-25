@@ -657,6 +657,17 @@ async function forcedFailoverProbe(
   const forcedSelection = desiredSourceType
     ? await selectFailureSource(page, started, calls, desiredSourceType)
     : null;
+  if (
+    desiredSourceType &&
+    forcedSelection &&
+    forcedSelection.selected !== true
+  ) {
+    return {
+      attempted: false,
+      reason: `no healthy ${desiredSourceType} source available for injection`,
+      forcedSelection,
+    };
+  }
   const currentServerName =
     (await readActiveServerName(page).catch(() => null)) || activeServerName;
   const before = await readBrowserState(page, started);
@@ -750,14 +761,19 @@ async function selectFailureSource(
   calls: ApiCall[],
   desiredSourceType: string
 ): Promise<Record<string, unknown>> {
-  const candidates = calls
-    .flatMap((call) => call._sources || [])
-    .filter(
-      (source, index, all) =>
-        source.type.toLowerCase() === desiredSourceType &&
-        source.probeOk !== false &&
-        all.findIndex((candidate) => candidate.id === source.id) === index
-    );
+  const byId = new Map<string, SourceSummary>();
+  for (const source of calls.flatMap((call) => call._sources || [])) {
+    if (source.type.toLowerCase() !== desiredSourceType) continue;
+    const current = byId.get(source.id);
+    // A measured result, including a measured failure, is more authoritative
+    // than the same source's earlier fast-path "unknown" entry.
+    if (!current || (current.probeOk == null && source.probeOk != null)) {
+      byId.set(source.id, source);
+    }
+  }
+  const candidates = [...byId.values()].filter(
+    (source) => source.probeOk !== false
+  );
   const source = candidates[0];
   if (!source) {
     return {

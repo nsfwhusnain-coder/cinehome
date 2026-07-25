@@ -59,6 +59,7 @@ async function fetchPlayback(
   }
 
   const res = await fetch(`/api/playback/${mediaType}/${tmdbId}?${params.toString()}`, {
+    cache: "no-store",
     signal: AbortSignal.timeout(fast ? CLIENT_FAST_TIMEOUT_MS : CLIENT_FULL_TIMEOUT_MS),
   });
   const json = (await res.json()) as PlaybackResponse;
