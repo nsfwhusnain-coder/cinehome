@@ -106,6 +106,21 @@ export async function getFreshCachedStream(key: CachedStreamKey): Promise<Cached
   }
 }
 
+/**
+ * Expire a conclusively bad/duplicate row without deleting diagnostic data.
+ * A failed replacement can therefore never be treated as fresh next time.
+ */
+export async function invalidateCachedStream(key: CachedStreamKey): Promise<void> {
+  try {
+    await db.cachedStream.update({
+      where: whereFor(key),
+      data: { expiresAt: new Date(0) },
+    });
+  } catch {
+    // Missing row or DB failure: caller already excluded it from this response.
+  }
+}
+
 /** Upsert the resolved link for this key. Cache-write failures must never break playback. */
 export async function upsertCachedStream(
   key: CachedStreamKey,

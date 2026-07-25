@@ -53,6 +53,9 @@ mock.module("@/lib/tmdb", () => ({
 }));
 mock.module("./cached-stream", () => ({
   getFreshCachedStream: async (key: Parameters<typeof cacheKey>[0]) => cacheStore.get(cacheKey(key)) ?? null,
+  invalidateCachedStream: async (key: Parameters<typeof cacheKey>[0]) => {
+    cacheStore.delete(cacheKey(key));
+  },
   upsertCachedStream: async (key: Parameters<typeof cacheKey>[0], record: unknown) => {
     cacheStore.set(cacheKey(key), { ...(record as object) });
   },

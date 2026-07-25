@@ -1,12 +1,29 @@
 /// <reference types="bun-types" />
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+  extractInfoHashFromResolveUrl,
   fetchTorrentioCandidates,
   isBrowserPlayableContainer,
   isEligibleDebridQuality,
   parseReleaseTitle,
   parseSeeders,
 } from "./torrentio";
+
+describe("extractInfoHashFromResolveUrl", () => {
+  it("recovers the stable hash without returning the credential segment", () => {
+    const hash = "a".repeat(40);
+    expect(
+      extractInfoHashFromResolveUrl(
+        `https://torrentio.strem.fun/resolve/realdebrid/SECRET/${hash}/null/0/movie.mp4`
+      )
+    ).toBe(hash);
+  });
+
+  it("does not guess from unrelated or malformed URLs", () => {
+    expect(extractInfoHashFromResolveUrl("https://example.com/not-a-resolve/aabb")).toBeUndefined();
+    expect(extractInfoHashFromResolveUrl("not a url")).toBeUndefined();
+  });
+});
 
 /**
  * Real sample release-name conventions (as seen in actual Torrentio/scene

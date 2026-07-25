@@ -381,3 +381,17 @@ First live deployment and follow-up:
 - Focused coverage is now 14 passed and includes a cold roster containing a
   deliberately repeated Torrentio hash; all five resulting slot URLs must be
   distinct.
+- Live verification showed the provider sometimes omits `infoHash` while
+  still embedding it in the standard RD resolve-proxy path. Legacy cache rows
+  therefore held only direct URLs; different provider filenames could mask
+  one underlying hash, and a resolved fallback could redirect back to an
+  already-occupied direct object. The parser now recovers only the
+  40-character hash from the known resolve path (never the credential
+  segment). Allocation dedupes on that stable identity, and the post-resolve
+  boundary also rejects an occupied final URL.
+- Conclusively bad or duplicate cache rows are now expired immediately before
+  replacement is attempted. If the provider exhausts the 12-second budget,
+  the stale row stays available for diagnosis but cannot be read as fresh and
+  retried forever. Regression coverage includes omitted hashes, different
+  filenames for the same hash, legacy URL-only rows, post-redirect duplicate
+  rejection, and invalidation when no replacement resolves.

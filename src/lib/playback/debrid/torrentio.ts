@@ -363,13 +363,29 @@ function parseTorrentioStreams(data: TorrentioResponseRaw): DebridCandidate[] {
       ...parsed,
       resolutionHeight: height,
       title: rawTitle || "Unknown release",
-      infoHash: s.infoHash,
+      infoHash: s.infoHash ?? extractInfoHashFromResolveUrl(s.url),
       fileIdx: s.fileIdx,
       url: s.url,
       seeders: parseSeeders(text),
     });
   }
   return selectTopPerClass(candidates).slice(0, MAX_CANDIDATES);
+}
+
+/**
+ * Torrentio's RD-configured response sometimes omits `infoHash` even though
+ * its resolve-proxy URL carries the same stable hash. Recover only the known
+ * path shape; the credential segment is neither returned nor logged.
+ */
+export function extractInfoHashFromResolveUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const pathname = new URL(url).pathname;
+    const match = pathname.match(/\/resolve\/realdebrid\/[^/]+\/([a-f0-9]{40})(?:\/|$)/i);
+    return match?.[1]?.toLowerCase();
+  } catch {
+    return undefined;
+  }
 }
 
 /** Fetch + parse + filter (1080p+ only; MKV/WebM kept, not dropped) + per-class rank/bound (~30-40 total, see `PER_CLASS_CAP`). Never throws. */

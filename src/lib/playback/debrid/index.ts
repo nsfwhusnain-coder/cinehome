@@ -95,6 +95,7 @@ import {
 } from "./torbox";
 import {
   getFreshCachedStream,
+  invalidateCachedStream,
   upsertCachedStream,
   type DebridQuality,
   type DebridSlot,
@@ -390,12 +391,24 @@ async function resolveSlotCandidate(
   options: DebridCandidate[],
   token: string,
   deadline: number,
-  mediaType: MediaType
+  mediaType: MediaType,
+  occupiedIdentities: Set<string>
 ): Promise<ResolvedCandidate | null> {
   for (const candidate of options) {
     if (Date.now() >= deadline) return null;
     const resolved = await resolveCandidateLink(candidate, token, deadline);
     if (!resolved) continue;
+    if (occupiedIdentities.has(`url:${resolved.directUrl}`)) {
+      console.warn(
+        JSON.stringify({
+          event: "debrid_resolved_duplicate_rejected",
+          provider: "realdebrid",
+          mediaType,
+          title: candidate.title,
+        })
+      );
+      continue;
+    }
     const remaining = deadline - Date.now();
     if (remaining <= 0) return null;
     const validation = await validateDebridMediaLink(
@@ -454,6 +467,7 @@ async function readCachedRdSlots(
   const hits: PlaybackSource[] = [];
   const missing: DebridSlot[] = [];
   const occupiedIdentities = new Set<string>();
+  const invalidations: Promise<void>[] = [];
   RD_SLOTS.forEach((slot, i) => {
     const { hit, safeUrl, validation } = validatedBySlot[i] ?? {};
     const identities = hit && safeUrl ? cachedIdentities(hit, safeUrl) : [];
@@ -476,6 +490,9 @@ async function readCachedRdSlots(
       missing.push(slot);
       if (hit && validation && !validation.acceptable) {
         logRejectedRdMedia(hit, validation, keyBase.mediaType, "cache", keyBase.imdbId, slot);
+        invalidations.push(
+          invalidateCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" })
+        );
       }
       if (hit && validation?.acceptable && duplicatesExistingHit) {
         console.warn(
@@ -488,9 +505,13 @@ async function readCachedRdSlots(
             title: hit.title,
           })
         );
+        invalidations.push(
+          invalidateCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" })
+        );
       }
     }
   });
+  await Promise.all(invalidations);
   return { hits, missing, occupiedIdentities };
 }
 
@@ -527,7 +548,13 @@ async function resolveRealDebridSlots(
   const resolvedPerSlot = await mapWithConcurrency(missing, RESOLVE_CONCURRENCY, async (slot) => {
     const options = slotOptions[slot];
     if (!options?.length) return null;
-    const resolved = await resolveSlotCandidate(options, rdToken, deadline, req.mediaType);
+    const resolved = await resolveSlotCandidate(
+      options,
+      rdToken,
+      deadline,
+      req.mediaType,
+      occupiedIdentities
+    );
     return resolved ? { slot, resolved } : null;
   });
 

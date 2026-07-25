@@ -43,6 +43,9 @@ mock.module("@/lib/tmdb", () => ({
 }));
 mock.module("./cached-stream", () => ({
   getFreshCachedStream: async (key: Parameters<typeof cacheKey>[0]) => cacheStore.get(cacheKey(key)) ?? null,
+  invalidateCachedStream: async (key: Parameters<typeof cacheKey>[0]) => {
+    cacheStore.delete(cacheKey(key));
+  },
   upsertCachedStream: async (key: Parameters<typeof cacheKey>[0], record: unknown) => {
     cacheStore.set(cacheKey(key), { ...(record as object) });
   },
@@ -219,11 +222,14 @@ describe("Real-Debrid roster — full + fast paths", () => {
   });
 
   it("full path: duplicate Torrentio hashes cannot occupy separate cold-roster slots", async () => {
-    const streams = buildStreams();
+    const streams = buildStreams() as Array<Record<string, unknown>>;
+    const original = streams.find((stream) => stream.infoHash === NATIVE_1080_HASHES[0]);
+    if (original) delete original.infoHash;
     streams.push({
       title: "Movie.2024.1080p.WEB-DL.H264-DUPLICATE\n👤 29 💾 3 GB ⚙️ X",
-      infoHash: NATIVE_1080_HASHES[0],
       fileIdx: 0,
+      // Same hash embedded in a different filename/resolve URL, with the
+      // explicit infoHash omitted just like the live Torrentio response.
       url: resolveProxyUrl(NATIVE_1080_HASHES[0], 0, "movie.1080p.duplicate.h264.mp4"),
     });
     mockTorrentioStreams(streams);
@@ -346,17 +352,34 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(new Set(sources.map((source) => source.url)).size).toBe(sources.length);
   });
 
+  it("full path: invalidates a bad warm row even when no replacement resolves", async () => {
+    const key = `${IMDB}|movie|0|0|native-1080-1|realdebrid`;
+    cacheStore.set(key, {
+      title: "Short clip with no available replacement",
+      source: SMALL_CLIP_HASH,
+      url: `http://127.0.0.1:${server.port}/cdn/${SMALL_CLIP_HASH}.mp4`,
+      compat: "native",
+    });
+    mockTorrentioStreams([]);
+
+    const sources = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(sources).toEqual([]);
+    expect(cacheStore.has(key)).toBe(false);
+  });
+
   it("full path: collapses duplicate warm slots and refills with an unoccupied release", async () => {
     const slots = ["native-2160", "safari-2160", "native-1080-1", "native-1080-2", "native-1080-3"];
     for (const slot of slots) {
       const duplicate1080 = slot === "native-1080-1" || slot === "native-1080-2";
-      const source = duplicate1080 ? NATIVE_1080_HASHES[0] : slot;
       const url = duplicate1080
         ? `http://127.0.0.1:${server.port}/cdn/${NATIVE_1080_HASHES[0]}.mp4`
         : `http://127.0.0.1:${server.port}/cdn/cached-${slot}.mp4`;
       cacheStore.set(`${IMDB}|movie|0|0|${slot}|realdebrid`, {
         title: `Cached ${slot}`,
-        source,
+        // Legacy rows can contain only the final direct URL, with no hash.
+        // The resolver must still reject a newly-resolved candidate that
+        // redirects back to this occupied object.
+        source: duplicate1080 ? url : slot,
         url,
         compat: slot === "safari-2160" ? "safari" : "native",
       });
