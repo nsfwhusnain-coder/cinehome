@@ -313,11 +313,20 @@ function buildRdSlotOptions(
   missing: DebridSlot[],
   occupiedIdentities: Set<string>
 ): Record<DebridSlot, DebridCandidate[]> {
-  const available = (items: DebridCandidate[]) =>
-    items.filter((candidate) => {
+  const available = (items: DebridCandidate[]) => {
+    const seen = new Set<string>();
+    return items.filter((candidate) => {
       const identity = candidateHashIdentity(candidate);
-      return !identity || !occupiedIdentities.has(identity);
+      if (identity && occupiedIdentities.has(identity)) return false;
+      // Torrentio can return the same hash more than once under slightly
+      // different labels. Deduplicate before lane allocation or those copies
+      // can still land in separate concurrent slots.
+      const candidateIdentity = identity ?? (candidate.url ? `candidate-url:${candidate.url}` : null);
+      if (candidateIdentity && seen.has(candidateIdentity)) return false;
+      if (candidateIdentity) seen.add(candidateIdentity);
+      return true;
     });
+  };
   const result: Record<DebridSlot, DebridCandidate[]> = {
     "native-2160": available(nativeCandidatesAt(candidates, 2160)),
     "safari-2160": available(safariCandidatesAt(candidates, 2160)),

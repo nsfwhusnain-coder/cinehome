@@ -372,3 +372,12 @@ First live deployment and follow-up:
   with a distinct release. Resolution remains parallel.
 - Focused validation/roster coverage after the allocator change: 13 passed.
   Entire playback/debrid suite: 212 passed, zero failed.
+- Live allocator verification improved Fight Club's uncached full response
+  from 13,789 ms to 5,926 ms and kept resolution/debrid success at 1/1. It
+  also revealed that Torrentio can repeat one info-hash under multiple labels;
+  disjoint lanes alone therefore still produced three distinct URLs across
+  four cache rows. The unoccupied candidate pool is now deduplicated by
+  info-hash (or source URL when no hash exists) before lane allocation.
+- Focused coverage is now 14 passed and includes a cold roster containing a
+  deliberately repeated Torrentio hash; all five resulting slot URLs must be
+  distinct.

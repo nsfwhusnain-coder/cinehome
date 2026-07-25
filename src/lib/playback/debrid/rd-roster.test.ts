@@ -218,6 +218,21 @@ describe("Real-Debrid roster — full + fast paths", () => {
     }
   });
 
+  it("full path: duplicate Torrentio hashes cannot occupy separate cold-roster slots", async () => {
+    const streams = buildStreams();
+    streams.push({
+      title: "Movie.2024.1080p.WEB-DL.H264-DUPLICATE\n👤 29 💾 3 GB ⚙️ X",
+      infoHash: NATIVE_1080_HASHES[0],
+      fileIdx: 0,
+      url: resolveProxyUrl(NATIVE_1080_HASHES[0], 0, "movie.1080p.duplicate.h264.mp4"),
+    });
+    mockTorrentioStreams(streams);
+
+    const sources = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(sources.length).toBe(5);
+    expect(new Set(sources.map((source) => source.url)).size).toBe(5);
+  });
+
   /**
    * The real "kept, not dropped" regression coverage (transcoder-link task):
    * a 4K HEVC-in-MKV release, when it's the top-ranked candidate in a class
