@@ -435,3 +435,23 @@ transcode routes return 503 while disabled, incompatible rows are visibly
 labelled and disabled in both server pickers, and auto-selection returns no
 default rather than entering the worker. Native-compatible Real-Debrid files
 continue to direct-play.
+
+Containment deployment verification:
+
+- authoritative runtime commit:
+  `c24512d7d59f4ec07b04e7cf50999adb139f5921`;
+- production image:
+  `sha256:f6e4a6cf7f074acfd524fd58b81206b554b41dc56c6324fbb14b5f5531582960`;
+- full playback/debrid suite: 216 passed, zero failed, 460 assertions;
+- production build compiled successfully; `tsc --noEmit` showed only the two
+  already-recorded fetch-mock cast diagnostics in
+  `debrid-credentials.test.ts`, with no new diagnostic;
+- container log confirms the worker is disabled, port 3040 is closed, and no
+  ffmpeg/transcoder process exists;
+- an authenticated `/api/transcode` request returned the intended 503 before
+  source resolution, so a signed-in client cannot recreate the incident;
+- exact browser QA expanded all 16 Fight Club server rows and found the
+  incompatible 4K debrid row rendered as `4K · unavailable`, accessibility
+  labelled `unavailable in this browser`, and natively disabled;
+- after deployment: healthy, SQLite `ok`, users 13, watchlist 17, progress 82,
+  cached streams 119; idle sample 424.6 MiB, 2.08% CPU, 355 PIDs.
