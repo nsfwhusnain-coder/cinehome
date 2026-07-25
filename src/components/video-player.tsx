@@ -24,6 +24,10 @@ import {
 } from "@/lib/playback/source-quality";
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
+import {
+  SourceAttemptController,
+  type SourceAttemptToken,
+} from "@/lib/playback/source-attempt";
 import { preresolvePlayback } from "@/lib/playback-preresolve";
 import {
   annotateLevelHeights,
@@ -150,13 +154,9 @@ const HLS_STALL_RECOVER_DEBOUNCE_MS = 1500;
 const HLS_MAX_NETWORK_RECOVERIES = 3;
 /** Engine-agnostic backstop: playhead-not-advancing-while-playing poll cadence. */
 const STALL_WATCHDOG_POLL_MS = 3_000;
-/** No forward progress for this long while "playing" counts as a real stall —
- * catches hangs that raise no `waiting`/error event at all (esp. DASH/native,
- * which previously had zero stall detection). A silent stall like this is
- * ALWAYS treated as "keep buffering at the 1080 floor" — it never counts
- * toward failover. Only hard errors (HTTP 4xx/5xx, fatal fragLoadError/
- * manifestLoadError, decode errors — handled in the engine-specific error
- * listeners below) ever mark a source failed. */
+/** No forward progress for this long while "playing" counts as a real stall.
+ * The shared source-attempt controller allows one engine recovery nudge; a
+ * second complete window without progress fails over. */
 const STALL_WATCHDOG_THRESHOLD_MS = 12_000;
 const STALL_WATCHDOG_MIN_ADVANCE_S = 0.34;
 /** Grace period after background discovery closes before re-checking for a
@@ -175,8 +175,6 @@ const STICKY_SOURCE_MIN_POSITION_S = 8;
 const HEALTHY_PLAY_LOCK_S = 2;
 /** Hard HTTP statuses that count toward immediate failover (CDN / proxy denials). */
 const HLS_HARD_HTTP_CODES = new Set([403, 404, 410, 502, 503, 520, 521, 522, 524]);
-/** Fail over after this many hard HTTP fragment/manifest errors in a row. */
-const HLS_HARD_HTTP_STORM_LIMIT = 2;
 /** If play never advances past t≈0 after load, fail over (stuck Aether/PNG ads). */
 /** Cold start: allow large pure-media level fetch after multi-variant master (R10). */
 const HLS_ZERO_PROGRESS_FAIL_MS = 22_000;
@@ -1201,14 +1199,19 @@ export function VideoPlayer({
   dockOpenRef.current = dockOpen;
   shortcutsOpenRef.current = shortcutsOpen;
   const networkRecoveriesRef = useRef(0);
-  const hardHttpStormRef = useRef(0);
   const lastStallRecoverAtRef = useRef(0);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Engine-agnostic playhead watchdog (task 7) — separate from the hls-specific
-   * event-driven recovery above; catches silent hangs with no waiting/error event.
-   * A stall detected here NEVER counts toward failover (owner's absolute "buffer
-   * at 1080p, never false-fail" policy) — it only nudges the engine to keep
-   * loading the held floor rung. */
+  /**
+   * One controller owns source identity and terminal-failure arbitration for
+   * every media engine. It prevents a late callback from a destroyed engine
+   * from failing whichever source happens to be current now.
+   */
+  const sourceAttemptControllerRef = useRef(new SourceAttemptController());
+  const invalidateSourceAttempt = useCallback(() => {
+    sourceAttemptControllerRef.current.invalidate();
+  }, []);
+  /** Engine-agnostic playhead watchdog baseline. The controller permits one
+   * recovery window before a still-dead attempt becomes terminal. */
   const stallWatchdogBaselineRef = useRef<{ t: number; pos: number }>({ t: 0, pos: 0 });
   /**
    * User's caption intent (on/off + language), independent of the per-stream
@@ -1254,6 +1257,7 @@ export function VideoPlayer({
   const mediaKey = `${mediaType ?? "movie"}:${tvId ?? title}:${tvSeason ?? ""}:${tvEpisode ?? ""}`;
 
   useEffect(() => {
+    invalidateSourceAttempt();
     failedSourceIdsRef.current.clear();
     setFailedSourceIds([]);
     userSelectedSourceRef.current = false;
@@ -1261,7 +1265,6 @@ export function VideoPlayer({
     qualityAutoUpgradeDoneRef.current = false;
     everPlayedRef.current = false;
     firstProgressSavedRef.current = false;
-    hardHttpStormRef.current = 0;
     userPausedRef.current = false;
     initialTimeAppliedRef.current = false;
     subtitleIntentRef.current = { on: false, lang: null };
@@ -1296,10 +1299,11 @@ export function VideoPlayer({
       resumeNoticeTimerRef.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- identity change only
-  }, [mediaKey, setCurrentTime, setError]);
+  }, [mediaKey, setCurrentTime, setError, invalidateSourceAttempt]);
 
   useEffect(() => {
     if (!orderedSources.length) {
+      invalidateSourceAttempt();
       setActiveSource(null);
       setBuffering(false);
       return;
@@ -1316,6 +1320,7 @@ export function VideoPlayer({
     if (stillValid && activeSource && pendingUrlRefreshRef.current) {
       const refreshed = orderedSources.find((s) => s.id === activeSource.id);
       if (refreshed && refreshed.url !== activeSource.url) {
+        invalidateSourceAttempt();
         pendingUrlRefreshRef.current = false;
         // Preserve playhead — the dying/expired stream still reflects where the
         // owner was; without capturing it the fresh hls.js instance restarts at 0.
@@ -1352,6 +1357,7 @@ export function VideoPlayer({
       autoUpgradedRef.current = true;
       initialTimeAppliedRef.current = false;
       setError(null);
+      invalidateSourceAttempt();
       setActiveSource(best);
       setBuffering(true);
       return;
@@ -1366,6 +1372,7 @@ export function VideoPlayer({
         }
         initialTimeAppliedRef.current = false;
         setError(null);
+        invalidateSourceAttempt();
         setActiveSource(best);
         setBuffering(true);
       }
@@ -1374,7 +1381,13 @@ export function VideoPlayer({
         setFailedSourceIds([]);
       }
     }
-  }, [orderedSources, activeSource, setBuffering, setError]);
+  }, [
+    orderedSources,
+    activeSource,
+    setBuffering,
+    setError,
+    invalidateSourceAttempt,
+  ]);
 
   /**
    * Discovery-closed re-arm (task 2): nothing previously re-evaluated the
@@ -1564,7 +1577,7 @@ export function VideoPlayer({
       }
       // Allow a fresh seek apply on the new stream (resume target kept above).
       initialTimeAppliedRef.current = false;
-      hardHttpStormRef.current = 0;
+      invalidateSourceAttempt();
       setError(null);
       setBuffering(true);
       // After first frame: compact chip only — never full-screen Resolving overlay.
@@ -1578,7 +1591,13 @@ export function VideoPlayer({
       }
       setServerDisplayName(getServerDisplayName(resolved.provider, resolved.label));
     },
-    [setError, setBuffering, setServerDisplayName, setCurrentTime]
+    [
+      setError,
+      setBuffering,
+      setServerDisplayName,
+      setCurrentTime,
+      invalidateSourceAttempt,
+    ]
   );
 
   /** Dock / settings server pick — locks out enrich auto-upgrade for this session. */
@@ -1819,34 +1838,63 @@ export function VideoPlayer({
    * timer, and the native `error` listener) so task 2's discovery-closed
    * re-arm and task 7's playhead watchdog can call the exact same path.
    */
-  const failActiveSource = useCallback(() => {
-    setLevelsPending(false);
-    const source = activeSourceRef.current;
-    if (source) markSourceFailed(source.id);
-    // Fatal hls/network → next source NOW. Never wait for scrape/enrich to finish.
-    if (tryNextSourceRef.current()) return;
-    // Only hold for more sources if we have literally nothing left to try
-    // AND enrich is still open — otherwise surface hard error immediately.
-    // Read roster via ref so this callback stays stable across enrich polls
-    // (otherwise the stream-setup effect re-tears hls.js every few seconds → R10 residual no-frame).
-    const roster = orderedSourcesRef.current;
-    const remaining = roster.filter(
-      (s) => !failedSourceIdsRef.current.has(s.id) && s.id !== source?.id
-    );
-    if (isDiscoveringRef.current && remaining.length === 0 && roster.length > 0) {
-      // All current sources failed but more may arrive — keep compact buffer, not full overlay.
-      setBuffering(true);
-      setError(null);
-      return;
-    }
-    if (isDiscoveringRef.current && remaining.length === 0 && roster.length === 0) {
-      setBuffering(true);
-      setError(null);
-      return;
-    }
-    setBuffering(false);
-    setError(ALL_SOURCES_FAILED_MSG);
-  }, [markSourceFailed, setBuffering, setError]);
+  const failActiveSource = useCallback(
+    (
+      reason = "terminal_error",
+      attempt = sourceAttemptControllerRef.current.currentToken()
+    ): boolean => {
+      if (!attempt || !sourceAttemptControllerRef.current.claimTerminal(attempt)) {
+        return false;
+      }
+      setLevelsPending(false);
+      const source = activeSourceRef.current;
+      // The generation check above owns race safety. Keep this source-id
+      // invariant explicit so a future transition cannot reintroduce stale-id
+      // failover by forgetting to invalidate its old attempt.
+      if (!source || source.id !== attempt.sourceId) {
+        return false;
+      }
+      markSourceFailed(attempt.sourceId);
+      console.info(
+        "[playback-failure]",
+        JSON.stringify({
+          sourceId: attempt.sourceId,
+          generation: attempt.generation,
+          reason,
+          at: Date.now(),
+        })
+      );
+      // Fatal media/network failure → next source now. Never wait for enrich.
+      if (tryNextSourceRef.current()) return true;
+      // Only hold for more sources if we have literally nothing left to try
+      // AND enrich is still open — otherwise surface hard error immediately.
+      // Read roster via ref so this callback stays stable across enrich polls.
+      const roster = orderedSourcesRef.current;
+      const remaining = roster.filter(
+        (s) => !failedSourceIdsRef.current.has(s.id) && s.id !== source.id
+      );
+      if (isDiscoveringRef.current && remaining.length === 0) {
+        setBuffering(true);
+        setError(null);
+        return true;
+      }
+      setBuffering(false);
+      setError(ALL_SOURCES_FAILED_MSG);
+      return true;
+    },
+    [markSourceFailed, setBuffering, setError]
+  );
+
+  const noteHardTransportFailure = useCallback(
+    (attempt: SourceAttemptToken, reason: string): void => {
+      const signal =
+        sourceAttemptControllerRef.current.noteHardTransportFailure(attempt);
+      if (signal === "terminal") {
+        failActiveSource(reason, attempt);
+      }
+    },
+    [failActiveSource]
+  );
 
   // Fail over even while enrich is running — never wait for scrape complete.
   // Wall duration is adaptive (R8): cold multi-source ~20s; resume / sole source ~28s.
@@ -1865,7 +1913,7 @@ export function VideoPlayer({
     const timer = window.setTimeout(() => {
       if (everPlayedRef.current) return;
       if (usePlayerStore.getState().error) return;
-      failActiveSource();
+      failActiveSource("first_frame_timeout");
     }, wallMs);
     return () => window.clearTimeout(timer);
     // orderedSources read at arm time only — do not re-arm when enrich appends.
@@ -1961,6 +2009,9 @@ export function VideoPlayer({
       effectiveStreamType === "hls" ||
       (effectiveStreamType !== "mp4" && effectiveStreamType !== "dash" && effectiveSrc.includes(".m3u8"));
 
+    const sourceAttempt = sourceAttemptControllerRef.current.begin(
+      activeSourceRef.current?.id ?? effectiveSrc
+    );
     let dashCancelled = false;
     let zeroProgressTimer: ReturnType<typeof setTimeout> | null = null;
     let onTimeProgress: (() => void) | null = null;
@@ -1980,7 +2031,7 @@ export function VideoPlayer({
         const t = v?.currentTime ?? 0;
         const ready = v?.readyState ?? 0;
         if (t < 0.4 && ready < 3 && !video.ended) {
-          failActiveSource();
+          failActiveSource("zero_progress", sourceAttempt);
         }
       }, delayMs) as unknown as ReturnType<typeof setTimeout>;
     };
@@ -2041,9 +2092,7 @@ export function VideoPlayer({
           const dashjs = mod.default;
           if (!dashjs.supportsMediaSource()) {
             setLevelsPending(false);
-            if (tryNextSourceRef.current()) return;
-            setBuffering(false);
-            setError("Your browser can't play DASH streams.");
+            failActiveSource("dash_not_supported", sourceAttempt);
             return;
           }
           const player = dashjs.MediaPlayer().create();
@@ -2053,6 +2102,39 @@ export function VideoPlayer({
               xhrSetup: (xhr: XMLHttpRequest) => {
                 // Cookies only for same-origin home proxy; Worker uses signed tokens.
                 if (isHomeHlsProxy) xhr.withCredentials = true;
+                // dash.js may keep retrying 4xx/5xx responses without emitting
+                // its terminal ERROR event. Bind transport failures to this
+                // exact source generation so two hard failures deterministically
+                // advance while abort callbacks from teardown are ignored.
+                let failureReported = false;
+                const reportFailure = (reason: string) => {
+                  if (failureReported) return;
+                  failureReported = true;
+                  noteHardTransportFailure(sourceAttempt, reason);
+                };
+                xhr.addEventListener(
+                  "error",
+                  () => reportFailure("dash_transport_error"),
+                  { once: true }
+                );
+                xhr.addEventListener(
+                  "timeout",
+                  () => reportFailure("dash_transport_timeout"),
+                  { once: true }
+                );
+                xhr.addEventListener(
+                  "loadend",
+                  () => {
+                    const status = xhr.status;
+                    // status 0 on loadend alone is frequently an intentional
+                    // seek/teardown abort. Real network failures are reported
+                    // by the error/timeout listeners above.
+                    if (status >= 400) {
+                      reportFailure(`dash_http_${status}`);
+                    }
+                  },
+                  { once: true }
+                );
               },
             },
           } as Parameters<typeof player.updateSettings>[0]);
@@ -2146,12 +2228,12 @@ export function VideoPlayer({
           // a separate event this listener never sees), so this is already
           // correctly scoped to "hard errors only" per task 2's failover rule.
           player.on(dashjs.MediaPlayer.events.ERROR, () => {
-            failActiveSource();
+            failActiveSource("dash_error", sourceAttempt);
           });
         })
         .catch(() => {
           if (dashCancelled) return;
-          failActiveSource();
+          failActiveSource("dash_initialize_error", sourceAttempt);
         });
     } else if (useHls) {
       if (Hls.isSupported()) {
@@ -2424,12 +2506,8 @@ export function VideoPlayer({
 
           // Non-fatal hard HTTP (403/502 segment denials) — storm → failover once.
           if (!data.fatal && isHardHttp) {
-            hardHttpStormRef.current += 1;
-            if (hardHttpStormRef.current >= HLS_HARD_HTTP_STORM_LIMIT) {
-              hardHttpStormRef.current = 0;
-              failActiveSource();
-              return;
-            }
+            noteHardTransportFailure(sourceAttempt, `hls_http_${httpCode}`);
+            if (!sourceAttemptControllerRef.current.isCurrent(sourceAttempt)) return;
           }
 
           if (!data.fatal) {
@@ -2456,12 +2534,8 @@ export function VideoPlayer({
           }
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
             if (isHardHttp) {
-              hardHttpStormRef.current += 1;
-              if (hardHttpStormRef.current >= HLS_HARD_HTTP_STORM_LIMIT) {
-                hardHttpStormRef.current = 0;
-                failActiveSource();
-                return;
-              }
+              noteHardTransportFailure(sourceAttempt, `hls_http_${httpCode}`);
+              if (!sourceAttemptControllerRef.current.isCurrent(sourceAttempt)) return;
             }
             if (networkRecoveriesRef.current < HLS_MAX_NETWORK_RECOVERIES) {
               networkRecoveriesRef.current += 1;
@@ -2486,7 +2560,7 @@ export function VideoPlayer({
             onRetrySourcesRef.current();
             return;
           }
-          failActiveSource();
+          failActiveSource("hls_fatal_error", sourceAttempt);
         });
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         // Native HLS (Safari/AVFoundation) — documented limitation (task 3):
@@ -2598,6 +2672,9 @@ export function VideoPlayer({
 
     return () => {
       dashCancelled = true;
+      // reset()/destroy() can synchronously abort XHR and emit loadend. Make
+      // that callback stale before teardown starts.
+      sourceAttemptControllerRef.current.invalidate(sourceAttempt);
       if (stallTimerRef.current) {
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
@@ -2623,6 +2700,7 @@ export function VideoPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stream identity only
   }, [
     effectiveSrc,
+    activeSource?.id,
     hasStream,
     effectiveStreamType,
     resetStream,
@@ -2635,6 +2713,7 @@ export function VideoPlayer({
     syncHlsTracks,
     syncNativeTracks,
     failActiveSource,
+    noteHardTransportFailure,
     recordDetectedHeight,
   ]);
 
@@ -2830,7 +2909,8 @@ export function VideoPlayer({
         stallTimerRef.current = null;
       }
       networkRecoveriesRef.current = 0;
-      hardHttpStormRef.current = 0;
+      const attempt = sourceAttemptControllerRef.current.currentToken();
+      if (attempt) sourceAttemptControllerRef.current.noteProgress(attempt);
       setBuffering(false);
       setIsSwitchingServer(false);
       if (video.readyState >= 2 && (video.currentTime > 0.25 || video.duration > 0)) {
@@ -2874,7 +2954,7 @@ export function VideoPlayer({
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
       }
-      failActiveSource();
+      failActiveSource("media_element_error");
     };
     const onEnterPip = () => setIsPip(true);
     const onLeavePip = () => setIsPip(false);
@@ -2887,13 +2967,9 @@ export function VideoPlayer({
      * `<video>` element, so it works the same regardless of which engine
      * (hls.js/dash.js/native) currently drives it.
      *
-     * This NEVER fails the source over by itself — a silent stall is always
-     * "keep buffering at the 1080 floor" (owner's absolute policy), not a
-     * failover trigger. It only nudges whichever engine is attached to keep
-     * loading. Preserved dead-end protections that DO still fail over live
-     * elsewhere: the cold-start zero-progress watchdog (never got moving at
-     * all) and the hard-error listeners (HTTP 4xx/5xx, fatal network/decode
-     * errors) below.
+     * One full no-progress window nudges the current engine. If a second full
+     * window expires without actual playhead progress, the generation-bound
+     * controller fails over. Real progress resets that recovery budget.
      */
     stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
     const watchdogTimer = setInterval(() => {
@@ -2906,14 +2982,25 @@ export function VideoPlayer({
       const baseline = stallWatchdogBaselineRef.current;
       const advanced = video.currentTime - baseline.pos;
       if (advanced > STALL_WATCHDOG_MIN_ADVANCE_S) {
+        const attempt = sourceAttemptControllerRef.current.currentToken();
+        if (attempt) sourceAttemptControllerRef.current.noteProgress(attempt);
         stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
         return;
       }
       if (Date.now() - baseline.t < STALL_WATCHDOG_THRESHOLD_MS) return;
 
-      // No forward progress for the full window despite "playing" — a
-      // bandwidth/buffer stall at the floor. Keep nudging; never fail over.
+      const attempt = sourceAttemptControllerRef.current.currentToken();
+      if (!attempt) return;
+      const stallSignal =
+        sourceAttemptControllerRef.current.noteSilentStall(attempt);
       stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
+      if (stallSignal === "terminal") {
+        failActiveSource("silent_stall", attempt);
+        return;
+      }
+      if (stallSignal !== "recover") return;
+
+      // First full no-progress window: one engine-specific recovery nudge.
       const hls = hlsRef.current;
       if (hls) {
         recoverHlsWithoutDownshift(hls);
