@@ -4,6 +4,7 @@ import {
   cinemaosHash,
   cinemaosQualityRank,
   cinemaosStreamLabel,
+  isCinemaosRateLimitedWorkerUrl,
   isCinemaosEnglish,
   parseCinemaosQuality,
   sortCinemaosStreams,
@@ -11,6 +12,26 @@ import {
   CINEMAOS_OUTER_TIMEOUT_MS,
   CINEMAOS_TIMEOUT_MS,
 } from "./cinemaos";
+
+describe("CinemaOS worker quarantine", () => {
+  it("drops the rate-limited worker DASH fallback but keeps direct MP4 CDNs", () => {
+    expect(
+      isCinemaosRateLimitedWorkerUrl(
+        "https://holly.cinemaos.workers.dev/p/signed"
+      )
+    ).toBe(true);
+    expect(
+      isCinemaosRateLimitedWorkerUrl(
+        "https://hcdn.hakunaymatata.com/resource/movie"
+      )
+    ).toBe(false);
+    expect(
+      isCinemaosRateLimitedWorkerUrl(
+        "https://macdn.hakunaymatata.com/resource/movie"
+      )
+    ).toBe(false);
+  });
+});
 
 describe("cinemaosHash", () => {
   it("matches golden vector for fixed minuteBucket", () => {

@@ -108,6 +108,21 @@ export function cinemaosQualityRank(quality: string): number {
   return 0;
 }
 
+/**
+ * CinemaOS sometimes returns a worker-wrapped DASH fallback alongside direct
+ * progressive files. In real playback the MPD succeeds but its bcdn media
+ * request immediately rate-limits (HTTP 429); two separate titles reproduced
+ * this while sibling hcdn/macdn MP4 files decoded normally.
+ */
+export function isCinemaosRateLimitedWorkerUrl(raw: string): boolean {
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return host === "cinemaos.workers.dev" || host.endsWith(".cinemaos.workers.dev");
+  } catch {
+    return false;
+  }
+}
+
 function extractLangCode(text: string): string | null {
   const paren = text.match(/\(([^)]+)\)/);
   if (paren?.[1]) {
@@ -268,7 +283,13 @@ export async function resolveCinemaos(
     const seen = new Set<string>();
     for (const raw of body.streams) {
       const streamUrl = typeof raw.url === "string" ? raw.url.trim() : "";
-      if (!streamUrl || seen.has(streamUrl)) continue;
+      if (
+        !streamUrl ||
+        seen.has(streamUrl) ||
+        isCinemaosRateLimitedWorkerUrl(streamUrl)
+      ) {
+        continue;
+      }
       seen.add(streamUrl);
       const name = String(raw.name ?? "");
       const stitle = String(raw.title ?? "");

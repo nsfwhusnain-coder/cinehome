@@ -264,7 +264,7 @@ Deployment and first measurement:
   480p DASH source whose expanded media segment passed the new probe; it is
   being exercised separately through the real player.
 
-### Accessible row identity (pending deploy)
+### Accessible row identity
 
 Coherence also exposed two CinemaOS quality variants sharing the same friendly
 Greek server name. The visible resolution badges distinguished the rows, but
@@ -272,3 +272,31 @@ their accessible names did not and automation could not address either row
 unambiguously. Server rows now expose their stable source ID in
 `data-source-id`, and their accessible label includes friendly name, quality,
 and live/failure state. Names remain stable while row identity is exact.
+
+- Deployed as authoritative commit
+  `544a5a318305f4a07cad672e73f3c520953ef160`; production image
+  `sha256:a5650ee118d0ec64c545a66db7d38d8a71e57033c11903982a327aff1ab3e2bf`.
+- Post-deploy service health and user invariants remained clean.
+
+### CinemaOS worker quarantine (pending deploy)
+
+The exact Coherence row could then be exercised twice. Both runs reproduced
+the same transport sequence: CinemaOS MPD HTTP 200, followed by HTTP 429 from
+`bcdn.hakunaymatata.com` during dash.js's first real media burst, then
+generation-safe failover to Luna. Fight Club's worker DASH had already failed
+the same way. The source was therefore a provider-path failure, not a player
+lifecycle race.
+
+Direct inspection of the current CinemaOS roster showed the useful distinction:
+
+- Direct `hcdn.hakunaymatata.com` / `macdn.hakunaymatata.com` sources returned
+  ranged `video/mp4` with an `ftyp` box.
+- `ffprobe` on Coherence's top direct source confirmed H.264/AAC,
+  1920x816, 5,286.3 seconds, and 1.54 GB: real feature content, not a trailer.
+- The `*.cinemaos.workers.dev` fallback returned DASH XML and its bcdn child
+  rate-limited under actual playback.
+
+The provider now quarantines only the reproducibly broken worker fallback
+before it enters fast/full rosters, while retaining the verified direct MP4
+sources. The smoke report now records only safe upstream host and path kind
+(never token or URL) for per-hop transport diagnosis.

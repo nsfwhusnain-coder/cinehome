@@ -522,6 +522,33 @@ function classifyResponse(response: Response): string | null {
   return null;
 }
 
+function safeProxyTarget(responseUrl: string): {
+  upstreamHost: string | null;
+  upstreamPathKind: string | null;
+} {
+  try {
+    const encoded = new URL(responseUrl).searchParams.get("u");
+    if (!encoded) return { upstreamHost: null, upstreamPathKind: null };
+    const upstream = new URL(Buffer.from(encoded, "base64url").toString("utf8"));
+    const path = upstream.pathname.toLowerCase();
+    const upstreamPathKind =
+      path.includes(".mpd")
+        ? "mpd"
+        : path.includes(".m3u8")
+          ? "m3u8"
+          : path.includes(".m4s")
+            ? "m4s"
+            : path.includes(".mp4")
+              ? "mp4"
+              : path.includes(".ts")
+                ? "ts"
+                : "other";
+    return { upstreamHost: upstream.hostname, upstreamPathKind };
+  } catch {
+    return { upstreamHost: null, upstreamPathKind: null };
+  }
+}
+
 async function readBrowserState(page: Page, started: number): Promise<BrowserState | null> {
   return page.evaluate(
     ({ baselineStart }) => {
@@ -997,12 +1024,14 @@ async function playbackScenario(
       }
       hlsSessionStats.set(observedSession, previous);
     }
+    const safeTarget = safeProxyTarget(response.url());
     network.push({
       atMs: Date.now() - started,
       kind,
       status: response.status(),
       contentType: response.headers()["content-type"] || null,
       contentLength: Number(response.headers()["content-length"] || "") || null,
+      ...safeTarget,
     });
     if (kind === "playback_fast" || kind === "playback_full") {
       try {
