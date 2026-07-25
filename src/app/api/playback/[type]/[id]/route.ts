@@ -1,0 +1,278 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getAuthenticatedUser } from "@/lib/auth";
+import { getProvider } from "@/lib/playback";
+import type { MediaType, PlaybackResponse, PlaybackSource } from "@/lib/playback";
+import { isPlaybackFastPathEnabled } from "@/lib/feature-flags";
+import { pickDefaultSource } from "@/lib/playback/source-quality";
+import { RateLimiter } from "@/lib/rate-limit";
+
+/**
+ * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
+ * (hover-prefetch, the fast cache-only check that fires on every card/detail
+ * view) never gets throttled while the genuinely expensive paths do:
+ *
+ * - `fullResolveLimiter` bounds `fast=false` requests, which trigger a live
+ *   Playwright scrape (`/scrape`, not the cheap `/prefetch`) plus a full
+ *   Real-Debrid/TorBox roster resolve. A single normal watch session
+ *   (see `useWatchPlayback` in src/hooks/use-playback.ts) fires one initial
+ *   full request plus up to `MAX_SOURCE_POLL_REFETCHES` (5) progressive
+ *   polls over ~30s — comfortably inside this budget.
+ * - `noCacheResolveLimiter` bounds `nocache=1` requests specifically (admin
+ *   -only — see below), which skip even the raw-scrape cache and force a
+ *   brand new scrape + debrid resolve every single call.
+ */
+const FULL_RESOLVE_LIMIT = 30;
+const FULL_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
+const fullResolveLimiter = new RateLimiter({
+  limit: FULL_RESOLVE_LIMIT,
+  windowMs: FULL_RESOLVE_WINDOW_MS,
+});
+
+const NOCACHE_RESOLVE_LIMIT = 6;
+const NOCACHE_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
+const noCacheResolveLimiter = new RateLimiter({
+  limit: NOCACHE_RESOLVE_LIMIT,
+  windowMs: NOCACHE_RESOLVE_WINDOW_MS,
+});
+
+function tooManyRequests(retryAfterMs: number, message: string): NextResponse {
+  return NextResponse.json(
+    { error: message },
+    {
+      status: 429,
+      headers: { "Retry-After": String(Math.max(1, Math.ceil(retryAfterMs / 1000))) },
+    }
+  );
+}
+
+/**
+ * GET /api/playback/movie/550
+ * GET /api/playback/tv/1399?season=1&episode=1
+ *
+ * Resolves playback for a title through the currently-configured PlaybackProvider
+ * (see src/lib/playback/index.ts) and returns a PlaybackResponse.
+ */
+export async function GET(
+  req: NextRequest,
+  ctx: { params: Promise<{ type: string; id: string }> }
+) {
+  const user = await getAuthenticatedUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const userId = user.id;
+
+  const { type, id } = await ctx.params;
+  if (type !== "movie" && type !== "tv") {
+    return NextResponse.json({ error: "Invalid media type" }, { status: 400 });
+  }
+
+  const tmdbId = Number(id);
+  if (!tmdbId) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+
+  const url = new URL(req.url);
+  const seasonParam = url.searchParams.get("season");
+  const episodeParam = url.searchParams.get("episode");
+
+  // TV requires S/E for scrapers. Default S1E1 when omitted (card Play, deep links).
+  let season = seasonParam ? Number(seasonParam) : undefined;
+  let episode = episodeParam ? Number(episodeParam) : undefined;
+  if (type === "tv") {
+    if (!Number.isFinite(season) || (season as number) < 1) season = 1;
+    if (!Number.isFinite(episode) || (episode as number) < 1) episode = 1;
+  }
+  const wantFast =
+    url.searchParams.get("fast") === "1" || url.searchParams.get("prefetch") === "1";
+  // Admin flag can disable Luna fast-path; full resolve only.
+  const fastPathOk = await isPlaybackFastPathEnabled();
+  const fast = wantFast && fastPathOk;
+  // KD-sec fix #4: nocache=1 forces a brand-new Playwright scrape + debrid
+  // resolve, skipping every cache. A non-admin's nocache request is silently
+  // downgraded to a normal cached resolve rather than erroring — that keeps
+  // ordinary playback smooth (no confusing failure) while still removing the
+  // abuse lever from every non-admin account.
+  const noCacheRequested = url.searchParams.get("nocache") === "1";
+  const noCache = noCacheRequested && user.isAdmin;
+
+  if (!fast) {
+    const fullCheck = fullResolveLimiter.consume(userId);
+    if (!fullCheck.allowed) {
+      return tooManyRequests(
+        fullCheck.retryAfterMs,
+        "Too many playback resolve requests. Please wait a moment and try again."
+      );
+    }
+  }
+  if (noCache) {
+    const noCacheCheck = noCacheResolveLimiter.consume(userId);
+    if (!noCacheCheck.allowed) {
+      return tooManyRequests(
+        noCacheCheck.retryAfterMs,
+        "Too many forced refreshes. Please wait a few minutes and try again."
+      );
+    }
+  }
+  // Client Settings preferred quality (1080 / 2160 / auto). Optional.
+  const qualityRaw = url.searchParams.get("qualityHint") ?? url.searchParams.get("quality");
+  let qualityHint: "auto" | number | undefined;
+  if (qualityRaw === "auto") qualityHint = "auto";
+  else if (qualityRaw) {
+    const n = Number(qualityRaw);
+    if (Number.isFinite(n) && n >= 1080) qualityHint = n;
+  }
+
+  const {
+    getCachedPlayback,
+    setCachedPlayback,
+    playbackCacheKey,
+    PLAYBACK_TTL_MS,
+    PLAYBACK_PARTIAL_TTL_MS,
+  } = await import("@/lib/server-cache");
+  // Per-user key: proxy URLs embed HLS session ids. Cross-user warm is raw scrape.
+  const cacheKey = playbackCacheKey(type, tmdbId, season, episode, fast, userId);
+
+  if (!noCache) {
+    const cached = getCachedPlayback<unknown>(cacheKey);
+    if (cached) {
+      return NextResponse.json(cached, {
+        headers: {
+          "Cache-Control": "private, max-age=120",
+          "X-Playback-Cache": "HIT",
+        },
+      });
+    }
+  }
+
+  const provider = await getProvider();
+
+  // PREMIUM debrid tier (owner's Real-Debrid + Torrentio, primary/fast/
+  // high-volume source) — kicked off in PARALLEL with the base embed resolve
+  // on both paths:
+  //   - fast/prefetch: `resolveFastDebridSourcesSafely` is CACHE-ONLY — it
+  //     checks the single best browser-safe (native H.264/MP4) cached source
+  //     with a bounded DB read and NEVER performs a live Torrentio/RD network
+  //     resolve on this path (that would spend seconds on every cold-cache
+  //     request for ~no benefit, since the client already fires a parallel
+  //     `full` request that resolves the entire roster live). A cache hit
+  //     returns near-instantly; a cache miss returns [] immediately and the
+  //     embed sources serve alone — RD can never delay this response. The
+  //     full live roster resolve (Safari-4K, additional native 1080p
+  //     releases, and the cold-cache pick itself if there was one) always
+  //     still happens, entirely in the background, so a follow-up full
+  //     resolve or the next repeat view finds a warm, richer cache.
+  //   - full: `resolveDebridSourcesSafely` resolves (or reads from cache)
+  //     the entire RD roster + the TorBox sibling tier, live if needed.
+  // No-ops to [] when neither REAL_DEBRID_API_TOKEN nor TORBOX_API_KEY is
+  // set, or anything in the tier fails.
+  const debridPromise = fast
+    ? resolveFastDebridSourcesSafely({
+        tmdbId,
+        mediaType: type as MediaType,
+        season,
+        episode,
+      })
+    : resolveDebridSourcesSafely({
+        tmdbId,
+        mediaType: type as MediaType,
+        season,
+        episode,
+      });
+
+  const [result, debridSources] = await Promise.all([
+    provider.resolve({
+      tmdbId,
+      mediaType: type as MediaType,
+      season,
+      episode,
+      userId,
+      fast,
+      noCache,
+      qualityHint,
+    }),
+    debridPromise,
+  ]);
+
+  mergeDebridSources(result, debridSources, qualityHint);
+
+  // Cache available resolves for warm Play. Partial → short TTL so poll advances.
+  if (!noCache && result && result.status !== "error") {
+    const ttl = result.partial ? PLAYBACK_PARTIAL_TTL_MS : PLAYBACK_TTL_MS;
+    setCachedPlayback(cacheKey, result, ttl);
+  }
+
+  return NextResponse.json(result, {
+    headers: {
+      "Cache-Control": "private, max-age=120",
+      "X-Playback-Cache": "MISS",
+    },
+  });
+}
+
+/**
+ * Dynamically imported so the Prisma-backed debrid module only loads on the
+ * full resolve path. Wrapped in try/catch so an import or resolve failure
+ * never breaks the base (embed) response.
+ */
+async function resolveDebridSourcesSafely(req: {
+  tmdbId: number;
+  mediaType: MediaType;
+  season?: number;
+  episode?: number;
+}): Promise<PlaybackSource[]> {
+  try {
+    const { resolveDebridSources } = await import("@/lib/playback/debrid");
+    return await resolveDebridSources(req);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fast/prefetch-path counterpart — cache-only check for the single best
+ * native RD source, hard-bounded to its own short defensive deadline
+ * internally (see `resolveFastDebridSources` in
+ * src/lib/playback/debrid/index.ts — it never performs a live network
+ * resolve on this path). Wrapped in try/catch (mirroring
+ * `resolveDebridSourcesSafely`) so an import or resolve failure never breaks
+ * the base (embed) fast response.
+ */
+async function resolveFastDebridSourcesSafely(req: {
+  tmdbId: number;
+  mediaType: MediaType;
+  season?: number;
+  episode?: number;
+}): Promise<PlaybackSource[]> {
+  try {
+    const { resolveFastDebridSources } = await import("@/lib/playback/debrid");
+    return await resolveFastDebridSources(req);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Merge debrid sources into an already-resolved response — the existing
+ * scoreSource/pickDefaultSource ranking (source-quality.ts) re-ranks the
+ * combined roster and may promote a debrid source to default. If the base
+ * roster came back empty (error/not_configured) but debrid found something,
+ * promote the response to "available" so the premium tier can stand alone.
+ */
+function mergeDebridSources(
+  result: PlaybackResponse,
+  debridSources: PlaybackSource[],
+  qualityHint?: "auto" | number
+): void {
+  if (!debridSources.length) return;
+  const merged = [...(result.sources ?? []), ...debridSources];
+  result.sources = merged;
+  const best = pickDefaultSource(merged, null, qualityHint ?? "auto") ?? merged[0];
+  if (!best) return;
+  result.streamUrl = best.url;
+  if (result.status === "error" || result.status === "not_configured") {
+    result.status = "available";
+    result.message = undefined;
+    result.action = undefined;
+  }
+}

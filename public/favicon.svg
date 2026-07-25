@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Flat AB mark — NEVER glass. Contrasts with browser tab chrome. -->
+  <style>
+    .ab-tile { fill: #141419; }
+    .ab-letters { fill: #F4F4F7; }
+    @media (prefers-color-scheme: dark) {
+      .ab-tile { fill: #F2F2F5; }
+      .ab-letters { fill: #0E0E12; }
+    }
+  </style>
+  <!-- radius 25% of 56-content in 64 viewBox ≈ 14 on 56 → rx=14 for 56x56 rect at pad 4 -->
+  <rect class="ab-tile" x="4" y="4" width="56" height="56" rx="14"/>
+  <text
+    class="ab-letters"
+    x="32"
+    y="40.8"
+    text-anchor="middle"
+    font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    font-size="29"
+    font-weight="800"
+    letter-spacing="-0.02em"
+  >AB</text>
+</svg>

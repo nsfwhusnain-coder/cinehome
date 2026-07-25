@@ -1,0 +1,18 @@
+# CineHome HLS edge proxy — Cloudflare Worker
+# Deploy: cd workers/hls-proxy && npx wrangler deploy
+# Requires: wrangler login (or --temporary for preview)
+#
+# Secrets (set after deploy):
+#   npx wrangler secret put PROXY_SECRET
+# Must match WORKER_PROXY_SECRET on the CineHome server.
+
+name = "cinehome-hls-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# Free-tier friendly. Auth is HMAC on every request — no open proxy.
+
+[vars]
+# Comma-separated origins allowed for CORS (your CineHome URL(s))
+# Override per-env; also set WORKER_ALLOWED_ORIGINS on server for docs.
+ALLOWED_ORIGINS = "http://192.168.1.107:4445,http://100.89.184.84:4445,http://localhost:3000,http://localhost:4445"

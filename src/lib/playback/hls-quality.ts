@@ -1,0 +1,253 @@
+import type { QualityLevel } from "@/stores/player-store";
+
+export interface QualityOption {
+  index: number;
+  label: string;
+  /** Effective rung height (2160 for 4K) — lets callers reason about the
+   * option without re-deriving it from bitrate. */
+  height: number;
+  /**
+   * True on the single highest rung when the whole ladder tops out below
+   * the 1080p product floor (e.g. a 720p-only source) — UI badges this as
+   * "max available" instead of implying more HD headroom exists above it.
+   */
+  isMaxAvailable?: boolean;
+}
+
+/**
+ * Approximate resolution from bitrate (bps) when manifest omits height.
+ * Conservative low-end thresholds so fixed 1080p prefs do not land on 480/720
+ * when the ladder only exposes bitrate (common on proxy playlists).
+ */
+export function deriveHeightFromBitrate(bitrate: number): number {
+  if (bitrate >= 12_000_000) return 2160;
+  if (bitrate >= 6_000_000) return 1440;
+  // Many 1080p ladders sit ~2.5–5 Mbps after re-encode — do not classify as 720.
+  if (bitrate >= 2_500_000) return 1080;
+  if (bitrate >= 1_200_000) return 720;
+  if (bitrate >= 700_000) return 480;
+  if (bitrate >= 400_000) return 360;
+  return 0;
+}
+
+export function effectiveLevelHeight(level: Pick<QualityLevel, "height"> & { bitrate?: number }): number {
+  if (level.height > 0) return level.height;
+  if (level.bitrate && level.bitrate > 0) return deriveHeightFromBitrate(level.bitrate);
+  return 0;
+}
+
+/** Product floor — default start prefers 1080p and up when the source has it. */
+export const MIN_QUALITY_OPTION_HEIGHT = 1080;
+
+/**
+ * Build the concrete (non-Auto) quality rungs for the picker.
+ *
+ * Shows **every distinct height** on the active source's ladder (4K → 360p),
+ * so the user can switch freely. Default *playback* still starts at ≥1080
+ * when available (`pickDefaultQualityIndex`); the menu is not filtered to
+ * HD-only (that hid 720/480 and made single-rung 720 look like "only option").
+ *
+ * When the whole ladder tops out below 1080, the top rung is flagged
+ * `isMaxAvailable` so the UI can badge it honestly.
+ *
+ * "Auto" is not in this list — the dock renders it as its own first row.
+ */
+export function buildQualityOptions(levels: QualityLevel[]): QualityOption[] {
+  const withHeights = levels
+    .map((l) => ({ ...l, height: effectiveLevelHeight(l) }))
+    .filter((l) => l.height > 0)
+    .sort((a, b) => b.height - a.height);
+
+  if (!withHeights.length) return [];
+
+  const ladderMax = withHeights[0]!.height;
+  const hasHd = ladderMax >= MIN_QUALITY_OPTION_HEIGHT;
+
+  const seenHeights = new Set<number>();
+  const options: QualityOption[] = [];
+  for (const level of withHeights) {
+    if (seenHeights.has(level.height)) continue;
+    seenHeights.add(level.height);
+    options.push({
+      index: level.index,
+      height: level.height,
+      label: level.height >= 2160 ? "4K" : `${level.height}p`,
+    });
+  }
+
+  if (!hasHd && options.length > 0) {
+    options[0]!.isMaxAvailable = true;
+  }
+
+  return options;
+}
+
+/**
+ * Annotate hls.js levels with heights when the master omits RESOLUTION.
+ * Prefer: native height → bitrate derive → scrape ladder (desc) by rank → source max.
+ */
+export function annotateLevelHeights(
+  levels: ReadonlyArray<QualityLevel>,
+  sourceLadder: ReadonlyArray<number> = [],
+  sourceMaxHeight = 0
+): QualityLevel[] {
+  if (!levels.length) return [];
+
+  const ladderDesc = [...sourceLadder]
+    .filter((h) => h > 0)
+    .sort((a, b) => b - a);
+
+  // hls.js levels are usually bandwidth-ascending; map highest bitrate → highest ladder rung.
+  const byBitrateAsc = levels
+    .map((l, order) => ({ l, order, br: l.bitrate ?? 0 }))
+    .sort((a, b) => a.br - b.br || a.order - b.order);
+
+  const heightByIndex = new Map<number, number>();
+  if (ladderDesc.length > 0 && levels.length > 1) {
+    // Align lowest bitrate level with lowest ladder rung, highest with highest.
+    const ladderAsc = [...ladderDesc].sort((a, b) => a - b);
+    for (let i = 0; i < byBitrateAsc.length; i++) {
+      const level = byBitrateAsc[i]!;
+      const native = effectiveLevelHeight(level.l);
+      if (native > 0) {
+        heightByIndex.set(level.l.index, native);
+        continue;
+      }
+      // Proportionally map into ladder
+      const rungIdx =
+        byBitrateAsc.length === 1
+          ? ladderAsc.length - 1
+          : Math.round((i / (byBitrateAsc.length - 1)) * (ladderAsc.length - 1));
+      heightByIndex.set(level.l.index, ladderAsc[Math.min(rungIdx, ladderAsc.length - 1)]!);
+    }
+  }
+
+  return levels.map((l) => {
+    let height = effectiveLevelHeight(l);
+    if (height <= 0 && heightByIndex.has(l.index)) {
+      height = heightByIndex.get(l.index)!;
+    }
+    if (height <= 0 && levels.length === 1) {
+      height =
+        (ladderDesc[0] && ladderDesc[0] > 0 ? ladderDesc[0] : 0) ||
+        (sourceMaxHeight > 0 ? sourceMaxHeight : 0);
+    }
+    if (height <= 0 && l.bitrate && l.bitrate > 0) {
+      height = deriveHeightFromBitrate(l.bitrate);
+    }
+    return { ...l, height };
+  });
+}
+
+export function findLevelForHeight(levels: QualityLevel[], targetHeight: number): number {
+  if (!levels.length) return -1;
+  let bestIdx = -1;
+  let bestDiff = Infinity;
+  for (const level of levels) {
+    const height = effectiveLevelHeight(level);
+    if (!height) continue;
+    if (height <= targetHeight) {
+      const diff = targetHeight - height;
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = level.index;
+      }
+    }
+  }
+  if (bestIdx >= 0) return bestIdx;
+  return levels.reduce((best, l) =>
+    effectiveLevelHeight(l) > effectiveLevelHeight(best) ? l : best
+  ).index;
+}
+
+export function maxLevelHeight(levels: QualityLevel[]): number {
+  return levels.reduce((max, l) => Math.max(max, effectiveLevelHeight(l)), 0);
+}
+
+/**
+ * ABR floor guard (shared hls.js/dash.js implementation — both map their
+ * native level/quality lists into this same `QualityLevel` shape):
+ * lowest level index whose height is still >= minHeight. If none meet the
+ * floor (ladder maxes out below it), returns the highest available index
+ * instead — never invents a floor that doesn't exist on this ladder.
+ */
+export function findMinLevelIndexForHeight(levels: QualityLevel[], minHeight: number): number {
+  if (levels.length === 0) return -1;
+  let bestIdx = -1;
+  let bestH = Infinity;
+  for (const level of levels) {
+    const h = effectiveLevelHeight(level);
+    if (h >= minHeight && h < bestH) {
+      bestH = h;
+      bestIdx = level.index;
+    }
+  }
+  if (bestIdx >= 0) return bestIdx;
+  // Ladder max is below minHeight — use best available.
+  return levels.reduce((best, l) =>
+    effectiveLevelHeight(l) > effectiveLevelHeight(best) ? l : best
+  ).index;
+}
+
+/**
+ * Best level index for a target height. Prefers the lowest rung that is
+ * still >= targetHeight (e.g. real 1080 over 1440/4K when target=1080) —
+ * never picks below target when a >=target rung exists. Falls back to the
+ * highest available rung when the whole ladder sits below target (honest
+ * degrade, not an invented "good enough" pick).
+ */
+export function findBestLevelForTarget(levels: QualityLevel[], targetHeight: number): number {
+  if (!levels.length) return -1;
+  let aboveIdx = -1;
+  let aboveDiff = Infinity;
+  for (const level of levels) {
+    const h = effectiveLevelHeight(level);
+    if (h < targetHeight) continue;
+    const diff = h - targetHeight;
+    if (diff < aboveDiff) {
+      aboveDiff = diff;
+      aboveIdx = level.index;
+    }
+  }
+  if (aboveIdx >= 0) return aboveIdx;
+  return levels.reduce((best, l) =>
+    effectiveLevelHeight(l) > effectiveLevelHeight(best) ? l : best
+  ).index;
+}
+
+/**
+ * Default rung for a source with no explicit user pick applied yet: the
+ * LOWEST rung meeting the 1080p floor (the owner's absolute base quality —
+ * default selection is 1080p itself, never a jump straight to 1440/4K;
+ * climbing above the floor is Auto/ABR's job, not the "default" pick's).
+ *
+ * When the whole ladder sits below 1080p there is no honest default to pick
+ * silently — returns -1 so callers gate on the explicit "1080p isn't
+ * available for this title" UI (see source-quality.ts's
+ * `sourceRosterMeetsHdFloor` for the source-level equivalent) instead of
+ * quietly landing on 720p/480p as if it were a normal default.
+ *
+ * Shared here so the picker's "Auto (up to Xp)" hint and the player's
+ * initial level selection can never disagree.
+ */
+export function pickDefaultQualityIndex(levels: QualityLevel[]): number {
+  if (!levels.length) return -1;
+  const withHeights = levels.map((l) => ({ ...l, height: effectiveLevelHeight(l) }));
+  const atLeastFloor = withHeights.filter((l) => l.height >= MIN_QUALITY_OPTION_HEIGHT);
+  if (!atLeastFloor.length) return -1;
+  return atLeastFloor.reduce((best, l) => (l.height < best.height ? l : best)).index;
+}
+
+/**
+ * True when selected fixed height and actual decode height disagree enough
+ * to show an honest mismatch hint in the dock (never for Auto / unknown).
+ */
+export function isQualityMismatch(
+  selectedHeight: number,
+  playingHeight: number,
+  qualityIndex: number
+): boolean {
+  if (qualityIndex < 0) return false;
+  if (selectedHeight <= 0 || playingHeight <= 0) return false;
+  return playingHeight < selectedHeight * 0.9;
+}

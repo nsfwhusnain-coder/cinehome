@@ -1,0 +1,13 @@
+{
+  "name": "cinehome-stream-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1",
+    "tweetnacl": "^1.0.3"
+  }
+}

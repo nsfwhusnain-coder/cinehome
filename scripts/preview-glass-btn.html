@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Glass + preview</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { margin: 0; background: #0a0a0a; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+<body class="p-10 text-white">
+  <h1 class="mb-6 text-lg font-semibold">Watchlist glass control preview</h1>
+  <div class="flex gap-8">
+    <div class="relative h-64 w-44 overflow-hidden rounded-xl bg-cover bg-center shadow-xl"
+      style="background-image: url('https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg')">
+      <p class="absolute bottom-2 left-2 text-xs opacity-70">Idle</p>
+      <button type="button"
+        class="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.05] text-white/50 shadow-[inset_0_0.5px_0_0_rgba(255,255,255,0.14)] backdrop-blur-md">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+      </button>
+    </div>
+    <div class="relative h-64 w-44 overflow-hidden rounded-xl bg-cover bg-center shadow-xl scale-[1.03]"
+      style="background-image: url('https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg')">
+      <p class="absolute bottom-2 left-2 text-xs opacity-70">Hover glass</p>
+      <button type="button"
+        class="absolute right-2 top-2 flex h-9 w-9 scale-[1.04] items-center justify-center rounded-full border border-white/30 bg-white/18 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.35),0_0_0_0.5px_rgba(255,255,255,0.12)] backdrop-blur-md">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+      </button>
+    </div>
+  </div>
+</body>
+</html>

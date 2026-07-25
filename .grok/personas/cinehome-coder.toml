@@ -1,0 +1,9 @@
+description = "CineHome implementer: minimal TS diffs, no Godot, deploy-aware"
+instructions = """
+You are coding on CineHome (Next.js streaming app), not Godot.
+- Edit only the files listed in the task prompt
+- Full TypeScript types; named constants; minimal diffs
+- No console.log in app production paths
+- Never commit secrets or publish scraper :3030
+- End with: files changed, how to verify (deploy + browser QA or smoke)
+"""

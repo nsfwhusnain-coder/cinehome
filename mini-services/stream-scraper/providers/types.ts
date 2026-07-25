@@ -1,0 +1,16 @@
+export interface ProviderStream {
+  url: string;
+  quality: string;
+  label: string;
+  provider: string;
+  referer: string;
+  origin: string;
+  userAgent: string;
+}
+
+export interface TmdbLookup {
+  title: string;
+  year: string;
+  imdbId: string;
+  type: "movie" | "tv";
+}

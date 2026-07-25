@@ -1,0 +1,326 @@
+/* Absolute Cinema — live liquid glass (real backdrop-filter, no baked image) */
+
+.ab-glass {
+  --ab-size: 56px;
+  --ab-blur: 18px;
+  --ab-sat: 180%;
+  --ab-bright: 1.15;
+  --ab-fill: rgba(255, 255, 255, 0.12);
+  --ab-border-hi: 0.7;
+  --ab-border-lo: 0.06;
+  --ab-radius: 25%;
+  --ab-letter: calc(var(--ab-size) * 0.38);
+  --ab-letter-weight: 650;
+  --ab-letter-spacing: -0.02em;
+  --ab-letter-color: transparent;
+  --ab-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  --ab-inset: inset 0 1px 1.5px rgba(255, 255, 255, 0.45);
+
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--ab-size);
+  height: var(--ab-size);
+  min-width: 44px;
+  min-height: 44px;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--ab-radius);
+  background: var(--ab-fill);
+  -webkit-backdrop-filter: blur(var(--ab-blur)) saturate(var(--ab-sat))
+    brightness(var(--ab-bright));
+  backdrop-filter: blur(var(--ab-blur)) saturate(var(--ab-sat))
+    brightness(var(--ab-bright));
+  box-shadow: var(--ab-inset), var(--ab-shadow);
+  user-select: none;
+  overflow: hidden;
+}
+
+/*
+ * COMPACT (≤72px) — exaggerated glass physics.
+ * No specular streak. Solid letters (no gradient).
+ */
+.ab-glass[data-compact="true"] {
+  --ab-blur: 12px;
+  --ab-sat: 170%;
+  --ab-bright: 1.2;
+  --ab-fill: rgba(255, 255, 255, 0.16);
+  --ab-border-hi: 0.65;
+  --ab-border-lo: 0.12;
+  --ab-letter: calc(var(--ab-size) * 0.46);
+  --ab-letter-weight: 700;
+  --ab-letter-spacing: -0.01em;
+  --ab-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  --ab-inset: inset 0 1px 1px rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+/* Gradient edge light via padding + mask-composite exclude */
+.ab-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, var(--ab-border-hi)) 0%,
+    rgba(255, 255, 255, 0.22) 42%,
+    rgba(255, 255, 255, var(--ab-border-lo)) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Specular diagonal streak — full sizes only (not compact) */
+.ab-glass:not([data-compact="true"])::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    125deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.07) 28%,
+    transparent 52%,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Full-size letters: vertical gradient */
+.ab-glass:not([data-compact="true"]) .ab-glass__letters {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(255, 255, 255, 0.66) 100%
+  );
+  background-color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Compact letters: solid white — no gradient (mud at small size) */
+.ab-glass[data-compact="true"] .ab-glass__letters {
+  background: none;
+  background-image: none;
+  -webkit-background-clip: unset;
+  background-clip: unset;
+  color: rgba(255, 255, 255, 0.98);
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.98);
+}
+
+.ab-glass__letters {
+  position: relative;
+  z-index: 3;
+  display: block;
+  font-family:
+    "SF Pro Display",
+    "SF Pro Text",
+    var(--font-inter),
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  font-size: var(--ab-letter);
+  font-weight: var(--ab-letter-weight);
+  font-synthesis: none;
+  letter-spacing: var(--ab-letter-spacing);
+  line-height: 1;
+  transform: translateY(0.02em);
+}
+
+.ab-glass__letter-wrap {
+  position: relative;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.45));
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ab-glass {
+    background: rgba(18, 18, 24, 0.6);
+  }
+}
+
+/* ——— Nav lockup: tile + plain wordmark (not glass pill) ——— */
+
+.ab-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.ab-lockup__wordmark {
+  font-family:
+    "SF Pro Display",
+    "SF Pro Text",
+    var(--font-inter),
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: nowrap;
+  user-select: none;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.45);
+}
+
+/* ——— Glass pill wordmark (hero / marketing) ——— */
+
+.ab-glass-pill {
+  --ab-blur: 18px;
+  --ab-sat: 180%;
+  --ab-bright: 1.15;
+  --ab-fill: rgba(255, 255, 255, 0.12);
+  --ab-border-hi: 0.7;
+  --ab-border-lo: 0.06;
+  --ab-pad-y: 0.55em;
+  --ab-pad-x: 1.15em;
+  --ab-text: 0.875rem;
+
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: var(--ab-pad-y) var(--ab-pad-x);
+  border-radius: 9999px;
+  background: var(--ab-fill);
+  -webkit-backdrop-filter: blur(var(--ab-blur)) saturate(var(--ab-sat))
+    brightness(var(--ab-bright));
+  backdrop-filter: blur(var(--ab-blur)) saturate(var(--ab-sat))
+    brightness(var(--ab-bright));
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.45),
+    0 12px 40px rgba(0, 0, 0, 0.4);
+  user-select: none;
+  overflow: hidden;
+}
+
+.ab-glass-pill[data-size="sm"] {
+  --ab-blur: 12px;
+  --ab-fill: rgba(255, 255, 255, 0.16);
+  --ab-border-hi: 0.65;
+  --ab-text: 0.7rem;
+  --ab-pad-y: 0.4em;
+  --ab-pad-x: 0.9em;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.ab-glass-pill[data-size="lg"] {
+  --ab-text: 1.05rem;
+  --ab-pad-y: 0.65em;
+  --ab-pad-x: 1.35em;
+}
+
+.ab-glass-pill::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, var(--ab-border-hi)) 0%,
+    rgba(255, 255, 255, 0.2) 45%,
+    rgba(255, 255, 255, var(--ab-border-lo)) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.ab-glass-pill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    125deg,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.06) 30%,
+    transparent 55%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.ab-glass-pill__text {
+  position: relative;
+  z-index: 3;
+  font-family:
+    "SF Pro Display",
+    "SF Pro Text",
+    var(--font-inter),
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  font-size: var(--ab-text);
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  text-transform: uppercase;
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(255, 255, 255, 0.66) 100%
+  );
+  background-color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  white-space: nowrap;
+}
+
+.ab-glass-pill__wrap {
+  position: relative;
+  z-index: 3;
+  display: inline-flex;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ab-glass-pill {
+    background: rgba(18, 18, 24, 0.6);
+  }
+}

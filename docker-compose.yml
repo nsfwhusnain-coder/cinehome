@@ -1,0 +1,50 @@
+# Lordflix-class setup: optional join to host embedin/cinepro network so the
+# scraper can reach co-located cinepro-core (OMSS multi-provider + stream proxy).
+# Create/join: network name must match `docker network ls` for cinepro-core.
+networks:
+  default:
+  cinepro_net:
+    external: true
+    name: embedin_default
+
+services:
+  cinehome:
+    container_name: cinehome
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      # ONLY publish the Next.js app. Port 3030 (stream-scraper) must NEVER be published.
+      # Scraper stays container-internal; app reaches it via SCRAPER_URL=http://127.0.0.1:3030/scrape.
+      - "4445:3000"
+    env_file:
+      - .env
+    environment:
+      - HOSTNAME=0.0.0.0
+      # Lordflix-class multi-source API (cinepro-core on embedin_default network):
+      - CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}
+      # Scraper kill switches / log level (optional; also via .env — see CINEHOME.md / .env.example):
+      # PROVIDER_LORDFLIX=0  PROVIDER_VIDEASY=0  PROVIDER_PLAYWRIGHT=0  SCRAPER_LOG_LEVEL=info
+    volumes:
+      - ./db:/app/db
+      # Transcoded HLS segment cache (pre-transcoded 4K ladders + live 1080p).
+      # Persisted so popular titles stay cached across restarts.
+      - ./transcode-cache:/app/transcode-cache
+    # AMD iGPU render node ONLY (h264_vaapi hardware encode).
+    # renderD128 is the sole render node on the host and is amdgpu (PCI 1002:1636).
+    # The host's NVIDIA card has NO /dev/dri node (driver deliberately unloaded),
+    # so it cannot be passed here. This is the iGPU the owner authorized.
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    shm_size: "2gb"
+    restart: unless-stopped
+    networks:
+      - default
+      - cinepro_net
+    healthcheck:
+      # Dual-check: Next app (:3000) and stream-scraper (:3030). Scraper stays unpublished.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3000/ >/dev/null && curl -sf http://127.0.0.1:3030/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s

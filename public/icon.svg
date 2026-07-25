@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Flat PWA icon (dark tile). Media query for browser tab uses favicon.svg -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="#141419"/>
+  <text
+    x="256"
+    y="326"
+    text-anchor="middle"
+    font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    font-size="232"
+    font-weight="800"
+    letter-spacing="-0.02em"
+    fill="#F4F4F7"
+  >AB</text>
+</svg>

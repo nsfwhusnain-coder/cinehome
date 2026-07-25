@@ -1,0 +1,114 @@
+// CineHome — self-hosted movie streaming UI
+// Schema: users (name + PIN, no email), watchlist, watch progress, admin settings
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  pinHash     String
+  isAdmin     Boolean  @default(false)
+  avatarColor String   @default("#e50914")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  watchlist WatchlistItem[]
+  progress  WatchProgress[]
+  settings  UserSetting[]
+}
+
+model WatchlistItem {
+  id          String   @id @default(cuid())
+  userId      String
+  tmdbId      Int
+  mediaType   String   // "movie" | "tv"
+  title       String
+  poster      String?
+  backdrop    String?
+  voteAverage Float?
+  releaseDate String?
+  addedAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tmdbId, mediaType])
+  @@index([userId])
+}
+
+model WatchProgress {
+  id         String   @id @default(cuid())
+  userId     String
+  tmdbId     Int
+  mediaType  String   // "movie" | "tv"
+  title      String
+  poster     String?
+  backdrop   String?
+  progress   Float    // 0..1
+  position   Float    @default(0) // seconds into the video
+  duration   Float    // seconds total
+  // TV: actual season/episode numbers. Movies: always store 0/0 (SQLite treats
+  // NULL as distinct in UNIQUE, so 0/0 sentinel keeps one row per movie).
+  season     Int      @default(0)
+  episode    Int      @default(0)
+  providerId String?  // which PlaybackProvider resolved this stream
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tmdbId, mediaType, season, episode])
+  @@index([userId])
+}
+
+model UserSetting {
+  id     String @id @default(cuid())
+  userId String
+  key    String
+  value  String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+}
+
+// Server-wide settings (TMDB API key override, playback provider choice, etc.)
+model AppSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+}
+
+// PREMIUM debrid tier (Torrentio + owner's Real-Debrid account, plus the
+// sibling TorBox free-tier debrid) resolved-link cache — see
+// src/lib/playback/debrid/. Avoids re-running the Torrentio + Real-Debrid
+// add/select/poll/unrestrict flow (or the TorBox add/poll/requestdl flow) on
+// every repeat view. Direct links can die before expiresAt (both RD and
+// TorBox rotate/expire CDN links); on playback a 404/410 should trigger a
+// fresh resolve — the player doesn't own this, so at minimum callers must
+// re-resolve whenever a read finds expiresAt in the past.
+model CachedStream {
+  id        String   @id @default(cuid())
+  imdbId    String
+  mediaType String // "movie" | "tv"
+  season    Int      @default(0) // movies: sentinel 0 (SQLite treats NULL as distinct in UNIQUE)
+  episode   Int      @default(0)
+  quality   String // "2160p" | "1080p"
+  provider  String   @default("realdebrid") // "realdebrid" | "torbox" — keeps RD and TorBox rows independent for the same title/quality
+  title     String // release title parsed from the Torrentio stream
+  source    String // infoHash (path b resolve) or original RD/Torrentio/TorBox link
+  url       String // resolved direct-playable link (Real-Debrid unrestrict `download`, or TorBox requestdl `data`)
+  compat    String // "native" | "safari" — browser decode compatibility hint
+  codec     String? // "h264" | "hevc" | "av1" | "unknown" — parsed release codec (nullable for back-compat with pre-existing rows)
+  container String? // "mp4" | "mkv" | "webm" | "mov" | "unknown" — parsed container
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@unique([imdbId, mediaType, season, episode, quality, provider])
+  @@index([imdbId])
+}
