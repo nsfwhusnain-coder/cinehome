@@ -278,7 +278,7 @@ and live/failure state. Names remain stable while row identity is exact.
   `sha256:a5650ee118d0ec64c545a66db7d38d8a71e57033c11903982a327aff1ab3e2bf`.
 - Post-deploy service health and user invariants remained clean.
 
-### CinemaOS worker quarantine (pending deploy)
+### CinemaOS worker quarantine
 
 The exact Coherence row could then be exercised twice. Both runs reproduced
 the same transport sequence: CinemaOS MPD HTTP 200, followed by HTTP 429 from
@@ -300,3 +300,15 @@ The provider now quarantines only the reproducibly broken worker fallback
 before it enters fast/full rosters, while retaining the verified direct MP4
 sources. The smoke report now records only safe upstream host and path kind
 (never token or URL) for per-hop transport diagnosis.
+
+- Deployed as authoritative commit
+  `87b6ddcdf3eb2302ac07cf2ac2239e7bb6d0ac78`; production image
+  `sha256:90b6f170b47fa7861168bbdb3c8d8ab9b18d1d2b9e7ac27b2c45b7043b5e7d40`.
+- Live provider verification returned six direct sources, zero worker sources,
+  across hcdn/macdn only.
+- The retained CinemaOS Coherence MP4 reached a healthy advancing frame in
+  1,574–3,557 ms over three exact selections. Chromium reported H.264/AAC,
+  1920x816, ~2.33 Mbps, 5,286 seconds, with byte-range support.
+- Three forced deaths of that exact progressive source all recovered to Luna
+  HLS (3/3). Recovery was 5,385 / 5,749 / 5,757 ms (median 5,749 ms), with the
+  replacement advancing at the preserved mid-title position.

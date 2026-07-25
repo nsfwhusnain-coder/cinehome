@@ -25,6 +25,7 @@
  *   SCRAPER_COLD=1
  *   WARM_REPEAT=1
  *   FAILOVER_SOURCE_TYPE=dash
+ *   FAILOVER_SOURCE_PROVIDER=CinemaOS
  *   FIXTURE_FILTER=Coherence
  *   CHROMIUM_EXECUTABLE_PATH=/root/.cache/ms-playwright/.../chrome-headless-shell
  */
@@ -276,6 +277,9 @@ const PLAYBACK_LIMIT = envInt("PLAYBACK_LIMIT", 6);
 const SCRAPER_COLD = envFlag("SCRAPER_COLD", true);
 const WARM_REPEAT = envFlag("WARM_REPEAT", true);
 const FAILOVER_SOURCE_TYPE = (process.env.FAILOVER_SOURCE_TYPE || "").trim().toLowerCase();
+const FAILOVER_SOURCE_PROVIDER = (
+  process.env.FAILOVER_SOURCE_PROVIDER || ""
+).trim().toLowerCase();
 const FIXTURE_FILTER = (process.env.FIXTURE_FILTER || "").trim().toLowerCase();
 
 function selectedFixtures(): Fixture[] {
@@ -708,7 +712,22 @@ async function forcedFailoverProbe(
   const currentServerName =
     (await readActiveServerName(page).catch(() => null)) || activeServerName;
   const before = await readBrowserState(page, started);
-  const failedSession = getActiveSession() || sessionId(before?.src || "");
+  const namedSource = currentServerName
+    ? calls
+        .flatMap((call) => call._sources || [])
+        .find(
+          (source) =>
+            getServerDisplayName(source.provider, source.label, source.id) ===
+            currentServerName
+        )
+    : null;
+  // Progressive MP4 may satisfy selection from one range request while an old
+  // HLS session remains the most recently chatty network session. Source
+  // identity is authoritative; network recency is only a fallback.
+  const failedSession =
+    sessionId(namedSource?.url || "") ||
+    getActiveSession() ||
+    sessionId(before?.src || "");
   if (!before || !failedSession || !before.duration || before.duration < 180) {
     return {
       attempted: false,
@@ -801,6 +820,12 @@ async function selectFailureSource(
   const byId = new Map<string, SourceSummary>();
   for (const source of calls.flatMap((call) => call._sources || [])) {
     if (source.type.toLowerCase() !== desiredSourceType) continue;
+    if (
+      FAILOVER_SOURCE_PROVIDER &&
+      !source.provider.toLowerCase().includes(FAILOVER_SOURCE_PROVIDER)
+    ) {
+      continue;
+    }
     const current = byId.get(source.id);
     // A measured result, including a measured failure, is more authoritative
     // than the same source's earlier fast-path "unknown" entry.
@@ -815,6 +840,7 @@ async function selectFailureSource(
   if (!source) {
     return {
       requestedType: desiredSourceType,
+      requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
       selected: false,
       reason: "no matching source in playback roster",
     };
@@ -830,6 +856,7 @@ async function selectFailureSource(
   if ((await open.count()) === 0) {
     return {
       requestedType: desiredSourceType,
+      requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
       selected: false,
       source: publicSource(source),
       serverName,
@@ -851,6 +878,7 @@ async function selectFailureSource(
     await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
     return {
       requestedType: desiredSourceType,
+      requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
       selected: false,
       source: publicSource(source),
       serverName,
@@ -874,6 +902,7 @@ async function selectFailureSource(
       if (firstHealthy && state.currentTime > firstHealthy.currentTime + 0.3) {
         return {
           requestedType: desiredSourceType,
+          requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
           selected: true,
           source: publicSource(source),
           serverName,
@@ -886,6 +915,7 @@ async function selectFailureSource(
   }
   return {
     requestedType: desiredSourceType,
+    requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
     selected: false,
     source: publicSource(source),
     serverName,
@@ -1283,7 +1313,12 @@ function buildSummary(
       ttffP95Ms: percentile(ttff, 0.95),
       topRankSample: topRankKnown.length,
       topRankPlayed: topRankKnown.filter((row) => row.topRankedActuallyPlayed === true).length,
-      sourceSwitchRuns: playback.filter((row) => Number(row.distinctActiveServerCount) > 1).length,
+      sourceSwitchRuns: playback.filter(
+        (row) =>
+          Number(row.distinctActiveServerCount) > 1 ||
+          (row.forcedFailover as Record<string, unknown> | null)?.recovered ===
+            true
+      ).length,
       runsWithRebufferSignal: playback.filter((row) => Number(row.waitingOrStalledEvents) > 0).length,
     },
   };
@@ -1362,6 +1397,7 @@ async function main(): Promise<void> {
         scraperCold: SCRAPER_COLD,
         warmRepeat: WARM_REPEAT,
         failoverSourceType: FAILOVER_SOURCE_TYPE || null,
+        failoverSourceProvider: FAILOVER_SOURCE_PROVIDER || null,
         fixtureFilter: FIXTURE_FILTER || null,
         firstFrameTimeoutMs: FIRST_FRAME_TIMEOUT_MS,
         steadyWatchMs: STEADY_WATCH_MS,
