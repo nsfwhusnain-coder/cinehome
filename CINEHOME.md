@@ -97,6 +97,15 @@ isolated redesign work until the pipeline has hard concurrency/memory limits,
 segment-on-demand behavior, cancellation, and load tests proving bounded use.
 Native browser-compatible debrid MP4 sources direct-play without this worker.
 
+### Container DNS
+
+CineHome sets `CINEHOME_DNS_PRIMARY` (default `192.168.1.1`) and
+`CINEHOME_DNS_FALLBACK` (default `1.1.1.1`) explicitly in Compose. Docker's
+embedded resolver still handles service names such as `cinepro-core`; external
+TMDB/provider/debrid lookups are forwarded to these resolvers instead of
+depending on the host's Tailscale MagicDNS upstream. Override both values if
+the server moves off its current LAN.
+
 ## Agent workflow (handoffs only)
 1. Research → write `.claude/handoffs/research-*.md`
 2. Architect → write `.claude/handoffs/architecture-*.md`

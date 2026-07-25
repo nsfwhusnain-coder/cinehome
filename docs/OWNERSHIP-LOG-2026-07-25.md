@@ -455,3 +455,24 @@ Containment deployment verification:
   labelled `unavailable in this browser`, and natively disabled;
 - after deployment: healthy, SQLite `ok`, users 13, watchlist 17, progress 82,
   cached streams 119; idle sample 424.6 MiB, 2.08% CPU, 355 PIDs.
+
+### Real-Debrid playback failure: host DNS
+
+The first exact native-RD probe selected `native-1080-1`, then recorded a
+generation-scoped `media_element_error` and recovered to the prior source.
+The target never stayed healthy. Direct inspection showed all three cached
+Sydney RD download hostnames failing name resolution inside the container.
+The failure reproduced on the host itself: general names including Google,
+Torrentio, and the RD API all failed through `100.100.100.100`.
+
+`tailscale dns status` reported MagicDNS enabled but no upstream resolvers,
+while the physical interface still had `192.168.1.1` and `8.8.8.8`.
+Bounded direct queries to `192.168.1.1`, `8.8.8.8`, and `1.1.1.1` all resolved
+the affected RD host immediately. An isolated CineHome image using the
+proposed explicit resolvers resolved it 5/5.
+
+The project-scoped fix sets Compose DNS to the LAN gateway plus Cloudflare,
+both configurable through `CINEHOME_DNS_PRIMARY` and
+`CINEHOME_DNS_FALLBACK`. This leaves global Tailscale configuration untouched
+while preventing its broken upstream from taking down CineHome's provider and
+media lookups. Docker internal service discovery remains available.

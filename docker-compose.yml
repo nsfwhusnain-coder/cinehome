@@ -45,6 +45,13 @@ services:
     networks:
       - default
       - cinepro_net
+    # Tailscale MagicDNS on this host has intermittently had no usable
+    # upstream and then fails every external provider/RD lookup. Keep Docker's
+    # internal service discovery, but give CineHome explicit external
+    # resolvers so playback does not depend on the host overlay resolver.
+    dns:
+      - ${CINEHOME_DNS_PRIMARY:-192.168.1.1}
+      - ${CINEHOME_DNS_FALLBACK:-1.1.1.1}
     healthcheck:
       # Dual-check: Next app (:3000) and stream-scraper (:3030). Scraper stays unpublished.
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3000/ >/dev/null && curl -sf http://127.0.0.1:3030/health >/dev/null"]

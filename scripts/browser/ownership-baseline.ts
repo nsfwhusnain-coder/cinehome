@@ -24,8 +24,13 @@
  *   STEADY_WATCH_MS=12000
  *   SCRAPER_COLD=1
  *   WARM_REPEAT=1
+ *   TARGET_SOURCE_TYPE=mp4
+ *   TARGET_SOURCE_PROVIDER=Debrid
+ *   TARGET_SOURCE_ID_INCLUDES=native-1080
+ *   SKIP_FAILOVER=1
  *   FAILOVER_SOURCE_TYPE=dash
  *   FAILOVER_SOURCE_PROVIDER=CinemaOS
+ *   FAILOVER_SOURCE_ID_INCLUDES=native-1080
  *   FIXTURE_FILTER=Coherence
  *   CHROMIUM_EXECUTABLE_PATH=/root/.cache/ms-playwright/.../chrome-headless-shell
  */
@@ -280,6 +285,17 @@ const FAILOVER_SOURCE_TYPE = (process.env.FAILOVER_SOURCE_TYPE || "").trim().toL
 const FAILOVER_SOURCE_PROVIDER = (
   process.env.FAILOVER_SOURCE_PROVIDER || ""
 ).trim().toLowerCase();
+const FAILOVER_SOURCE_ID_INCLUDES = (
+  process.env.FAILOVER_SOURCE_ID_INCLUDES || ""
+).trim().toLowerCase();
+const TARGET_SOURCE_TYPE = (process.env.TARGET_SOURCE_TYPE || "").trim().toLowerCase();
+const TARGET_SOURCE_PROVIDER = (
+  process.env.TARGET_SOURCE_PROVIDER || ""
+).trim().toLowerCase();
+const TARGET_SOURCE_ID_INCLUDES = (
+  process.env.TARGET_SOURCE_ID_INCLUDES || ""
+).trim().toLowerCase();
+const SKIP_FAILOVER = envFlag("SKIP_FAILOVER", false);
 const FIXTURE_FILTER = (process.env.FIXTURE_FILTER || "").trim().toLowerCase();
 
 function selectedFixtures(): Fixture[] {
@@ -696,7 +712,14 @@ async function forcedFailoverProbe(
   desiredSourceType = ""
 ): Promise<Record<string, unknown>> {
   const forcedSelection = desiredSourceType
-    ? await selectFailureSource(page, started, calls, desiredSourceType)
+    ? await selectRosterSource(
+        page,
+        started,
+        calls,
+        desiredSourceType,
+        FAILOVER_SOURCE_PROVIDER,
+        FAILOVER_SOURCE_ID_INCLUDES
+      )
     : null;
   if (
     desiredSourceType &&
@@ -728,10 +751,16 @@ async function forcedFailoverProbe(
     sessionId(namedSource?.url || "") ||
     getActiveSession() ||
     sessionId(before?.src || "");
-  if (!before || !failedSession || !before.duration || before.duration < 180) {
+  const failedDirectUrl = namedSource?.url || null;
+  if (
+    !before ||
+    (!failedSession && !failedDirectUrl) ||
+    !before.duration ||
+    before.duration < 180
+  ) {
     return {
       attempted: false,
-      reason: "active HLS session or duration unavailable",
+      reason: "active media source or duration unavailable",
       forcedSelection,
     };
   }
@@ -743,7 +772,11 @@ async function forcedFailoverProbe(
   );
   let injectedFailures = 0;
   await page.route("**/*", async (route) => {
-    if (route.request().url().includes(`/api/hls/${failedSession}`)) {
+    const requestUrl = route.request().url();
+    if (
+      (failedSession && requestUrl.includes(`/api/hls/${failedSession}`)) ||
+      (failedDirectUrl && requestUrl === failedDirectUrl)
+    ) {
       injectedFailures += 1;
       await route.fulfill({
         status: 502,
@@ -769,7 +802,7 @@ async function forcedFailoverProbe(
   while (Date.now() - wallStart < 40_000) {
     const state = await readBrowserState(page, started);
     const changedSession =
-      getRecoverySession(wallStart, failedSession) || sessionId(state?.src || "");
+      getRecoverySession(wallStart, failedSession || "") || sessionId(state?.src || "");
     if (Date.now() >= nextUiCheckAt) {
       nextUiCheckAt = Date.now() + 1_000;
       const candidateName = await readActiveServerName(page).catch(() => null);
@@ -811,19 +844,24 @@ async function forcedFailoverProbe(
   };
 }
 
-async function selectFailureSource(
+async function selectRosterSource(
   page: Page,
   started: number,
   calls: ApiCall[],
-  desiredSourceType: string
+  desiredSourceType: string,
+  desiredProvider = "",
+  desiredIdIncludes = ""
 ): Promise<Record<string, unknown>> {
   const byId = new Map<string, SourceSummary>();
   for (const source of calls.flatMap((call) => call._sources || [])) {
     if (source.type.toLowerCase() !== desiredSourceType) continue;
     if (
-      FAILOVER_SOURCE_PROVIDER &&
-      !source.provider.toLowerCase().includes(FAILOVER_SOURCE_PROVIDER)
+      desiredProvider &&
+      !source.provider.toLowerCase().includes(desiredProvider)
     ) {
+      continue;
+    }
+    if (desiredIdIncludes && !source.id.toLowerCase().includes(desiredIdIncludes)) {
       continue;
     }
     const current = byId.get(source.id);
@@ -840,7 +878,8 @@ async function selectFailureSource(
   if (!source) {
     return {
       requestedType: desiredSourceType,
-      requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
+      requestedProvider: desiredProvider || null,
+      requestedIdIncludes: desiredIdIncludes || null,
       selected: false,
       reason: "no matching source in playback roster",
     };
@@ -856,14 +895,17 @@ async function selectFailureSource(
   if ((await open.count()) === 0) {
     return {
       requestedType: desiredSourceType,
-      requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
+      requestedProvider: desiredProvider || null,
+      requestedIdIncludes: desiredIdIncludes || null,
       selected: false,
       source: publicSource(source),
       serverName,
       reason: "Servers control unavailable",
     };
   }
-  await open.click({ timeout: 3_000 }).catch(() => {});
+  await open.click({ timeout: 3_000 }).catch(async () => {
+    await open.evaluate((button: HTMLButtonElement) => button.click()).catch(() => {});
+  });
   const dialog = page.locator('[role="dialog"][aria-label="Servers"]');
   await dialog.waitFor({ state: "visible", timeout: 3_000 }).catch(() => {});
   let target = dialog.locator(`button[data-source-id="${source.id}"]`);
@@ -878,11 +920,25 @@ async function selectFailureSource(
     await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
     return {
       requestedType: desiredSourceType,
-      requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
+      requestedProvider: desiredProvider || null,
+      requestedIdIncludes: desiredIdIncludes || null,
       selected: false,
       source: publicSource(source),
       serverName,
       reason: "matching server row unavailable",
+    };
+  }
+
+  if (await target.isDisabled()) {
+    await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
+    return {
+      requestedType: desiredSourceType,
+      requestedProvider: desiredProvider || null,
+      requestedIdIncludes: desiredIdIncludes || null,
+      selected: false,
+      source: publicSource(source),
+      serverName,
+      reason: "matching server row is unavailable in this browser",
     };
   }
 
@@ -902,7 +958,8 @@ async function selectFailureSource(
       if (firstHealthy && state.currentTime > firstHealthy.currentTime + 0.3) {
         return {
           requestedType: desiredSourceType,
-          requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
+          requestedProvider: desiredProvider || null,
+          requestedIdIncludes: desiredIdIncludes || null,
           selected: true,
           source: publicSource(source),
           serverName,
@@ -915,7 +972,8 @@ async function selectFailureSource(
   }
   return {
     requestedType: desiredSourceType,
-    requestedProvider: FAILOVER_SOURCE_PROVIDER || null,
+    requestedProvider: desiredProvider || null,
+    requestedIdIncludes: desiredIdIncludes || null,
     selected: false,
     source: publicSource(source),
     serverName,
@@ -1194,14 +1252,40 @@ async function playbackScenario(
     apiCalls.find((call) => call.defaultSource)?.defaultSource ??
     null;
 
-  const seek = firstFrame && fixture.seek ? await seekProbe(page, started) : null;
+  const targetSelection =
+    firstFrame && TARGET_SOURCE_TYPE
+      ? await selectRosterSource(
+          page,
+          started,
+          apiCalls,
+          TARGET_SOURCE_TYPE,
+          TARGET_SOURCE_PROVIDER,
+          TARGET_SOURCE_ID_INCLUDES
+        )
+      : null;
+  const targetReady =
+    !TARGET_SOURCE_TYPE || targetSelection?.selected === true;
+  const seek =
+    firstFrame && fixture.seek && targetReady
+      ? await seekProbe(page, started)
+      : targetSelection
+        ? {
+            attempted: false,
+            reason: "requested target source did not become healthy",
+          }
+        : null;
   const failover =
-    firstFrame && (fixture.failover || Boolean(FAILOVER_SOURCE_TYPE))
+    !SKIP_FAILOVER &&
+    firstFrame &&
+    targetReady &&
+    (fixture.failover || Boolean(FAILOVER_SOURCE_TYPE))
       ? await forcedFailoverProbe(
           page,
           started,
           apiCalls,
-          steadyActiveServerName || firstActiveServerName,
+          (await readActiveServerName(page).catch(() => null)) ||
+            steadyActiveServerName ||
+            firstActiveServerName,
           activeMediaSession,
           recoveryMediaSession,
           FAILOVER_SOURCE_TYPE
@@ -1242,6 +1326,7 @@ async function playbackScenario(
     decoderProperties: cdpProperties,
     mediaMessages: cdpMessages,
     playbackFailures,
+    targetSelection,
     seek,
     forcedFailover: failover,
     navigationError,
@@ -1398,6 +1483,11 @@ async function main(): Promise<void> {
         warmRepeat: WARM_REPEAT,
         failoverSourceType: FAILOVER_SOURCE_TYPE || null,
         failoverSourceProvider: FAILOVER_SOURCE_PROVIDER || null,
+        failoverSourceIdIncludes: FAILOVER_SOURCE_ID_INCLUDES || null,
+        targetSourceType: TARGET_SOURCE_TYPE || null,
+        targetSourceProvider: TARGET_SOURCE_PROVIDER || null,
+        targetSourceIdIncludes: TARGET_SOURCE_ID_INCLUDES || null,
+        skipFailover: SKIP_FAILOVER,
         fixtureFilter: FIXTURE_FILTER || null,
         firstFrameTimeoutMs: FIRST_FRAME_TIMEOUT_MS,
         steadyWatchMs: STEADY_WATCH_MS,
