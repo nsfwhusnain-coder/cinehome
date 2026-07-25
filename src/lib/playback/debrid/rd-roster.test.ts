@@ -1,5 +1,6 @@
 /// <reference types="bun-types" />
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { clearMediaValidationCache } from "./media-validation";
 
 /**
  * Real-Debrid RICH ROSTER regression coverage (see index.ts): RD is the
@@ -54,6 +55,7 @@ const NATIVE_2160_HASH = "a".repeat(40);
 const SAFARI_2160_HASH = "b".repeat(40);
 const NATIVE_1080_HASHES = ["c".repeat(40), "d".repeat(40), "e".repeat(40)];
 const MKV_1080_HASH = "f".repeat(40);
+const SMALL_CLIP_HASH = "1".repeat(40);
 
 describe("Real-Debrid roster — full + fast paths", () => {
   const originalFetch = globalThis.fetch;
@@ -74,7 +76,21 @@ describe("Real-Debrid roster — full + fast paths", () => {
           const hash = (m[1] ?? "").toLowerCase();
           return new Response(null, { status: 302, headers: { Location: `/cdn/${hash}.mp4` } });
         }
-        if (pathname.startsWith("/cdn/")) return new Response("ok", { status: 200 });
+        if (pathname.startsWith("/cdn/")) {
+          if (req.headers.has("range")) {
+            const totalBytes = pathname.includes(SMALL_CLIP_HASH)
+              ? 1_184_727
+              : 2 * 1024 * 1024 * 1024;
+            return new Response(new Uint8Array([0]), {
+              status: 206,
+              headers: {
+                "Content-Range": `bytes 0-0/${totalBytes}`,
+                "Content-Length": "1",
+              },
+            });
+          }
+          return new Response("ok", { status: 200 });
+        }
         return new Response("not found", { status: 404 });
       },
     });
@@ -92,6 +108,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
     process.env.REAL_DEBRID_API_TOKEN = FAKE_TOKEN;
     delete process.env.TORBOX_API_KEY;
     cacheStore.clear();
+    clearMediaValidationCache();
   });
 
   afterEach(() => {
@@ -114,6 +131,15 @@ describe("Real-Debrid roster — full + fast paths", () => {
         return new Response(JSON.stringify({ streams }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("download.real-debrid.com") && init?.headers) {
+        return new Response(new Uint8Array([0]), {
+          status: 206,
+          headers: {
+            "Content-Range": `bytes 0-0/${2 * 1024 * 1024 * 1024}`,
+            "Content-Length": "1",
+          },
         });
       }
       return originalFetch(input as never, init);
@@ -249,6 +275,59 @@ describe("Real-Debrid roster — full + fast paths", () => {
     const second = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
     expect(second.length).toBe(5);
     expect(calls).toBe(0);
+  });
+
+  it("full path: rejects a resolved short clip and falls through to the next ranked release", async () => {
+    const slots = ["native-2160", "safari-2160", "native-1080-2", "native-1080-3"];
+    for (const slot of slots) {
+      cacheStore.set(`${IMDB}|movie|0|0|${slot}|realdebrid`, {
+        title: `Cached ${slot}`,
+        source: slot,
+        url: `http://127.0.0.1:${server.port}/cdn/cached-${slot}.mp4`,
+        compat: slot === "safari-2160" ? "safari" : "native",
+      });
+    }
+    const goodHash = "2".repeat(40);
+    mockTorrentioStreams([
+      {
+        title: "Movie.2024.1080p.WEB-DL.H264.CLIP\n👤 999 💾 1 MB ⚙️ X",
+        infoHash: SMALL_CLIP_HASH,
+        fileIdx: 0,
+        url: resolveProxyUrl(SMALL_CLIP_HASH, 0, "movie.clip.1080p.h264.mp4"),
+      },
+      {
+        title: "Movie.2024.1080p.WEB-DL.H264-GOOD\n👤 50 💾 3 GB ⚙️ X",
+        infoHash: goodHash,
+        fileIdx: 0,
+        url: resolveProxyUrl(goodHash, 0, "movie.1080p.h264.mp4"),
+      },
+    ]);
+
+    const sources = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    const native1080 = sources.find((source) => source.id.endsWith("native-1080-1"));
+    expect(native1080?.url).toContain(goodHash);
+    expect(native1080?.url).not.toContain(SMALL_CLIP_HASH);
+    const cached = cacheStore.get(`${IMDB}|movie|0|0|native-1080-1|realdebrid`) as
+      | { url?: string }
+      | undefined;
+    expect(cached?.url).toContain(goodHash);
+  });
+
+  it("full path: treats an implausibly small warm-cache row as missing and replaces it", async () => {
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
+      title: "Generic pack that resolved to a 30-second clip",
+      source: SMALL_CLIP_HASH,
+      url: `http://127.0.0.1:${server.port}/cdn/${SMALL_CLIP_HASH}.mp4`,
+      compat: "native",
+    });
+    mockTorrentioStreams(buildStreams());
+
+    const sources = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(sources.some((source) => source.url.includes(SMALL_CLIP_HASH))).toBe(false);
+    const cached = cacheStore.get(`${IMDB}|movie|0|0|native-1080-1|realdebrid`) as
+      | { url?: string }
+      | undefined;
+    expect(cached?.url).not.toContain(SMALL_CLIP_HASH);
   });
 
   it("fast path: cold cache is CACHE-ONLY — returns [] immediately (no live network in the awaited path), then backgrounds the full roster resolve", async () => {

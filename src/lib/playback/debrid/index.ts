@@ -102,6 +102,10 @@ import {
   type CachedStreamRecord,
 } from "./cached-stream";
 import { resolveTokenFreeRedirect, sanitizeStreamUrl, sanitizeTorboxStreamUrl } from "./token-safety";
+import {
+  validateDebridMediaLink,
+  type MediaValidationResult,
+} from "./media-validation";
 
 /** TorBox tier only — unchanged 2-row-per-title model (quota-bounded). */
 const QUALITIES: DebridQuality[] = ["2160p", "1080p"];
@@ -136,6 +140,10 @@ const RD_FAST_DEADLINE_MS = 1_500;
 const RD_FULL_DEADLINE_MS = 12_000;
 /** Per-call ceiling for a single `resolveTokenFreeRedirect`, clamped down further by whatever remains of the shared deadline. */
 const RD_RESOLVE_TIMEOUT_CEILING_MS = 8_000;
+/** Range-probe ceiling inside the shared full-resolve budget. */
+const RD_MEDIA_VALIDATION_TIMEOUT_MS = 2_000;
+/** Fast cache validation must fit inside RD_FAST_DEADLINE_MS. */
+const RD_FAST_VALIDATION_TIMEOUT_MS = 1_000;
 
 /**
  * QUOTA CAP — TorBox's FREE tier allows only ~10 torrent adds/month, and each
@@ -340,30 +348,73 @@ async function resolveCandidateLink(
 async function resolveSlotCandidate(
   options: DebridCandidate[],
   token: string,
-  deadline: number
+  deadline: number,
+  mediaType: MediaType
 ): Promise<ResolvedCandidate | null> {
   for (const candidate of options) {
     if (Date.now() >= deadline) return null;
     const resolved = await resolveCandidateLink(candidate, token, deadline);
-    if (resolved) return resolved;
+    if (!resolved) continue;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    const validation = await validateDebridMediaLink(
+      resolved.directUrl,
+      mediaType,
+      Math.min(RD_MEDIA_VALIDATION_TIMEOUT_MS, remaining)
+    );
+    if (validation.acceptable) return resolved;
+    logRejectedRdMedia(candidate, validation, mediaType, "fresh");
   }
   return null;
 }
 
-/** Cache-first read across the whole RD roster — a row that fails the sanitizer is treated as a miss, never handed to a client. */
+function logRejectedRdMedia(
+  record: Pick<CachedStreamRecord, "title">,
+  validation: MediaValidationResult,
+  mediaType: MediaType,
+  path: "fresh" | "cache",
+  imdbId?: string,
+  slot?: DebridSlot
+): void {
+  console.warn(
+    JSON.stringify({
+      event: "debrid_media_rejected",
+      provider: "realdebrid",
+      path,
+      mediaType,
+      ...(imdbId ? { imdbId } : {}),
+      ...(slot ? { slot } : {}),
+      title: record.title,
+      reason: validation.reason,
+      totalBytes: validation.totalBytes,
+      status: validation.status,
+      validationMs: validation.elapsedMs,
+    })
+  );
+}
+
+/** Cache-first read across the RD roster — unsafe, dead, or implausibly small rows are misses. */
 async function readCachedRdSlots(
   keyBase: KeyBase,
-  rdToken: string
+  rdToken: string,
+  validationTimeoutMs: number = RD_MEDIA_VALIDATION_TIMEOUT_MS
 ): Promise<{ hits: PlaybackSource[]; missing: DebridSlot[] }> {
   const cachedBySlot = await Promise.all(
     RD_SLOTS.map((slot) => getFreshCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" }))
   );
+  const validatedBySlot = await Promise.all(
+    cachedBySlot.map(async (hit) => {
+      const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;
+      if (!hit || !safeUrl) return { hit, safeUrl: null, validation: null };
+      const validation = await validateDebridMediaLink(safeUrl, keyBase.mediaType, validationTimeoutMs);
+      return { hit, safeUrl, validation };
+    })
+  );
   const hits: PlaybackSource[] = [];
   const missing: DebridSlot[] = [];
   RD_SLOTS.forEach((slot, i) => {
-    const hit = cachedBySlot[i];
-    const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;
-    if (hit && safeUrl) {
+    const { hit, safeUrl, validation } = validatedBySlot[i] ?? {};
+    if (hit && safeUrl && validation?.acceptable) {
       hits.push(
         toRdPlaybackSource(
           slot,
@@ -378,6 +429,9 @@ async function readCachedRdSlots(
       );
     } else {
       missing.push(slot);
+      if (hit && validation && !validation.acceptable) {
+        logRejectedRdMedia(hit, validation, keyBase.mediaType, "cache", keyBase.imdbId, slot);
+      }
     }
   });
   return { hits, missing };
@@ -416,7 +470,7 @@ async function resolveRealDebridSlots(
   const resolvedPerSlot = await mapWithConcurrency(missing, RESOLVE_CONCURRENCY, async (slot) => {
     const options = slotOptions[slot];
     if (!options?.length) return null;
-    const resolved = await resolveSlotCandidate(options, rdToken, deadline);
+    const resolved = await resolveSlotCandidate(options, rdToken, deadline, req.mediaType);
     return resolved ? { slot, resolved } : null;
   });
 
@@ -517,8 +571,15 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
   for (const slot of bestNativeSlots) {
     const hit = await getFreshCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" });
     const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;
-    if (hit && safeUrl) {
+    const validation =
+      hit && safeUrl
+        ? await validateDebridMediaLink(safeUrl, req.mediaType, RD_FAST_VALIDATION_TIMEOUT_MS)
+        : null;
+    if (hit && safeUrl && validation?.acceptable) {
       return [toRdPlaybackSource(slot, imdbId, req.mediaType, season, episode, { ...hit, url: safeUrl })];
+    }
+    if (hit && validation && !validation.acceptable) {
+      logRejectedRdMedia(hit, validation, req.mediaType, "cache", imdbId, slot);
     }
   }
 

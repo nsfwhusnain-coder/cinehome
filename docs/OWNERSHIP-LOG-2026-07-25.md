@@ -312,3 +312,41 @@ sources. The smoke report now records only safe upstream host and path kind
 - Three forced deaths of that exact progressive source all recovered to Luna
   HLS (3/3). Recovery was 5,385 / 5,749 / 5,757 ms (median 5,749 ms), with the
   replacement advancing at the preserved mid-title position.
+
+### Real-Debrid full-item validation
+
+The quality audit found a concrete false-positive in Fight Club's cached RD
+roster. The `native-1080-1` row was selected from a generic movie pack and
+advertised as 1080p H.264/MP4, but `ffprobe` measured only 30.058 seconds and
+1,184,727 bytes. The other three inspected Fight Club RD rows were genuine
+full features: 8,348 seconds at 1.99 GB (1080p), 3.33 GB (1080p), and 7.34 GB
+(2160p HEVC). The failure was therefore candidate/file identity, not a player
+decode or transcoder issue.
+
+Root cause: both fresh RD resolution and all warm-cache paths treated a
+token-free direct URL as sufficient proof of playable media. No boundary
+checked the resolved object's size, so a valid CDN response for a short clip
+could be cached for 24 hours and repeatedly outrank healthy embeds.
+
+The RD boundary now performs one bounded `bytes=0-0` probe and reads the
+object total from `Content-Range` (or a full-response `Content-Length`).
+Movies below 50 MiB and episodes below 15 MiB are conclusively rejected;
+HTTP failures are rejected too. Origins that do not expose size remain
+available and are explicitly classified as indeterminate rather than causing
+a validation-induced outage. Validation is single-flighted per direct link
+and cached for ten minutes on a measured success, so concurrent fast/full
+requests do not duplicate CDN work. Cache, fast-cache, and fresh-candidate
+paths all use the same boundary. Rejections emit a structured
+`debrid_media_rejected` event with provider, IMDb/slot where known, reason,
+status, bytes, and timing, but never a direct URL or credential.
+
+Verification before deployment:
+
+- Focused validation/roster coverage: 12 passed, including the measured
+  1.18 MB failure, fresh-candidate fallback, bad warm-row replacement, and
+  validation single-flight.
+- Entire playback/debrid suite in the production dependency image: 211
+  passed, zero failed.
+- Production image build passed.
+- `tsc --noEmit` produced no new diagnostics; only the two pre-existing
+  `debrid-credentials.test.ts` fetch-cast errors remain.
