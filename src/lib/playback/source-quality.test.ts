@@ -217,14 +217,9 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
   });
 });
 
-/**
- * Transcode-required sources (task 3): never auto-default OVER a clean
- * native source, but never HIDDEN either — on a browser with no native 4K
- * path, a transcode-required MKV/HEVC 4K debrid release is the ONLY way to
- * get above 1080p, so it must still be the fallback default when it's the
- * only thing on offer.
- */
-describe("pickDefaultSource / sortSourcesForPicker — transcode-required surfacing", () => {
+/** Decode-incompatible releases remain in inventory but cannot enter the
+ * auto-play path while the unsafe legacy transcoder is production-disabled. */
+describe("pickDefaultSource / sortSourcesForPicker — incompatible-source surfacing", () => {
   it("never auto-defaults to a transcode-required MKV 4K source when a native 1080p source exists", () => {
     const mkv4k = makeSource({
       id: "mkv-4k",
@@ -240,7 +235,7 @@ describe("pickDefaultSource / sortSourcesForPicker — transcode-required surfac
     expect(picked?.id).toBe("native-1080");
   });
 
-  it("still becomes the default pick when it's the ONLY source — never hidden, never left with no pick at all", () => {
+  it("returns no default when the only source is unavailable in this browser", () => {
     const mkv4k = makeSource({
       id: "mkv-4k-only",
       provider: "Debrid",
@@ -251,10 +246,10 @@ describe("pickDefaultSource / sortSourcesForPicker — transcode-required surfac
       maxHeight: 2160,
     });
     const picked = pickDefaultSource([mkv4k]);
-    expect(picked?.id).toBe("mkv-4k-only");
+    expect(picked).toBeNull();
   });
 
-  it("stays visible and selectable in the manual picker even though it sorts below the native source", () => {
+  it("stays visible in the manual picker even though it sorts below the native source", () => {
     const mkv4k = makeSource({
       id: "mkv-4k",
       provider: "Debrid",
@@ -708,8 +703,8 @@ describe("isSourcePlayableHere", () => {
   });
 });
 
-describe("qualityBadge — transcode-required honesty", () => {
-  it('appends "· transcode" for a compat:"safari" source this browser can\'t decode natively', () => {
+describe("qualityBadge — browser compatibility honesty", () => {
+  it('appends "· unavailable" for a compat:"safari" source this browser can\'t decode natively', () => {
     const safariOnly = makeSource({
       id: "safari-4k",
       provider: "Debrid",
@@ -718,9 +713,7 @@ describe("qualityBadge — transcode-required honesty", () => {
       codec: "hevc",
       maxHeight: 2160,
     });
-    // Capped to the transcode target (1080p) — never claims the source's
-    // real 4K height when it will actually be delivered at 1080p.
-    expect(qualityBadge(safariOnly)).toBe("1080p · transcode (Debrid)");
+    expect(qualityBadge(safariOnly)).toBe("4K · unavailable (Debrid)");
   });
 
   it("never tags a native-compat or embed source, and keeps the real height", () => {
@@ -737,7 +730,7 @@ describe("qualityBadge — transcode-required honesty", () => {
     expect(qualityBadge(embed)).toBe("1080p");
   });
 
-  it('appends "· transcode" (never a browser name) for an unplayable-here codec:"av1" release too — the app transcodes regardless of which codec/container is the reason', () => {
+  it('appends "· unavailable" for an unplayable-here codec:"av1" release too', () => {
     const av1 = makeSource({
       id: "av1-4k",
       provider: "Debrid",
@@ -746,10 +739,10 @@ describe("qualityBadge — transcode-required honesty", () => {
       codec: "av1",
       maxHeight: 2160,
     });
-    expect(qualityBadge(av1)).toBe("1080p · transcode (Debrid)");
+    expect(qualityBadge(av1)).toBe("4K · unavailable (Debrid)");
   });
 
-  it('an MKV source is tagged "· transcode" and capped to 1080p even when its (legacy) compat says "native"', () => {
+  it('an MKV source is tagged "· unavailable" at its real height even when its (legacy) compat says "native"', () => {
     const mkv = makeSource({
       id: "mkv-4k",
       provider: "Debrid",
@@ -759,10 +752,10 @@ describe("qualityBadge — transcode-required honesty", () => {
       container: "mkv",
       maxHeight: 2160,
     });
-    expect(qualityBadge(mkv)).toBe("1080p · transcode (Debrid)");
+    expect(qualityBadge(mkv)).toBe("4K · unavailable (Debrid)");
   });
 
-  it("a below-cap transcode-required source keeps its real (sub-1080p-cap) height", () => {
+  it("an unavailable 720p source keeps its real height", () => {
     const safariOnly720 = makeSource({
       id: "safari-720",
       provider: "Debrid",
@@ -771,7 +764,7 @@ describe("qualityBadge — transcode-required honesty", () => {
       codec: "hevc",
       maxHeight: 720,
     });
-    expect(qualityBadge(safariOnly720)).toBe("720p · transcode (Debrid)");
+    expect(qualityBadge(safariOnly720)).toBe("720p · unavailable (Debrid)");
   });
 });
 

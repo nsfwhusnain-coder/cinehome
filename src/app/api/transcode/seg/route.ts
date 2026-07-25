@@ -5,8 +5,8 @@ import { rewritePlaylist } from "@/lib/playback/transcode-playlist";
 /**
  * GET /api/transcode/seg?key=<24hex>&f=<file>
  *
- * Serves a transcode-cache segment/playlist file so the browser can fetch
- * the segments referenced by the playlist returned from /api/transcode.
+ * Serves a legacy transcode-cache segment/playlist file only when the
+ * explicitly opt-in transcoder is enabled.
  * (Next.js App Router requires sub-paths to have their own route.ts — the seg
  * handler can't live in the parent /api/transcode/route.ts.)
  *
@@ -31,6 +31,12 @@ export async function GET(req: NextRequest) {
   const userId = await getAuthenticatedUserId();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (process.env.TRANSCODER_ENABLED !== "1") {
+    return NextResponse.json(
+      { error: "Server transcoding is unavailable" },
+      { status: 503 }
+    );
   }
 
   const url = new URL(req.url);

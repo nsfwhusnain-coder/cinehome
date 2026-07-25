@@ -309,7 +309,7 @@ export function PlayerControls({
         onClose={() => setShowServers(false)}
         onSelect={(id) => {
           const src = sources.find((s) => s.id === id);
-          if (src) onSourceChange(src);
+          if (src && isSourcePlayableHere(src)) onSourceChange(src);
           setShowServers(false);
         }}
       />

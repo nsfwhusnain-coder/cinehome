@@ -4,9 +4,9 @@ import { resolveFullRoster } from "@/lib/playback/resolve-full";
 import { rewritePlaylist } from "@/lib/playback/transcode-playlist";
 
 /**
- * Transcode front — serves HLS ladders built by the in-container transcoder
- * (mini-services/transcoder on :3040) so HEVC/AV1/MKV sources play on every
- * browser, including HEVC-incapable Chrome/Firefox.
+ * Legacy transcode front — retained for isolated redesign/testing, but
+ * production-disabled unless TRANSCODER_ENABLED is exactly "1". The current
+ * whole-file worker has no safe shared-host resource envelope.
  *
  * Two routes:
  *   GET /api/transcode?type=&id=&sourceId=&maxHeight=
@@ -33,6 +33,15 @@ export async function GET(req: NextRequest) {
   const userId = await getAuthenticatedUserId();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (process.env.TRANSCODER_ENABLED !== "1") {
+    return NextResponse.json(
+      {
+        error:
+          "Server transcoding is unavailable; choose a browser-compatible source",
+      },
+      { status: 503 }
+    );
   }
 
   const url = new URL(req.url);

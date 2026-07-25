@@ -24,18 +24,12 @@
  * classes instead of being dominated by whichever class happens to have the
  * most raw entries.
  *
- * CONTAINER — MKV/WebM candidates are KEPT (no longer dropped): no browser,
- * not even Safari, plays those containers directly (see
- * `isBrowserPlayableContainer`), but the in-container VAAPI/libx264
- * transcoder (mini-services/transcoder + /api/transcode) now re-encodes
- * anything a browser can't decode natively into an H.264 HLS ladder, so a
- * dropped MKV/HEVC/4K release used to mean a real title (often the BEST
- * available release) never reached the player at all. `container`/`codec`
- * are parsed and carried all the way through to the resolved
- * `PlaybackSource` (see index.ts's `toRdPlaybackSource`) so the client's
- * `isSourcePlayableHere` (source-quality.ts) can decide honestly whether a
- * given browser plays it directly or needs the transcode route — never
- * fabricated, never silently dropped.
+ * CONTAINER — MKV/WebM candidates are kept in the resolved inventory, but
+ * no browser plays them directly (see `isBrowserPlayableContainer`). The
+ * legacy whole-file transcoder is production-disabled after exceeding safe
+ * host resource limits, so `container`/`codec` are carried to the client and
+ * `isSourcePlayableHere` keeps incompatible rows visible but disabled.
+ * Safari-compatible HEVC-in-MP4/MOV candidates still direct-play there.
  */
 import { tmdb } from "@/lib/tmdb";
 import type { MediaType } from "../types";
@@ -73,8 +67,8 @@ export interface ParsedRelease {
    * that surfaces a source straight to a `<video>` tag (this module's own
    * `isBrowserPlayableContainer`, consumed by source-quality.ts's
    * `isSourcePlayableHere`) MUST check `container` separately — a MKV/WebM
-   * release is never "playable somewhere" in the native sense, it needs the
-   * /api/transcode route regardless of `compat`. Conversely, a
+   * release is never "playable somewhere" in the native sense and is
+   * production-unavailable while the legacy transcoder is disabled. Conversely, a
    * caller that cares about AV1-on-old-Safari specifically should gate on
    * `codec === "av1"` itself (a browser/version capability check) rather
    * than assuming `compat === "native"` means every engine can decode it —
@@ -202,12 +196,9 @@ export function isEligibleDebridQuality(height: number | null): height is 1080 |
  * WEB-DL/HDTV encodes are MP4 in practice — never fabricated as literally
  * "mp4", just not excluded.
  *
- * NOTE: this is no longer used to DROP candidates here (see the module
- * header) — a `false` result now means "needs the /api/transcode route",
- * not "unusable". The canonical consumer is `isSourcePlayableHere` in
- * source-quality.ts, which folds this same container check together with
- * the codec/compat checks into one client-facing "plays without transcoding
- * in THIS browser" answer.
+ * NOTE: this is not used to drop inventory candidates here. The canonical
+ * consumer is `isSourcePlayableHere` in source-quality.ts, which folds the
+ * container and codec checks into one client-facing direct-play answer.
  */
 export function isBrowserPlayableContainer(container: ReleaseContainer): boolean {
   return container !== "mkv" && container !== "webm";
@@ -346,8 +337,8 @@ async function fetchTorrentioJson(url: string): Promise<TorrentioResponseRaw | n
  * endpoints. MKV/WebM candidates are KEPT (see module header) — their
  * `container`/`codec` are carried through unchanged so downstream (RD slot
  * selection, TorBox's own candidate reuse, and ultimately the client's
- * `isSourcePlayableHere`) can route them through the transcoder rather than
- * losing a real release entirely.
+ * `isSourcePlayableHere`) can present them honestly without auto-selecting
+ * an incompatible release.
  */
 function parseTorrentioStreams(data: TorrentioResponseRaw): DebridCandidate[] {
   const streams = Array.isArray(data.streams) ? data.streams : [];

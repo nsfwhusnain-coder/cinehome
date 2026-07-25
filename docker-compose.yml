@@ -21,6 +21,10 @@ services:
       - .env
     environment:
       - HOSTNAME=0.0.0.0
+      # Whole-file live transcoding exceeded 17 GiB / 1,300% CPU in production
+      # during a cold HEVC/MKV start. Keep it opt-in until the worker is
+      # redesigned as a bounded, segment-on-demand pipeline.
+      - TRANSCODER_ENABLED=${TRANSCODER_ENABLED:-0}
       # Lordflix-class multi-source API (cinepro-core on embedin_default network):
       - CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}
       # Scraper kill switches / log level (optional; also via .env — see CINEHOME.md / .env.example):

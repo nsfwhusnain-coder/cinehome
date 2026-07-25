@@ -27,27 +27,23 @@ export interface ServerItem {
   premium?: boolean;
   /**
    * False when THIS browser can't play this release natively (HEVC/AV1 it
-   * can't decode, or any MKV/WebM container) — it plays via /api/transcode
-   * instead. Never hides the row — still selectable per the product rule
-   * ("selectable, not auto-picked") — only groups/sorts it honestly below
-   * what actually plays here natively. Undefined/true = plays here.
+   * can't decode, or any MKV/WebM container). The legacy server transcoder
+   * is production-disabled, so the row stays visible for inventory honesty
+   * but cannot be selected here. Undefined/true = plays here.
    */
   playableHere?: boolean;
   /** Best-known resolution height, for quality-tier grouping (4K/1080p/…). */
   height?: number;
-  /** Small per-row resolution badge text (e.g. "4K", "1080p · transcode") — the
+  /** Small per-row resolution badge text (e.g. "4K", "4K · unavailable") — the
    * quality-per-server-at-a-glance marker; name itself stays quality-free. */
   qualityLabel?: string;
 }
 
 /** Group header text for a row — resolution tier for playable rows, or an
- * honest reason it's sorted below (never a silent, unlabeled reordering).
- * `playableHere === false` no longer means unusable — it plays via the
- * in-container transcoder (a short startup delay), so the header must say
- * that rather than the old (now false) "Not available in this browser". */
+ * honest reason it is sorted below (never a silent, unlabeled reordering). */
 function sectionLabelFor(server: ServerItem): string {
   if (server.failed) return "Unavailable";
-  if (server.playableHere === false) return "Plays via transcode";
+  if (server.playableHere === false) return "Unavailable in this browser";
   return formatResolutionLabel(server.height ?? 0);
 }
 
@@ -174,12 +170,17 @@ export function ServersPanel({
               <li>
                 <button
                   type="button"
-                  onClick={() => onSelect(server.id)}
+                  disabled={server.playableHere === false}
+                  onClick={() => {
+                    if (server.playableHere !== false) onSelect(server.id);
+                  }}
                   data-source-id={server.id}
                   aria-label={[
                     server.name,
                     server.qualityLabel,
-                    server.failed
+                    server.playableHere === false
+                      ? "unavailable in this browser"
+                      : server.failed
                       ? "unavailable, tap to retry"
                       : server.active
                         ? "live"
@@ -189,13 +190,16 @@ export function ServersPanel({
                     .join(" — ")}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[13px] transition-colors",
-                    !server.active && "border-transparent hover:border-white/10 hover:bg-white/[0.08]",
+                    !server.active &&
+                      server.playableHere !== false &&
+                      "border-transparent hover:border-white/10 hover:bg-white/[0.08]",
                     server.active
                       ? "border-white/20 bg-white/15 font-medium text-white"
                       : muted
                         ? "text-white/45"
                         : "text-white/75",
-                    server.failed && "opacity-60"
+                    server.failed && "opacity-60",
+                    server.playableHere === false && "cursor-not-allowed opacity-55"
                   )}
                 >
                   <span

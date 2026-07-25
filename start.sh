@@ -20,11 +20,12 @@ start_scraper() {
   echo "[start.sh] stream-scraper started (pid=$SCRAPER_PID)"
 }
 
-# Transcode worker (AMD VAAPI h264_vaapi → HLS ABR ladders for HEVC sources).
-# Optional: disabled if TRANSCODER_ENABLED=0. Never blocks app boot.
+# Legacy whole-file transcode worker. Disabled by default: a cold HEVC/MKV
+# request can consume unbounded CPU/RAM. Explicit opt-in only while retained
+# for isolated development; it never blocks app boot.
 start_transcoder() {
-  if [ "${TRANSCODER_ENABLED:-1}" = "0" ]; then
-    echo "[start.sh] transcoder disabled (TRANSCODER_ENABLED=0)"
+  if [ "${TRANSCODER_ENABLED:-0}" != "1" ]; then
+    echo "[start.sh] transcoder disabled (set TRANSCODER_ENABLED=1 to opt in)"
     return 0
   fi
   if [ -f /app/mini-services/transcoder/index.ts ]; then

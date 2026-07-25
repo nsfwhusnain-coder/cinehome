@@ -1603,6 +1603,7 @@ export function VideoPlayer({
   /** Dock / settings server pick — locks out enrich auto-upgrade for this session. */
   const handleUserSourceChange = useCallback(
     (source: PlaybackSource) => {
+      if (!isSourcePlayableHere(source)) return;
       userSelectedSourceRef.current = true;
       handleSourceChange(source, { userPick: true });
     },

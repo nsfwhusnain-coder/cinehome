@@ -3,8 +3,14 @@
 **NOT a Godot project.** Ignore workspace `CLAUDE.md` Godot rules for this repo.
 
 ## Source of truth (SoT)
-- **Local git SoT**: clone / worktree root for this repo (e.g. `cinehome-sot` on the developer machine).
-- **Server path**: `/home/hussy/cinehome`
+- **Current authoritative Git tree**: `/home/hussy/cinehome` on `hussyserver`,
+  branch `main`. The exact pre-ownership running state is commit `11847dd` and
+  tag `production-baseline-20260725`.
+- The deployed tree had no Git history and the previously documented canonical
+  repository was on an unavailable machine. We deliberately initialized Git on
+  the verified deploy copy so every production build now has one recoverable
+  authority. Developer-machine copies are mirrors until the old repository is
+  reconciled; never push a stale local tree over the server authority.
 - **Canonical App Router**: `src/app` only. There is no root `app/` router.
 
 ## Stack
@@ -76,6 +82,20 @@ Disk hygiene:
 **Note:** `docker builder prune` is always **host-wide** (every project’s BuildKit cache on the machine), not CineHome-only. Default uses `--filter until=168h` so recent cache is kept; use `--builder-all` only on a dedicated box when you need max reclaim.
 
 Secrets: copy `.env.example` → `.env` on the server. **Never commit `.env`.** `deploy.sh` rsync includes `.env.example` but never pushes `.env` / other `.env.*`.
+
+### Transcoder safety
+
+`TRANSCODER_ENABLED=0` is the production default. The retained legacy worker
+transcodes a whole remote file into an HLS ladder; a measured cold HEVC/MKV
+request reached 1,378% CPU, 17.4 GiB RAM, and 610 container PIDs, then left the
+Next process in memory pressure after ffmpeg exited. The app and both transcode
+routes therefore fail closed unless the flag is exactly `1`, and incompatible
+sources remain visible but disabled in browser pickers.
+
+Do not enable this on the shared production host. It is retained only for
+isolated redesign work until the pipeline has hard concurrency/memory limits,
+segment-on-demand behavior, cancellation, and load tests proving bounded use.
+Native browser-compatible debrid MP4 sources direct-play without this worker.
 
 ## Agent workflow (handoffs only)
 1. Research → write `.claude/handoffs/research-*.md`

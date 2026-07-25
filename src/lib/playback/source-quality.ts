@@ -234,22 +234,11 @@ export function formatResolutionLabel(height: number): string {
   return "Auto";
 }
 
-/**
- * Badge height — honest about what will ACTUALLY be delivered. A source
- * this browser can't decode natively is routed through /api/transcode
- * (video-player.tsx's `needsTranscode`), which caps its ladder at
- * `TRANSCODE_MAX_HEIGHT` (live 4K transcoding is too slow-starting to offer
- * — see mini-services/transcoder). So a 4K HEVC/MKV source viewed on Chrome
- * must badge as "1080p", never "4K" — the badge would otherwise promise a
- * resolution the transcode path never actually produces. Playable-here
- * sources (native decode, or Safari decoding HEVC/AV1 natively) are
- * unaffected and keep their real height.
- */
+/** Badge the source's real advertised height. Decode-incompatible releases
+ * remain visible but are explicitly marked unavailable; the UI must not
+ * invent a lower resolution for a transcode path that production disables. */
 function baseQualityBadge(source: PlaybackSource): string {
-  const rawHeight = sourceMaxHeight(source);
-  const h = isSourcePlayableHere(source)
-    ? rawHeight
-    : Math.min(rawHeight, TRANSCODE_MAX_HEIGHT);
+  const h = sourceMaxHeight(source);
   if (h >= 2160) return "4K";
   if (h >= 1080) return "1080p";
   if (h >= 720) return "720p";
@@ -258,27 +247,17 @@ function baseQualityBadge(source: PlaybackSource): string {
   return source.quality !== "auto" ? source.quality : "Auto";
 }
 
-/**
- * Short, honest marker for a source that needs the in-container transcoder
- * rather than native decode. Previously this named the OTHER browser that
- * could play the release directly ("· Safari" / "· Chrome") — that advice is
- * now obsolete (and, for MKV/WebM, was actively WRONG: no browser, including
- * Safari, plays those containers) now that /api/transcode exists. "transcode"
- * is true regardless of which browser is viewing: it never implies native
- * playback, and it never tells the owner to switch browsers when the app
- * already handles it server-side (with a short startup delay — see the
- * player's "Preparing stream…" state).
- */
-const TRANSCODE_BADGE_TAG = "transcode";
+/** Short, honest marker for a source this browser cannot decode or demux.
+ * The legacy whole-file transcoder is production-disabled after exceeding
+ * safe shared-host resource limits, so these rows cannot be selected. */
+const UNAVAILABLE_BADGE_TAG = "unavailable";
 
 export function qualityBadge(source: PlaybackSource): string {
   const badge = baseQualityBadge(source);
-  // Honest label: a release this browser can't decode/demux natively must
-  // say so in the Server list BEFORE the owner clicks it — "1080p ·
-  // transcode" rather than a bare "4K" implying native playback here.
+  // A release this browser cannot decode/demux says so before it is clicked.
   const withCompatTag = isSourcePlayableHere(source)
     ? badge
-    : `${badge} · ${TRANSCODE_BADGE_TAG}`;
+    : `${badge} · ${UNAVAILABLE_BADGE_TAG}`;
   if (source.origin !== "debrid") return withCompatTag;
   // Distinguish the TorBox sibling tier from Real-Debrid in the UI — both
   // still get the same debrid ranking bonus/transcode penalty (origin-based).
@@ -383,8 +362,8 @@ function detectAv1Support(): boolean {
 }
 
 /**
- * False for a release this exact browser cannot play WITHOUT the
- * /api/transcode route. Container-first, then codec-first, independent of
+ * False for a release this exact browser cannot play directly.
+ * Container-first, then codec-first, independent of
  * `compat`:
  *  - Container: MKV/WebM play in NO browser, not even Safari, regardless of
  *    the codec inside (`isBrowserPlayableContainer`, shared with the
@@ -403,9 +382,8 @@ function detectAv1Support(): boolean {
  *    HEVC gate, unchanged.
  * Embed sources never carry `container`/`compat`/non-h264 `codec`, so they
  * always read true (unchanged: "always treated as natively playable" per
- * the type doc). Never used to hide a source — the Server list keeps it
- * selectable, routed through /api/transcode instead — only to
- * rank/badge/auto-pick it honestly.
+ * the type doc). The Server list keeps incompatible releases visible for
+ * inventory honesty, but production disables selection and auto-pick.
  */
 export function isSourcePlayableHere(source: PlaybackSource): boolean {
   if (source.container && !isBrowserPlayableContainer(source.container)) return false;
@@ -720,27 +698,22 @@ function isSoftKept(source: PlaybackSource): boolean {
  */
 function autoPlayPool(sources: PlaybackSource[]): PlaybackSource[] {
   const hevcOk = browserSupportsHevc();
-  const notHardDead = sources.filter(
+  const browserPlayable = sources.filter(isSourcePlayableHere);
+  const notHardDead = browserPlayable.filter(
     (s) =>
       s.probe?.ok !== false &&
       !isSoftKept(s) &&
       (!isHevcSource(s) || hevcOk) &&
-      // A transcode-required debrid release (HEVC/AV1 this browser can't
-      // decode, or any MKV/WebM container) must never auto-default over a
-      // natively-playable source — same signal used for the score tax. It
-      // is NOT removed from the roster: sortSourcesForPicker still lists it
-      // (sorted below), and the fallback branch just below still returns it
-      // when it's the ONLY thing available (e.g. a browser with no native
-      // 4K path — a transcode-required 4K/MKV source is that browser's
-      // ONLY way to get >1080p, so it must never be hidden outright).
-      (s.origin !== "debrid" || isSourcePlayableHere(s))
+      isSourcePlayableHere(s)
   );
   if (!notHardDead.length) {
-    const soft = sources.filter((s) => s.probe?.ok !== false);
+    // Keep failed/soft sources as manual auto-recovery fallbacks, but never
+    // route an incompatible source into the production-disabled transcoder.
+    const soft = browserPlayable.filter((s) => s.probe?.ok !== false);
     // Prefer non-poison even among soft fallbacks.
     const softClean = soft.filter((s) => !isNeverAutoDefaultUrl(s.url));
     if (softClean.length) return softClean;
-    return soft.length ? soft : sources;
+    return soft.length ? soft : browserPlayable;
   }
 
   // Strip poison when any non-poison playable source exists.

@@ -21,7 +21,12 @@ import { GLASS_PILL_STYLE } from "@/components/glass-pill";
 import { usePlayerStore, PLAYBACK_SPEEDS, type MediaTrack } from "@/stores/player-store";
 import { buildServerSlots, type ServerSlot } from "@/lib/playback/expected-servers";
 import { STABLE_SERVER_CAP } from "@/lib/playback/server-theme";
-import { formatResolutionLabel, preferenceKey, sourceMaxHeight } from "@/lib/playback/source-quality";
+import {
+  formatResolutionLabel,
+  isSourcePlayableHere,
+  preferenceKey,
+  sourceMaxHeight,
+} from "@/lib/playback/source-quality";
 import {
   effectiveLevelHeight,
   isQualityMismatch,
@@ -330,6 +335,7 @@ export function PlayerDock({
   };
 
   const pickSource = (source: PlaybackSource) => {
+    if (!isSourcePlayableHere(source)) return;
     setPreferredProvider(preferenceKey(source));
     onSourceChange(source);
     onExpandedSectionChange(null);
@@ -450,17 +456,25 @@ export function PlayerDock({
             // removed, never disabled. Same rule as the Cloud-panel list.
             const failed = slot.status === "failed";
             const hasSource = !!slot.source;
+            const selectable = !!slot.source && isSourcePlayableHere(slot.source);
             return (
               <button
                 key={slot.id}
                 type="button"
-                onClick={() => slot.source && pickSource(slot.source)}
+                disabled={hasSource && !selectable}
+                onClick={() => selectable && slot.source && pickSource(slot.source)}
+                aria-label={
+                  hasSource && !selectable
+                    ? `${slot.name} — unavailable in this browser`
+                    : slot.name
+                }
                 className={cn(
                   "flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[13px] transition-colors",
-                  hasSource && "hover:bg-white/10",
+                  selectable && "hover:bg-white/10",
                   slot.status === "active" && "bg-white/10 font-medium text-white",
                   failed && "opacity-55",
-                  !failed && slot.status !== "active" && "text-white/75"
+                  !failed && slot.status !== "active" && "text-white/75",
+                  hasSource && !selectable && "cursor-not-allowed opacity-45"
                 )}
               >
                 <span
@@ -480,6 +494,11 @@ export function PlayerDock({
                   <Loader2 className="h-3 w-3 shrink-0 animate-spin text-white/40" />
                 )}
                 {slot.status === "active" && <Check className="h-3.5 w-3.5 shrink-0 text-[#c026d3]" />}
+                {hasSource && !selectable && (
+                  <span className="shrink-0 text-[9px] uppercase tracking-wide text-white/40">
+                    Unavailable
+                  </span>
+                )}
               </button>
             );
           })}

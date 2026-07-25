@@ -400,3 +400,38 @@ First live deployment and follow-up:
   to a newly hash-identified candidate. A normalized ASCII release-title key
   now acts as that migration bridge (empty/non-ASCII-only keys are ignored);
   it is used only for deduplication, never as proof that media is healthy.
+
+### Production transcode incident and containment
+
+An exact-browser Fight Club playback pass selected the first debrid MP4 row,
+which was the `safari-2160` HEVC/MKV release. The native Luna path itself
+reached a real 1920x1080 H.264/AAC frame and advanced continuously, but cold
+first frame was 14,144 ms and a mid-title seek took 25,271 ms. The requested
+debrid failover never became playable within 30 seconds.
+
+The transcode worker first attempted VAAPI decode/encode for 1080/720/480 and
+emitted the AMD DRM error `os_same_file_description couldn't determine if two
+DRM fds reference same`. It then fell back to a three-rung software encode of
+the entire remote feature. Container load reached 1,378.51% CPU, 17.4 GiB RAM,
+and 610 PIDs. Killing the exact QA ffmpeg process did not recover the app:
+the Bun/Next process remained at roughly 18.6 GiB RSS and 96% CPU under memory
+pressure.
+
+Containment was deliberately exact and reversible:
+
+- killed only the QA ffmpeg process;
+- removed only its validated cache key
+  `af90f9d74aff20f0fda7615c`;
+- restarted the CineHome container on the unchanged production image;
+- confirmed it returned healthy at 458.7 MiB, 2.83% CPU, and 369 PIDs;
+- rechecked SQLite integrity plus all 13 users, 17 watchlist rows, and 82
+  progress rows.
+
+Root cause is architectural: the legacy worker starts a whole-file,
+multi-rendition encode without a production-safe memory/concurrency envelope.
+This is not repairable with a longer player timeout. Production now defaults
+`TRANSCODER_ENABLED=0`; `start.sh` requires an explicit `1`, both authenticated
+transcode routes return 503 while disabled, incompatible rows are visibly
+labelled and disabled in both server pickers, and auto-selection returns no
+default rather than entering the worker. Native-compatible Real-Debrid files
+continue to direct-play.
