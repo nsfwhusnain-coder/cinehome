@@ -247,12 +247,27 @@ function slotQuality(slot: DebridSlot): DebridQuality {
   return slotHeight(slot) === 2160 ? "2160p" : "1080p";
 }
 
-/**
- * Builds the honestly-tagged `PlaybackSource` for one RD roster slot.
- * `codec`/`container` are only known on a fresh resolve (see the module-level
- * note in cached-stream.ts on why they aren't persisted through a cache-hit
- * read) — omitted rather than guessed when absent.
- */
+/** Infer only an explicit media extension from a token-free direct URL.
+ * Legacy cache rows may predate persisted container metadata; without this
+ * bridge an H.264-in-MKV URL is mislabeled native and handed to `<video>`. */
+function effectiveReleaseContainer(
+  url: string,
+  parsed?: ReleaseContainer
+): ReleaseContainer | undefined {
+  if (parsed && parsed !== "unknown") return parsed;
+  try {
+    const pathname = decodeURIComponent(new URL(url).pathname).toLowerCase();
+    if (/\.mkv$/.test(pathname)) return "mkv";
+    if (/\.webm$/.test(pathname)) return "webm";
+    if (/\.mp4$/.test(pathname)) return "mp4";
+    if (/\.mov$/.test(pathname)) return "mov";
+  } catch {
+    // An opaque but already-sanitized URL remains unknown, never fabricated.
+  }
+  return parsed;
+}
+
+/** Builds the honestly-tagged `PlaybackSource` for one RD roster slot. */
 function toRdPlaybackSource(
   slot: DebridSlot,
   imdbId: string,
@@ -266,6 +281,7 @@ function toRdPlaybackSource(
   const height = slotHeight(slot);
   const quality = slotQuality(slot);
   const safariHint = record.compat === "safari" ? " · Safari" : "";
+  const effectiveContainer = effectiveReleaseContainer(record.url, container);
   return {
     id: buildSourceId("realdebrid", imdbId, mediaType, season, episode, slot),
     url: record.url,
@@ -277,7 +293,9 @@ function toRdPlaybackSource(
     origin: "debrid",
     compat: record.compat,
     ...(codec && codec !== "unknown" ? { codec } : {}),
-    ...(container && container !== "unknown" ? { container } : {}),
+    ...(effectiveContainer && effectiveContainer !== "unknown"
+      ? { container: effectiveContainer }
+      : {}),
   };
 }
 
@@ -580,13 +598,17 @@ async function resolveRealDebridSlots(
     // slot) rather than ever cache or return a token-bearing link.
     const safeUrl = sanitizeStreamUrl(resolved.directUrl, rdToken);
     if (!safeUrl) continue;
+    const effectiveContainer = effectiveReleaseContainer(
+      safeUrl,
+      resolved.container
+    );
     const record: CachedStreamRecord = {
       title: resolved.title,
       source: resolved.infoHash ?? safeUrl,
       url: safeUrl,
       compat: resolved.compat,
       ...(resolved.codec ? { codec: resolved.codec } : {}),
-      ...(resolved.container ? { container: resolved.container } : {}),
+      ...(effectiveContainer ? { container: effectiveContainer } : {}),
     };
     await upsertCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" }, record);
     newSources.push(
@@ -598,7 +620,7 @@ async function resolveRealDebridSlots(
         keyBase.episode,
         record,
         resolved.codec,
-        resolved.container
+        effectiveContainer
       )
     );
   }
@@ -671,7 +693,18 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
         ? await validateDebridMediaLink(safeUrl, req.mediaType, RD_FAST_VALIDATION_TIMEOUT_MS)
         : null;
     if (hit && safeUrl && validation?.acceptable) {
-      return [toRdPlaybackSource(slot, imdbId, req.mediaType, season, episode, { ...hit, url: safeUrl })];
+      return [
+        toRdPlaybackSource(
+          slot,
+          imdbId,
+          req.mediaType,
+          season,
+          episode,
+          { ...hit, url: safeUrl },
+          hit.codec,
+          hit.container
+        ),
+      ];
     }
     if (hit && validation && !validation.acceptable) {
       logRejectedRdMedia(hit, validation, req.mediaType, "cache", imdbId, slot);

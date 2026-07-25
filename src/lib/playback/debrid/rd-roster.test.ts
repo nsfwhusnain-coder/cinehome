@@ -298,6 +298,25 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(calls).toBe(0);
   });
 
+  it("fast path: legacy cache URL restores an omitted MKV container before it reaches the player", async () => {
+    mockTorrentioStreams([]);
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
+      title: "Legacy.1080p.H264",
+      source: "legacy",
+      url: `http://127.0.0.1:${server.port}/cdn/legacy.1080p.h264.mkv`,
+      compat: "native",
+      codec: "h264",
+    });
+
+    const sources = await resolveFastDebridSources({
+      tmdbId: 1,
+      mediaType: "movie",
+    });
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.container).toBe("mkv");
+  });
+
   it("full path: rejects a resolved short clip and falls through to the next ranked release", async () => {
     const slots = ["native-2160", "safari-2160", "native-1080-2", "native-1080-3"];
     for (const slot of slots) {

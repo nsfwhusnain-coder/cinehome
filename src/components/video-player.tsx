@@ -2013,6 +2013,19 @@ export function VideoPlayer({
     const sourceAttempt = sourceAttemptControllerRef.current.begin(
       activeSourceRef.current?.id ?? effectiveSrc
     );
+    // Bind the HTMLMediaElement error to this exact source generation. A
+    // component-wide listener that looked up "currentToken" at callback time
+    // could miss a progressive MP4 failure during a source/effect transition,
+    // leaving the video paused in MEDIA_ERR_NETWORK forever. Engine callbacks
+    // already carry their generation; the native media path must do the same.
+    const onBoundMediaElementError = () => {
+      if (stallTimerRef.current) {
+        clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
+      failActiveSource("media_element_error", sourceAttempt);
+    };
+    video.addEventListener("error", onBoundMediaElementError);
     let dashCancelled = false;
     let zeroProgressTimer: ReturnType<typeof setTimeout> | null = null;
     let onTimeProgress: (() => void) | null = null;
@@ -2673,6 +2686,7 @@ export function VideoPlayer({
 
     return () => {
       dashCancelled = true;
+      video.removeEventListener("error", onBoundMediaElementError);
       // reset()/destroy() can synchronously abort XHR and emit loadend. Make
       // that callback stale before teardown starts.
       sourceAttemptControllerRef.current.invalidate(sourceAttempt);
@@ -2950,13 +2964,6 @@ export function VideoPlayer({
       // Read via ref — see onProgressRef note above (task 8).
       onEndedRef.current?.();
     };
-    const onError = () => {
-      if (stallTimerRef.current) {
-        clearTimeout(stallTimerRef.current);
-        stallTimerRef.current = null;
-      }
-      failActiveSource("media_element_error");
-    };
     const onEnterPip = () => setIsPip(true);
     const onLeavePip = () => setIsPip(false);
 
@@ -3034,7 +3041,6 @@ export function VideoPlayer({
     video.addEventListener("canplaythrough", onCanPlayThrough);
     video.addEventListener("volumechange", onVolumeChange);
     video.addEventListener("ended", onEndedHandler);
-    video.addEventListener("error", onError);
     video.addEventListener("enterpictureinpicture", onEnterPip);
     video.addEventListener("leavepictureinpicture", onLeavePip);
 
@@ -3052,7 +3058,6 @@ export function VideoPlayer({
       video.removeEventListener("canplaythrough", onCanPlayThrough);
       video.removeEventListener("volumechange", onVolumeChange);
       video.removeEventListener("ended", onEndedHandler);
-      video.removeEventListener("error", onError);
       video.removeEventListener("enterpictureinpicture", onEnterPip);
       video.removeEventListener("leavepictureinpicture", onLeavePip);
     };
