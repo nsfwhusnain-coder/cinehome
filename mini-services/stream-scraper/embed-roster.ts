@@ -1,7 +1,7 @@
 /**
  * Playwright embed roster — primary + secondary waves (Phase 3).
  *
- * Primary (always when PW runs): max 4 high-yield hosts.
+ * Primary (always when PW runs): Vidking, the sole currently productive host.
  * Secondary (only when verified/non-poison sources < 2 after primary+API):
  *   2embed + multiembed + one extra vidsrc mirror.
  *
@@ -11,9 +11,14 @@
  *
  * Roster hygiene (2026-07-21): VidFast (vidfast.pro) and VidsrcTO (vidsrc.to)
  * dropped from the primary wave — 24h of production logs showed 8/8 persistent
- * misses each (never once returned a stream). Vidking + VidNest stay; the
- * secondary wave (2embed/multiembed/vidsrc.me) already backfills when the
- * primary wave comes up thin. See docs/research/fmhy-15plus-source-map.md.
+ * misses each (never once returned a stream). See
+ * docs/research/fmhy-15plus-source-map.md.
+ *
+ * Roster hygiene (2026-07-26): VidNest missed 8/8 measured production
+ * enrichments and then 3/3 isolated provider-only captures (Fight Club,
+ * Oppenheimer, The Office). Each busy page consumed a Chromium worker for up
+ * to 16 seconds. It was removed from the primary wave; API providers already
+ * supply the fallback roster when Vidking misses.
  */
 
 export interface EmbedSourceSpec {
@@ -30,7 +35,7 @@ export interface EmbedSourceSpec {
 }
 
 /** Max hosts in the primary Playwright wave. */
-export const PRIMARY_MAX = 4;
+export const PRIMARY_MAX = 1;
 /** Max hosts in the secondary Playwright wave. */
 export const SECONDARY_MAX = 3;
 /**
@@ -86,7 +91,7 @@ const secondaryBudgets: Omit<EmbedSourceSpec, "url"> = {
 
 /**
  * Primary wave — always when Playwright runs.
- * Order (live probe 2026-07-19, working-first latency): Vidking → VidNest.
+ * Live production measurement (2026-07-26): Vidking 2/8, VidNest 0/8.
  * VidFast (vidfast.pro) and VidsrcTO (vidsrc.to) were dropped 2026-07-21 —
  * 8/8 persistent misses each over 24h of production logs (see file header).
  */
@@ -102,19 +107,11 @@ export function buildPrimarySourceUrls(
         url: `https://www.vidking.net/embed/tv/${tmdbId}/${season}/${episode}?color=${THEME}&autoPlay=true`,
         ...primaryBudgets,
       },
-      {
-        url: `https://vidnest.fun/tv/${tmdbId}/${season}/${episode}`,
-        ...primaryBudgets,
-      },
     ].slice(0, PRIMARY_MAX);
   }
   return [
     {
       url: `https://www.vidking.net/embed/movie/${tmdbId}?color=${THEME}&autoPlay=true`,
-      ...primaryBudgets,
-    },
-    {
-      url: `https://vidnest.fun/movie/${tmdbId}`,
       ...primaryBudgets,
     },
   ].slice(0, PRIMARY_MAX);

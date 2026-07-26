@@ -49,7 +49,7 @@ CinePro providers (example): Icefy, VidApi, VixSrc, VidNest, VidZee, Peachify, T
 
 ### Scraper resource envelope
 
-`BROWSER_POOL_SIZE` defaults to 2 and is clamped to 2..6. The pool is shared
+`BROWSER_POOL_SIZE` defaults to 1 and is clamped to 1..4. The pool is shared
 across requests, so concurrent title enrichment queues instead of spawning an
 unbounded browser per request. Each browser owns multiple Chromium processes;
 raise the override only after measuring CPU, RSS, queue depth, and user TTFF

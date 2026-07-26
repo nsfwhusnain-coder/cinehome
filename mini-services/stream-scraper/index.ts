@@ -86,8 +86,8 @@ import { browserPoolSize } from "./browser-pool-config";
 
 const PORT = 3030;
 /**
- * Shared Playwright pool — env BROWSER_POOL_SIZE (min 2, max 6), default 2.
- * Two browsers cover the complete two-host primary wave. Concurrent title
+ * Shared Playwright pool — env BROWSER_POOL_SIZE (min 1, max 4), default 1.
+ * The active primary wave has one measured high-yield host. Concurrent title
  * enrichment queues in the shared pool instead of multiplying background CPU.
  * Operators can override within the tested 2..6 envelope.
  */

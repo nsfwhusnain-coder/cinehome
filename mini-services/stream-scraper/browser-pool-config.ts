@@ -6,9 +6,9 @@
  * the shared pool still lets separate title enrichments queue without
  * spawning an unbounded browser per request.
  */
-export const BROWSER_POOL_DEFAULT = 2;
-export const BROWSER_POOL_MIN = 2;
-export const BROWSER_POOL_MAX = 6;
+export const BROWSER_POOL_DEFAULT = 1;
+export const BROWSER_POOL_MIN = 1;
+export const BROWSER_POOL_MAX = 4;
 
 export function browserPoolSize(raw: string | undefined): number {
   const parsed = Number(raw);

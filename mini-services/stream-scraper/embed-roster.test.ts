@@ -75,12 +75,10 @@ describe("buildPrimarySourceUrls", () => {
     expect(primary.some((s) => s.url.includes("vidfast"))).toBe(false);
   });
 
-  it("primary is exactly vidking + vidnest", () => {
+  it("primary is exactly the measured productive Vidking host", () => {
     const movie = buildPrimarySourceUrls(550, "movie");
-    expect(hostsOf(movie)).toEqual([
-      "www.vidking.net",
-      "vidnest.fun",
-    ]);
+    expect(hostsOf(movie)).toEqual(["www.vidking.net"]);
+    expect(movie.some((s) => s.url.includes("vidnest"))).toBe(false);
   });
 });
 
