@@ -86,10 +86,10 @@ import { browserPoolSize } from "./browser-pool-config";
 
 const PORT = 3030;
 /**
- * Shared Playwright pool — env BROWSER_POOL_SIZE (min 2, max 6), default 3.
- * Three browsers cover the two-host primary wave plus one queued/concurrent
- * title without the old five-browser resident/CPU tax. Operators can override
- * within the tested 2..6 envelope.
+ * Shared Playwright pool — env BROWSER_POOL_SIZE (min 2, max 6), default 2.
+ * Two browsers cover the complete two-host primary wave. Concurrent title
+ * enrichment queues in the shared pool instead of multiplying background CPU.
+ * Operators can override within the tested 2..6 envelope.
  */
 const MAX_BROWSERS = browserPoolSize(process.env.BROWSER_POOL_SIZE);
 /** Default goto budget; per-embed specs override for flaky hosts. Cap 10s per provider intent. */

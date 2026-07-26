@@ -4,6 +4,7 @@
  */
 
 import { isPoisonStreamUrl } from "./poison-url";
+import { safeStreamTarget, type StreamPathKind } from "./safe-url-summary";
 
 export interface ProbeSession {
   referer: string;
@@ -65,7 +66,8 @@ export interface ProbeBatchSummary {
   probed: number;
   okCount: number;
   bestScore: number | null;
-  bestUrl: string | null;
+  bestHost: string | null;
+  bestPathKind: StreamPathKind;
   budgetHit: boolean;
   durationMs: number;
 }
@@ -690,12 +692,14 @@ export async function probeSourceBatch(
     }
   }
 
+  const bestTarget = safeStreamTarget(bestUrl);
   lastProbeSummary = {
     at: Date.now(),
     probed: out.size,
     okCount: okOnes.length,
     bestScore,
-    bestUrl: bestUrl ? bestUrl.slice(0, 120) : null,
+    bestHost: bestTarget.host,
+    bestPathKind: bestTarget.pathKind,
     budgetHit,
     durationMs: Date.now() - batchStarted,
   };
