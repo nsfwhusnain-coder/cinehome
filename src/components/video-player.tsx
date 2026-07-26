@@ -3580,6 +3580,8 @@ export function VideoPlayer({
     >
       <video
         ref={videoRef}
+        data-playback-source-id={activeSource?.id || undefined}
+        data-playback-source-provider={activeSource?.provider || undefined}
         poster={poster || undefined}
         // hls.js/dash.js manage their own MSE buffering regardless of this
         // hint; it matters for the native/progressive-mp4 path (no ladder,

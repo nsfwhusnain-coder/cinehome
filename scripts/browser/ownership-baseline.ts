@@ -74,6 +74,7 @@ interface SourceSummary {
   probeOk: boolean | null;
   probeTtfbMs: number | null;
   probeBytesPerSec: number | null;
+  upstreamHost: string | null;
   url: string;
 }
 
@@ -102,6 +103,7 @@ interface BrowserState {
   videoWidth: number;
   videoHeight: number;
   bufferedAhead: number;
+  activeSourceId: string | null;
   src: string;
   mediaError: number | null;
 }
@@ -332,8 +334,24 @@ function watchPath(fixture: Fixture): string {
   return `/watch/${fixture.mediaType}/${fixture.tmdbId}${query ? `?${query}` : ""}`;
 }
 
+function sourceUpstreamHost(rawUrl: string): string | null {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl, BASE);
+    if (parsed.pathname.startsWith("/api/hls/")) {
+      const encoded = parsed.searchParams.get("u");
+      if (!encoded) return null;
+      return new URL(Buffer.from(encoded, "base64url").toString("utf8")).hostname;
+    }
+    return parsed.hostname;
+  } catch {
+    return null;
+  }
+}
+
 function summarizeSource(source: Record<string, unknown>): SourceSummary {
   const probe = source.probe as Record<string, unknown> | undefined;
+  const url = String(source.url || "");
   return {
     id: String(source.id || ""),
     provider: String(source.provider || ""),
@@ -353,7 +371,8 @@ function summarizeSource(source: Record<string, unknown>): SourceSummary {
     probeOk: typeof probe?.ok === "boolean" ? probe.ok : null,
     probeTtfbMs: typeof probe?.ttfbMs === "number" ? probe.ttfbMs : null,
     probeBytesPerSec: typeof probe?.bytesPerSec === "number" ? probe.bytesPerSec : null,
-    url: String(source.url || ""),
+    upstreamHost: sourceUpstreamHost(url),
+    url,
   };
 }
 
@@ -594,6 +613,7 @@ async function readBrowserState(page: Page, started: number): Promise<BrowserSta
         videoWidth: video.videoWidth,
         videoHeight: video.videoHeight,
         bufferedAhead,
+        activeSourceId: video.dataset.playbackSourceId || null,
         src: video.currentSrc || video.src || "",
         mediaError: video.error?.code ?? null,
       };
@@ -624,6 +644,14 @@ function findAttachedSource(
   observedSession?: string | null,
   activeServerName?: string | null
 ): Omit<SourceSummary, "url"> | null {
+  if (state?.activeSourceId) {
+    for (const call of calls) {
+      const source = call._sources?.find(
+        (candidate) => candidate.id === state.activeSourceId
+      );
+      if (source) return publicSource(source);
+    }
+  }
   if (activeServerName) {
     for (const call of calls) {
       const source = call._sources?.find(
@@ -656,14 +684,26 @@ async function readActiveServerName(page: Page): Promise<string | null> {
   await page.mouse.move(100, 100);
   const open = page.locator('button[title="Servers"]').first();
   if ((await open.count()) === 0) return null;
-  await open.click({ timeout: 3_000 }).catch(() => {});
+  const opened = await open
+    .click({ timeout: 1_500 })
+    .then(() => true)
+    .catch(() => false);
+  if (!opened) return null;
   const dialog = page.locator('[role="dialog"][aria-label="Servers"]');
+  const visible = await dialog
+    .waitFor({ state: "visible", timeout: 1_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!visible) return null;
   const live = dialog.locator("button").filter({ hasText: "Live" }).first();
-  const name = (await live.getAttribute("aria-label").catch(() => null))?.replace(
+  const name = (await live.getAttribute("aria-label", { timeout: 1_000 }).catch(() => null))?.replace(
     /\s+—.*$/,
     ""
   ) ?? null;
-  await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
+  await dialog
+    .locator('button[aria-label="Close servers"]')
+    .click({ timeout: 1_000 })
+    .catch(() => {});
   return name;
 }
 
