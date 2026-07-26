@@ -63,10 +63,10 @@ describe("parseReleaseTitle", () => {
     expect(r.compat).toBe("safari");
   });
 
-  it("720p release -> resolution detected but below the tier floor (caller skips)", () => {
+  it("720p release -> resolution detected and retained as an availability fallback", () => {
     const r = parseReleaseTitle("Movie.2024.720p.WEBRip.x264-GRP");
     expect(r.resolutionHeight).toBe(720);
-    expect(isEligibleDebridQuality(r.resolutionHeight)).toBe(false);
+    expect(isEligibleDebridQuality(r.resolutionHeight)).toBe(true);
   });
 
   it("AV1-in-MP4/WEB-DL -> codec av1, compat NATIVE (Chrome/Firefox-native; Safari support is recent/partial — the opposite situation from HEVC)", () => {
@@ -96,10 +96,10 @@ describe("parseReleaseTitle", () => {
 });
 
 describe("isEligibleDebridQuality", () => {
-  it("accepts only 1080 and 2160", () => {
+  it("accepts 720, 1080, and 2160", () => {
     expect(isEligibleDebridQuality(1080)).toBe(true);
     expect(isEligibleDebridQuality(2160)).toBe(true);
-    expect(isEligibleDebridQuality(720)).toBe(false);
+    expect(isEligibleDebridQuality(720)).toBe(true);
     expect(isEligibleDebridQuality(480)).toBe(false);
     expect(isEligibleDebridQuality(null)).toBe(false);
   });
@@ -183,6 +183,35 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  it("drops explicit RD-download rows but retains an instant native 720p fallback", async () => {
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        streams: [
+          {
+            name: "[RD download] Torrentio\n1080p",
+            title: "Not.Instant.1080p.H264.mp4",
+            infoHash: "d".repeat(40),
+          },
+          {
+            name: "[RD+] Torrentio\n720p",
+            title: "Instant.Fallback.720p.H264.mp4",
+            infoHash: "f".repeat(40),
+          },
+        ],
+      })) as unknown as typeof fetch;
+
+    const candidates = await fetchTorrentioCandidates({
+      imdbId: "tt0000004",
+      mediaType: "movie",
+      rdToken: FAKE_TOKEN,
+    });
+
+    expect(candidates.map((candidate) => candidate.infoHash)).toEqual([
+      "f".repeat(40),
+    ]);
+    expect(candidates[0]?.resolutionHeight).toBe(720);
+  });
 
   /**
    * The MKV drop was removed (see torrentio.ts module header): the

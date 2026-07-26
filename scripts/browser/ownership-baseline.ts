@@ -267,7 +267,7 @@ const FIXTURES: Fixture[] = [
   {
     label: "Detectorists S1E1",
     mediaType: "tv",
-    tmdbId: 62788,
+    tmdbId: 61828,
     season: 1,
     episode: 1,
     categories: ["episode", "obscure", "international"],

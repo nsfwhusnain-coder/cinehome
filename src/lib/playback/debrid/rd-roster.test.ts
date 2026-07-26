@@ -59,6 +59,7 @@ const SAFARI_2160_HASH = "b".repeat(40);
 const NATIVE_1080_HASHES = ["c".repeat(40), "d".repeat(40), "e".repeat(40)];
 const MKV_1080_HASH = "f".repeat(40);
 const SMALL_CLIP_HASH = "1".repeat(40);
+const FALLBACK_720_HASH = "7".repeat(40);
 
 describe("Real-Debrid roster — full + fast paths", () => {
   const originalFetch = globalThis.fetch;
@@ -351,6 +352,47 @@ describe("Real-Debrid roster — full + fast paths", () => {
       | { url?: string }
       | undefined;
     expect(cached?.url).toContain(goodHash);
+  });
+
+  it("full path: ignores non-cached RD-download rows and uses an instant native 720p availability fallback", async () => {
+    mockTorrentioStreams([
+      {
+        name: "[RD download] Torrentio\n1080p",
+        title: "Episode.1080p.H264.mp4\n👤 999 💾 1 GB",
+        infoHash: SMALL_CLIP_HASH,
+        fileIdx: 0,
+        url: resolveProxyUrl(
+          SMALL_CLIP_HASH,
+          0,
+          "episode.not-instant.1080p.h264.mp4"
+        ),
+      },
+      {
+        name: "[RD+] Torrentio\n720p",
+        title: "Episode.720p.H264.mp4\n👤 20 💾 400 MB",
+        infoHash: FALLBACK_720_HASH,
+        fileIdx: 0,
+        url: resolveProxyUrl(
+          FALLBACK_720_HASH,
+          0,
+          "episode.instant.720p.h264.mp4"
+        ),
+      },
+    ]);
+
+    const sources = await resolveDebridSources({
+      tmdbId: 1,
+      mediaType: "tv",
+      season: 1,
+      episode: 1,
+    });
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.id.endsWith("native-720")).toBe(true);
+    expect(sources[0]?.quality).toBe("720p");
+    expect(sources[0]?.maxHeight).toBe(720);
+    expect(sources[0]?.url).toContain(FALLBACK_720_HASH);
+    expect(sources[0]?.url).not.toContain(SMALL_CLIP_HASH);
   });
 
   it("full path: treats an implausibly small warm-cache row as missing and replaces it", async () => {

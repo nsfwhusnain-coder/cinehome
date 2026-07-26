@@ -81,8 +81,11 @@ export interface ParsedRelease {
 export interface DebridCandidate extends ParsedRelease {
   /** First line of the release title/name (drop the seeders/size/source footer Torrentio appends). */
   title: string;
-  /** Narrowed to the tier's two supported rungs by `isEligibleDebridQuality`. */
-  resolutionHeight: 1080 | 2160;
+  /**
+   * 4K/1080p are the preferred premium rungs. Native 720p is retained only
+   * as an availability fallback when no browser-playable higher rung exists.
+   */
+  resolutionHeight: 720 | 1080 | 2160;
   infoHash?: string;
   /** 0-based file index within the torrent (Stremio addon protocol convention). */
   fileIdx?: number;
@@ -182,9 +185,12 @@ export function parseReleaseTitle(text: string): ParsedRelease {
   return { resolutionHeight, codec, hdr, container, compat };
 }
 
-/** Tier only serves 1080p+ — anything else (720p, unresolved) is out of scope. */
-export function isEligibleDebridQuality(height: number | null): height is 1080 | 2160 {
-  return height === 1080 || height === 2160;
+/**
+ * Keep 720p in the candidate inventory as a last-resort native fallback.
+ * Anything lower (or unresolved) remains out of scope.
+ */
+export function isEligibleDebridQuality(height: number | null): height is 720 | 1080 | 2160 {
+  return height === 720 || height === 1080 || height === 2160;
 }
 
 /**
@@ -239,7 +245,13 @@ function sortCandidates(list: DebridCandidate[]): DebridCandidate[] {
   });
 }
 
-type CandidateClass = "native-2160" | "safari-2160" | "native-1080" | "safari-1080";
+type CandidateClass =
+  | "native-2160"
+  | "safari-2160"
+  | "native-1080"
+  | "safari-1080"
+  | "native-720"
+  | "safari-720";
 
 /**
  * Per-class caps for the returned candidate pool — sums to `MAX_CANDIDATES`.
@@ -253,6 +265,11 @@ const PER_CLASS_CAP: Record<CandidateClass, number> = {
   "safari-2160": 5,
   "native-1080": 20,
   "safari-1080": 5,
+  // One RD roster slot consumes this class only when no higher native slot
+  // is available. Keep several candidates so validation can fall through.
+  "native-720": 5,
+  // A lower-quality source that still cannot direct-play has no value.
+  "safari-720": 0,
 };
 /** Total candidate pool bound — see module header for why this replaced a flat top-8 cut. */
 const MAX_CANDIDATES = Object.values(PER_CLASS_CAP).reduce((sum, n) => sum + n, 0);
@@ -340,10 +357,19 @@ async function fetchTorrentioJson(url: string): Promise<TorrentioResponseRaw | n
  * `isSourcePlayableHere`) can present them honestly without auto-selecting
  * an incompatible release.
  */
-function parseTorrentioStreams(data: TorrentioResponseRaw): DebridCandidate[] {
+function parseTorrentioStreams(
+  data: TorrentioResponseRaw,
+  configuredDebrid: boolean
+): DebridCandidate[] {
   const streams = Array.isArray(data.streams) ? data.streams : [];
   const candidates: DebridCandidate[] = [];
   for (const s of streams) {
+    // Configured responses contain instant `[RD+]` rows and non-cached
+    // `[RD download]` rows. The latter still require a torrent transfer and
+    // their resolve links can be placeholders, so they are never ready.
+    if (configuredDebrid && /^\[RD download\]/i.test(s.name?.trim() ?? "")) {
+      continue;
+    }
     const text = `${s.title ?? ""} ${s.name ?? ""} ${s.behaviorHints?.filename ?? ""}`;
     const parsed = parseReleaseTitle(text);
     const height = parsed.resolutionHeight;
@@ -389,7 +415,7 @@ export async function fetchTorrentioCandidates(
     const url = `${TORRENTIO_BASE}/${configSegment}/${kindPath}`;
     const data = await fetchTorrentioJson(url);
     if (!data) return [];
-    return parseTorrentioStreams(data);
+    return parseTorrentioStreams(data, true);
   } catch {
     return [];
   }
@@ -413,7 +439,7 @@ export async function fetchTorrentioCandidatesNoDebrid(
     const url = `${TORRENTIO_BASE}/${buildKindPath(params)}`;
     const data = await fetchTorrentioJson(url);
     if (!data) return [];
-    return parseTorrentioStreams(data);
+    return parseTorrentioStreams(data, false);
   } catch {
     return [];
   }

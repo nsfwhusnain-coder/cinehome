@@ -14,6 +14,8 @@
  *                      exist, but only in a browser that can decode HEVC)
  *   - "native-1080-1/2/3"  several distinct browser-safe H.264/MP4 1080p
  *                      releases (14-37/title exist)
+ *   - "native-720"      one browser-safe availability fallback, considered
+ *                      only when no native 4K/1080p source exists
  * "Best native" (the auto-default target) falls out of this for free: the
  * existing (unowned) scoring in source-quality.ts already ranks a native
  * 2160p source above a native 1080p one, so whichever height actually landed
@@ -123,6 +125,7 @@ const RD_SLOTS: DebridSlot[] = [
   "native-1080-1",
   "native-1080-2",
   "native-1080-3",
+  "native-720",
 ];
 
 /**
@@ -179,8 +182,10 @@ function heightForQuality(quality: DebridQuality): 1080 | 2160 {
   return quality === "2160p" ? 2160 : 1080;
 }
 
-function qualityLabel(quality: DebridQuality): string {
-  return quality === "2160p" ? "4K" : "1080p";
+type RdQuality = DebridQuality | "720p";
+
+function qualityLabel(quality: RdQuality): string {
+  return quality === "2160p" ? "4K" : quality;
 }
 
 /** RD keeps its original "debrid-" id prefix unchanged (zero regression); TorBox gets its own distinct prefix. */
@@ -202,7 +207,7 @@ function providerDisplayName(provider: DebridProvider): string {
 }
 
 /** RD's exact original label format ("1080p • Debrid") is preserved unchanged; TorBox uses its own distinct format ("TorBox · 1080p"). */
-function buildLabel(provider: DebridProvider, quality: DebridQuality, safariHint: string): string {
+function buildLabel(provider: DebridProvider, quality: RdQuality, safariHint: string): string {
   const q = qualityLabel(quality);
   if (provider === "torbox") return `TorBox · ${q}${safariHint}`;
   return `${q} • Debrid${safariHint}`;
@@ -239,12 +244,14 @@ function toPlaybackSource(
 // Real-Debrid roster (fast + full paths)
 // ---------------------------------------------------------------------------
 
-function slotHeight(slot: DebridSlot): 1080 | 2160 {
+function slotHeight(slot: DebridSlot): 720 | 1080 | 2160 {
+  if (slot === "native-720") return 720;
   return slot === "native-2160" || slot === "safari-2160" ? 2160 : 1080;
 }
 
-function slotQuality(slot: DebridSlot): DebridQuality {
-  return slotHeight(slot) === 2160 ? "2160p" : "1080p";
+function slotQuality(slot: DebridSlot): RdQuality {
+  const height = slotHeight(slot);
+  return height === 2160 ? "2160p" : height === 1080 ? "1080p" : "720p";
 }
 
 /** Infer only an explicit media extension from a token-free direct URL.
@@ -299,7 +306,10 @@ function toRdPlaybackSource(
   };
 }
 
-function nativeCandidatesAt(candidates: DebridCandidate[], height: 1080 | 2160): DebridCandidate[] {
+function nativeCandidatesAt(
+  candidates: DebridCandidate[],
+  height: 720 | 1080 | 2160
+): DebridCandidate[] {
   return candidates.filter((c) => c.compat === "native" && c.resolutionHeight === height);
 }
 
@@ -363,6 +373,7 @@ function buildRdSlotOptions(
     "native-1080-1": [],
     "native-1080-2": [],
     "native-1080-3": [],
+    "native-720": available(nativeCandidatesAt(candidates, 720)),
   };
 
   // The old overlapping slices meant a fallback in slot 1 could select the
@@ -540,6 +551,21 @@ async function readCachedRdSlots(
       }
     }
   });
+
+  // 720p is an availability fallback, not a sixth eagerly-filled quality
+  // rung. If a native 4K/1080p source is already healthy, an empty fallback
+  // slot must not make an otherwise warm roster hit Torrentio again.
+  const hasHigherNative = hits.some(
+    (source) =>
+      source.compat === "native" &&
+      typeof source.maxHeight === "number" &&
+      source.maxHeight >= 1080
+  );
+  if (hasHigherNative) {
+    const fallbackIndex = missing.indexOf("native-720");
+    if (fallbackIndex >= 0) missing.splice(fallbackIndex, 1);
+  }
+
   await Promise.all(invalidations);
   return { hits, missing, occupiedIdentities };
 }
@@ -684,7 +710,11 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
   // this never touches the awaited return path.
   backgroundFillRemainingSlots(keyBase, req, rdToken);
 
-  const bestNativeSlots: DebridSlot[] = ["native-2160", "native-1080-1"];
+  const bestNativeSlots: DebridSlot[] = [
+    "native-2160",
+    "native-1080-1",
+    "native-720",
+  ];
   for (const slot of bestNativeSlots) {
     const hit = await getFreshCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" });
     const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;

@@ -36,14 +36,16 @@ export type DebridQuality = "2160p" | "1080p";
  * "native-2160" / "native-1080-1" are candidates for the auto-default (best
  * native, whichever height is actually available); "native-1080-2"/"-3" are
  * the additional native 1080p roster entries; "safari-2160" is the best
- * HEVC/MP4 4K pick, tagged `compat: "safari"` on the resulting source.
+ * HEVC/MP4 4K pick, tagged `compat: "safari"` on the resulting source; and
+ * "native-720" is used only when no higher native source is available.
  */
 export type DebridSlot =
   | "native-2160"
   | "safari-2160"
   | "native-1080-1"
   | "native-1080-2"
-  | "native-1080-3";
+  | "native-1080-3"
+  | "native-720";
 /** "realdebrid" is the original/default tier; "torbox" is the new sibling. */
 export type DebridProvider = "realdebrid" | "torbox";
 
