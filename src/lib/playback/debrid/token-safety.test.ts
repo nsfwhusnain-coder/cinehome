@@ -52,6 +52,7 @@ describe("resolveTokenFreeRedirect — real server-side redirect-follow against 
   const CLEAN_PATH = "/cdn/d/ABCDEFGHIJK/movie.mp4";
   const LOOP_PATH = "/resolve-loop-token";
   let server: ReturnType<typeof Bun.serve>;
+  let cleanMediaFetches = 0;
 
   beforeAll(() => {
     // Stands in for torrentio.strem.fun's resolve-proxy endpoint: a real
@@ -75,6 +76,7 @@ describe("resolveTokenFreeRedirect — real server-side redirect-follow against 
           });
         }
         if (pathname === CLEAN_PATH) {
+          cleanMediaFetches += 1;
           return new Response("ok", { status: 200 });
         }
         return new Response("not found", { status: 404 });
@@ -87,11 +89,13 @@ describe("resolveTokenFreeRedirect — real server-side redirect-follow against 
   });
 
   it("(a) follows the leaky resolve shape server-side and yields the final token-free URL — never the token-bearing URL itself", async () => {
+    cleanMediaFetches = 0;
     const resolveUrl = `http://127.0.0.1:${server.port}/resolve/realdebrid/${FAKE_TOKEN}/HASH/null/0/movie.mp4`;
     const result = await resolveTokenFreeRedirect(resolveUrl, FAKE_TOKEN);
     expect(result).toBe(`http://127.0.0.1:${server.port}${CLEAN_PATH}`);
     expect(result).not.toContain(FAKE_TOKEN);
     expect(result).not.toMatch(/\/resolve\/realdebrid\//);
+    expect(cleanMediaFetches).toBe(0);
   });
 
   it("returns null (never the token-bearing URL) when the redirect target still carries the token", async () => {

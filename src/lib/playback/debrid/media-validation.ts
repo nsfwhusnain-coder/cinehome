@@ -89,6 +89,11 @@ async function probeMediaLink(
     });
     const status = response.status;
     const totalBytes = totalBytesFromHeaders(response);
+    // We only need status + headers. Abort the FETCH controller itself so Bun
+    // closes the underlying CDN socket immediately. response.body.cancel()
+    // alone allowed ignored-Range multi-GB media responses to keep draining
+    // asynchronously after this function had returned.
+    controller.abort("debrid range headers received");
     void response.body?.cancel().catch(() => undefined);
     const elapsedMs = Math.round(performance.now() - startedAt);
 

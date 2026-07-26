@@ -45,15 +45,13 @@ export function sanitizeStreamUrl(url: string | null | undefined, token: string 
 
 /**
  * Resolves a Torrentio `.../resolve/realdebrid/<token>/...` URL server-side
- * to its final, token-free redirect target. The token-bearing URL is used
- * ONLY inside this fetch — it is never returned, stored, or logged, and the
- * response body is never read (we only need the final URL after redirects,
- * never the video bytes themselves).
+ * to its token-free Location target. The token-bearing URL is used ONLY
+ * inside this manual-redirect fetch — it is never returned, stored, or
+ * logged. The final RD object is deliberately never fetched server-side.
  *
  * Bounded by an 8s timeout by default; never throws. Returns null on any
- * failure, or if the final URL doesn't pass `sanitizeStreamUrl` (e.g. a
- * redirect loop that still carries the token, or a non-2xx terminal
- * response).
+ * failure, or if the Location URL doesn't pass `sanitizeStreamUrl` (e.g. it
+ * still carries the token or points at the resolve endpoint).
  *
  * `timeoutMs` lets a caller with its own shared wall-clock deadline (see
  * index.ts's slot resolve loop — the "hard overall deadline" for the rich
@@ -68,30 +66,39 @@ export async function resolveTokenFreeRedirect(
   timeoutMs: number = RESOLVE_TIMEOUT_MS
 ): Promise<string | null> {
   if (timeoutMs <= 0) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
   let response: Response;
   try {
     response = await fetch(resolveUrl, {
       method: "GET",
-      redirect: "follow",
-      signal: AbortSignal.timeout(timeoutMs),
+      redirect: "manual",
+      signal: controller.signal,
     });
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 
-  // Never consume the body — we only need the final redirected URL, never
-  // the actual video bytes flowing through this server-side resolve step.
-  if (response.body) {
+  const location = response.headers.get("location");
+  const responseStatus = response.status;
+  const responseUrl = response.url || resolveUrl;
+  // We need only the redirect headers. Abort before any final media body can
+  // be drained by Bun after this function returns.
+  controller.abort("debrid redirect headers received");
+  void response.body?.cancel().catch(() => undefined);
+
+  if (responseStatus >= 300 && responseStatus < 400 && location) {
     try {
-      await response.body.cancel();
+      return sanitizeStreamUrl(new URL(location, responseUrl).toString(), token);
     } catch {
-      // Ignore — some runtimes no-op or reject cancel() on an already-closed
-      // stream; irrelevant to whether the URL itself is safe.
+      return null;
     }
   }
 
-  if (!response.ok) return null;
-  return sanitizeStreamUrl(response.url || null, token);
+  if (responseStatus < 200 || responseStatus >= 300) return null;
+  return sanitizeStreamUrl(responseUrl, token);
 }
 
 /** TorBox's own `requestdl` endpoint shape — its `token` query param authorizes the request; the returned CDN link must never carry it either. */
