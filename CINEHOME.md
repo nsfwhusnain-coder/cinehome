@@ -18,18 +18,26 @@
 - `mini-services/stream-scraper` on port **3030 inside the container only** (never publish 3030)
 - HLS proxy: local `/api/hls/[sessionId]` by default (residential uplink — works with embed CDNs)
 - Optional Cloudflare Worker only when **`WORKER_PROXY_ENABLED=1`** (many CDNs 403 CF IPs — verify before enabling)
-- **CinePro OMSS** (Lordflix-class): when `CINEPRO_URL` is set, scraper races multi-provider + CinePro stream proxy
+- **CinePro OMSS** (optional): disabled unless a time-bounded evaluation or
+  explicit `PROVIDER_CINEPRO=1` enables it
 - Watch page: **CineHome** (custom hls.js) + **Embed** mode (iframe servers like Cineby)
 - Host publish: **4445 → 3000** (`docker-compose.yml`)
 - **Sign-in required** for playback
 
-### Lordflix-class setup (recommended on hussyserver)
+### Optional CinePro evaluation
 
-You already run `cinepro-core` + `embedin` on Docker network `embedin_default`.
+CinePro is fail-closed by default because a dead instance otherwise adds
+repeated five-second 500 responses and a wasteful 20-title boot warmer. Run
+`bun scripts/cinepro-eval.ts` first; only enable a short evaluation window when
+that passes. Promote to `PROVIDER_CINEPRO=1` only after the `/health` circuit
+shows a useful sustained hit rate.
 
 ```bash
 # .env
 CINEPRO_URL=http://cinepro-core:3000
+CINEPRO_EVAL_UNTIL=2026-07-28T12:00:00.000Z
+# or, only after a successful evaluation:
+# PROVIDER_CINEPRO=1
 WORKER_PROXY_ENABLED=0
 NEXT_PUBLIC_EMBEDIN_URL=http://192.168.1.107:4444   # or Tailscale IP :4444
 
@@ -38,6 +46,14 @@ docker compose up -d --build
 ```
 
 CinePro providers (example): Icefy, VidApi, VixSrc, VidNest, VidZee, Peachify, Tulnex, …
+
+### Scraper resource envelope
+
+`BROWSER_POOL_SIZE` defaults to 3 and is clamped to 2..6. The pool is shared
+across requests, so concurrent title enrichment queues instead of spawning an
+unbounded browser per request. Each browser owns multiple Chromium processes;
+raise the override only after measuring CPU, RSS, queue depth, and user TTFF
+from the internal scraper `/health` payload.
 
 ### Worker (edge media proxy — opt-in)
 See `workers/hls-proxy/README.md`. **Default off.** If enabled: `WORKER_PROXY_ENABLED=1`,

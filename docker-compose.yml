@@ -27,6 +27,9 @@ services:
       - TRANSCODER_ENABLED=${TRANSCODER_ENABLED:-0}
       # Lordflix-class multi-source API (cinepro-core on embedin_default network):
       - CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}
+      # Shared warm Chromium workers. Three covers the two-host primary wave
+      # without the old five-browser resident/CPU tax.
+      - BROWSER_POOL_SIZE=${BROWSER_POOL_SIZE:-3}
       # Scraper kill switches / log level (optional; also via .env — see CINEHOME.md / .env.example):
       # PROVIDER_LORDFLIX=0  PROVIDER_VIDEASY=0  PROVIDER_PLAYWRIGHT=0  SCRAPER_LOG_LEVEL=info
     volumes:

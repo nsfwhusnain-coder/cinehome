@@ -82,16 +82,16 @@ import {
   isGoodEarlyCapture,
   shouldEarlyExitWait,
 } from "./capture-early-exit";
+import { browserPoolSize } from "./browser-pool-config";
 
 const PORT = 3030;
 /**
- * Playwright pool size — env BROWSER_POOL_SIZE (min 3, max 10), default 5.
- * Higher pool = faster parallel embed scraping under concurrent TTFF load.
+ * Shared Playwright pool — env BROWSER_POOL_SIZE (min 2, max 6), default 3.
+ * Three browsers cover the two-host primary wave plus one queued/concurrent
+ * title without the old five-browser resident/CPU tax. Operators can override
+ * within the tested 2..6 envelope.
  */
-const MAX_BROWSERS = Math.min(
-  10,
-  Math.max(3, Number(process.env.BROWSER_POOL_SIZE || "5") || 5)
-);
+const MAX_BROWSERS = browserPoolSize(process.env.BROWSER_POOL_SIZE);
 /** Default goto budget; per-embed specs override for flaky hosts. Cap 10s per provider intent. */
 const PAGE_TIMEOUT = 10_000;
 /** Long enough for queued embed workers (MAX_BROWSERS concurrent, rest wait). */
