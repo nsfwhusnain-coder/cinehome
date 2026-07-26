@@ -640,3 +640,32 @@ context was 256.5 MiB and could include authenticated Playwright storage.
 `.browser-qa/`, `transcode-cache/`, and `.runtime-cache/` are now excluded.
 The verified context is 40.9 KiB, and image inspection proves
 `/app/.browser-qa` is absent.
+
+#### Production deployment
+
+Runtime commit `adfd321` was deployed as image
+`sha256:5c512ea0c9b42d59fa3b34fc0d0376a48febd11594180a381b1c59f4f94fe4f6`.
+The container became healthy with zero restarts and zero OOM kills; `start.sh`
+supervises one `next-server` Node process and the scraper remains `bun
+index.ts`.
+
+The authenticated non-admin production matrix after deployment reported:
+
+- playback 8/8 and top-ranked source actually played 8/8;
+- TTFF p50 8,787 ms and p95 10,939 ms;
+- Fight Club forced source-death recovery 1,746/1,750 ms cold/warm;
+- actual decoded dimensions: Fight Club 1920x800, Oppenheimer 1920x1080,
+  Coherence 1920x816, Witcher 1920x960, and 1280x720 initial sources for
+  Office/Attack before their existing quality handoff;
+- Next RSS 184.8 MiB / anonymous RSS 109.9 MiB after the matrix and idle
+  window; full container 454.2 MiB including the scraper/Chromium pool;
+- database quick check `ok`, with 13 users, 17 watchlist items, 82 progress
+  rows, and 122 cached streams unchanged.
+
+The exact pre-deploy database, environment, rendered Compose, container
+inspection, checksums, and successful restore rehearsal are in
+`/home/hussy/cinehome-backups/20260726T182748Z-pre-adfd321`.
+Rebuilding `latest` removed the live d84 image's Docker metadata before it
+could be retagged, so the snapshot does not pretend otherwise: emergency tag
+`cinehome-cinehome:pre-adfd321` points to the previously deployed and verified
+`c6e6bb6` image. The snapshot's `ROLLBACK-NOTE.txt` records that limitation.
