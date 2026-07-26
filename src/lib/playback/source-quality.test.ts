@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
 import {
+  decodedQualityHeight,
   findNewSourceIds,
   findQualityUpgradeSource,
   isFasterSource,
@@ -35,6 +36,24 @@ function makeSource(overrides: Partial<PlaybackSource>): PlaybackSource {
     ...overrides,
   };
 }
+
+describe("decodedQualityHeight", () => {
+  it("treats cropped 1920-wide cinema rasters as the 1080p tier", () => {
+    expect(decodedQualityHeight(1920, 960)).toBe(1080);
+    expect(decodedQualityHeight(1920, 816)).toBe(1080);
+    expect(decodedQualityHeight(1920, 800)).toBe(1080);
+  });
+
+  it("keeps genuinely low-width playback below the HD floor", () => {
+    expect(decodedQualityHeight(1282, 534)).toBe(720);
+    expect(decodedQualityHeight(720, 360)).toBe(360);
+  });
+
+  it("handles portrait and unknown-width media without inventing 4K", () => {
+    expect(decodedQualityHeight(1080, 1920)).toBe(1080);
+    expect(decodedQualityHeight(0, 960)).toBe(960);
+  });
+});
 
 describe("sourceRosterMeetsHdFloor / sourceRosterMaxHeight", () => {
   it("true when a 1080p source exists alongside a 720p one", () => {

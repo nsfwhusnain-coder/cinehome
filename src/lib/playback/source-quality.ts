@@ -234,6 +234,38 @@ export function formatResolutionLabel(height: number): string {
   return "Auto";
 }
 
+/**
+ * Convert decoded raster dimensions to the familiar 16:9 quality tier.
+ *
+ * Cropped cinema encodes commonly decode at 1920×800/816/960 while still
+ * carrying the full horizontal detail of a 1080p release. Treating the raw
+ * height as 800/816/960 falsely triggered a post-play "HD upgrade" and tore
+ * down healthy 1920-wide playback for label-only sources that could decode
+ * as low as 720×360. Width establishes the nominal tier for landscape
+ * video; portrait video uses its shorter horizontal edge.
+ */
+export function decodedQualityHeight(width: number, height: number): number {
+  if (height <= 0) return 0;
+  if (width <= 0) return height;
+  if (height > width) return width;
+
+  const widthTier =
+    width >= 3_800
+      ? 2160
+      : width >= 2_500
+        ? 1440
+        : width >= 1_900
+          ? 1080
+          : width >= 1_260
+            ? 720
+            : width >= 840
+              ? 480
+              : width >= 630
+                ? 360
+                : 0;
+  return Math.max(height, widthTier);
+}
+
 /** Badge the source's real advertised height. Decode-incompatible releases
  * remain visible but are explicitly marked unavailable; the UI must not
  * invent a lower resolution for a transcode path that production disables. */

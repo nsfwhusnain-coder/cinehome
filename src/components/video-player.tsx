@@ -12,6 +12,7 @@ import {
   sourceRosterMaxHeight,
   sourceRosterMeetsHdFloor,
   formatResolutionLabel,
+  decodedQualityHeight,
   findNewSourceIds,
   findQualityUpgradeSource,
   withDetectedSourceHeight,
@@ -2639,9 +2640,13 @@ export function VideoPlayer({
         const onNativeMeta = () => {
           const vh = video.videoHeight || 0;
           if (vh > 0) {
-            setPlayingHeight(vh);
+            const decodedTier = decodedQualityHeight(
+              video.videoWidth || 0,
+              vh
+            );
+            setPlayingHeight(decodedTier);
             const sid = activeSourceRef.current?.id;
-            if (sid) recordDetectedHeight(sid, vh);
+            if (sid) recordDetectedHeight(sid, decodedTier);
           }
           syncNativeTracks(video);
           applyResumeSeekAndRearm(video);
@@ -2705,12 +2710,16 @@ export function VideoPlayer({
       onMp4Loaded = () => {
         const vh = video.videoHeight || 0;
         if (vh > 0) {
-          setPlayingHeight(vh);
+          const decodedTier = decodedQualityHeight(
+            video.videoWidth || 0,
+            vh
+          );
+          setPlayingHeight(decodedTier);
           // Prefer decoded height over source-label metadata for honesty.
           // Single-rung only — never invent a multi-rung menu for progressive MP4.
-          setLevels([{ index: 0, height: vh }]);
+          setLevels([{ index: 0, height: decodedTier }]);
           const sid = activeSourceRef.current?.id;
-          if (sid) recordDetectedHeight(sid, vh);
+          if (sid) recordDetectedHeight(sid, decodedTier);
         }
         applyResumeSeekAndRearm(video);
         video.removeEventListener("loadedmetadata", onMp4Loaded!);
