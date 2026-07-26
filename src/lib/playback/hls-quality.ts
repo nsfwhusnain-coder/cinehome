@@ -165,6 +165,27 @@ export function maxLevelHeight(levels: QualityLevel[]): number {
 }
 
 /**
+ * Quality a background "promote" path is allowed to enforce.
+ *
+ * Auto owns only the product floor and must leave a sub-HD-only ladder to ABR.
+ * A fixed user choice owns its exact requested height (bounded by the real
+ * ladder ceiling). Without this distinction, FRAG_BUFFERED promoted a manual
+ * 480p choice back to 720p, and a fixed 4K choice could be stranded at 1080p.
+ */
+export function hlsPromotionTargetHeight(
+  levels: QualityLevel[],
+  preferredHeight: number | "auto",
+  productFloor = MIN_QUALITY_OPTION_HEIGHT
+): number | null {
+  const ladderMax = maxLevelHeight(levels);
+  if (ladderMax <= 0) return null;
+  if (preferredHeight !== "auto") {
+    return Math.min(preferredHeight, ladderMax);
+  }
+  return ladderMax >= productFloor ? productFloor : null;
+}
+
+/**
  * ABR floor guard (shared hls.js/dash.js implementation — both map their
  * native level/quality lists into this same `QualityLevel` shape):
  * lowest level index whose height is still >= minHeight. If none meet the

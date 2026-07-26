@@ -6,6 +6,7 @@ import {
   deriveHeightFromBitrate,
   findBestLevelForTarget,
   findMinLevelIndexForHeight,
+  hlsPromotionTargetHeight,
   isQualityMismatch,
   pickDefaultQualityIndex,
 } from "./hls-quality";
@@ -210,6 +211,38 @@ describe("isQualityMismatch", () => {
   it("does not flag when actual meets selected (or is unknown)", () => {
     expect(isQualityMismatch(1080, 1080, 2)).toBe(false);
     expect(isQualityMismatch(1080, 0, 2)).toBe(false);
+  });
+});
+
+describe("hlsPromotionTargetHeight", () => {
+  const subHd: QualityLevel[] = [
+    { index: 0, height: 480 },
+    { index: 1, height: 720 },
+  ];
+  const hd: QualityLevel[] = [
+    { index: 0, height: 480 },
+    { index: 1, height: 1080 },
+    { index: 2, height: 2160 },
+  ];
+
+  it("leaves a sub-HD Auto ladder to ABR instead of forcing its highest rung", () => {
+    expect(hlsPromotionTargetHeight(subHd, "auto")).toBeNull();
+  });
+
+  it("honors an exact fixed 480p pick on a 720p-max ladder", () => {
+    expect(hlsPromotionTargetHeight(subHd, 480)).toBe(480);
+  });
+
+  it("bounds a fixed preference by the real ladder ceiling", () => {
+    expect(hlsPromotionTargetHeight(subHd, 1080)).toBe(720);
+  });
+
+  it("keeps Auto at the product floor when an HD ladder has that floor", () => {
+    expect(hlsPromotionTargetHeight(hd, "auto")).toBe(1080);
+  });
+
+  it("restores the exact fixed 4K preference rather than stopping at 1080p", () => {
+    expect(hlsPromotionTargetHeight(hd, 2160)).toBe(2160);
   });
 });
 

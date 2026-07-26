@@ -37,6 +37,7 @@ import {
   effectiveLevelHeight,
   findBestLevelForTarget,
   findMinLevelIndexForHeight,
+  hlsPromotionTargetHeight,
   maxLevelHeight,
   pickDefaultQualityIndex,
 } from "@/lib/playback/hls-quality";
@@ -613,7 +614,10 @@ function recoverHlsAdaptive(hls: Hls, ctx: AdaptiveRecoverContext): void {
   const cur = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
   const curLevel = levelList.find((l) => l.index === cur);
   const curH = curLevel ? effectiveLevelHeight(curLevel) : 0;
-  const adaptive = ctx.policy === "adaptive";
+  // A fixed menu choice is contractual: recovery may reload it, but must not
+  // silently turn it back into Auto or move to another rung.
+  const adaptive =
+    ctx.policy === "adaptive" && getPreferredQualityHeight() === "auto";
   const starving =
     ctx.bufferAheadS >= 0 && ctx.bufferAheadS < ADAPTIVE_STARVATION_BUFFER_S;
 
@@ -797,7 +801,13 @@ function maybePromoteHlsQuality(
   ctx?: AdaptiveRecoverContext
 ): number | null {
   if (!levels.length) return null;
-  const targetH = HLS_MIN_HEIGHT;
+  const targetH = hlsPromotionTargetHeight(
+    levels,
+    getPreferredQualityHeight(),
+    HLS_MIN_HEIGHT
+  );
+  // Auto on a sub-HD-only ladder has no 1080 floor to enforce. Let ABR own it.
+  if (targetH == null) return null;
   const curIdx = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
   const cur = levels.find((l) => l.index === curIdx);
   const curH = cur ? effectiveLevelHeight(cur) : 0;
