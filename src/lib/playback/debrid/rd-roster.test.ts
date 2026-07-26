@@ -265,9 +265,9 @@ describe("Real-Debrid roster — full + fast paths", () => {
         url: resolveProxyUrl(SAFARI_2160_HASH, 0, "movie.2160p.hevc.hdr.mp4"),
       },
       {
-        // Top-seeded 4K HEVC remux, packaged as MKV — must survive selection
-        // and win the safari-2160 slot (previously dropped outright).
-        title: "Movie.2024.2160p.UHD.BluRay.x265.HDR.mkv\n👤 500 💾 60 GB ⚙️ X",
+        // Top-seeded, streaming-fit 4K HEVC encode packaged as MKV — it must
+        // survive selection and win the safari-2160 slot (previously dropped).
+        title: "Movie.2024.2160p.UHD.BluRay.x265.HDR.mkv\n👤 500 💾 12 GB ⚙️ X",
         infoHash: MKV_2160_HASH,
         fileIdx: 0,
         url: resolveProxyUrl(MKV_2160_HASH, 0, "movie.2160p.hevc.hdr.mkv"),
@@ -331,7 +331,10 @@ describe("Real-Debrid roster — full + fast paths", () => {
     const goodHash = "2".repeat(40);
     mockTorrentioStreams([
       {
-        title: "Movie.2024.1080p.WEB-DL.H264.CLIP\n👤 999 💾 1 MB ⚙️ X",
+        // Metadata claims a plausible feature size so the resolver still
+        // exercises media validation and falls through after the CDN proves
+        // that the object is only a short clip.
+        title: "Movie.2024.1080p.WEB-DL.H264.CLIP\nseeders 999 size 3 GB source X",
         infoHash: SMALL_CLIP_HASH,
         fileIdx: 0,
         url: resolveProxyUrl(SMALL_CLIP_HASH, 0, "movie.clip.1080p.h264.mp4"),

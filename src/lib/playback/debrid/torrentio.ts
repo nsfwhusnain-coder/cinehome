@@ -18,11 +18,12 @@
  * 4K HEVC/HDR remuxes (often MKV): a flat "top 8 by resolution" truncation
  * (the old behavior) can miss every browser-safe H.264 release entirely, even
  * though 14-37 usually exist per title. So candidates are now: parsed,
- * bucketed into four classes (native/safari × 1080/2160), ranked within each
- * class by resolution + seeders + container confidence, then capped PER CLASS
- * (`PER_CLASS_CAP`) so the returned pool always has representation across
- * classes instead of being dominated by whichever class happens to have the
- * most raw entries.
+ * bucketed by compatibility and resolution, ranked within each class by a
+ * media-type-aware size envelope plus bounded seeders and container
+ * confidence, then capped PER CLASS (`PER_CLASS_CAP`) so the returned pool
+ * always has representation across classes instead of being dominated by
+ * whichever class happens to have the most raw entries. Native 720p is kept
+ * only as an availability fallback when no higher native release survives.
  *
  * CONTAINER — MKV/WebM candidates are kept in the resolved inventory, but
  * no browser plays them directly (see `isBrowserPlayableContainer`). The
@@ -93,6 +94,8 @@ export interface DebridCandidate extends ParsedRelease {
   url?: string;
   /** Parsed from Torrentio's "👤 N" seeders footer — 0 when absent. Real-world demand/health signal used for in-class ranking. */
   seeders: number;
+  /** Selected file size from Torrentio's footer, when present. */
+  sizeBytes?: number;
 }
 
 interface TorrentioStreamRaw {
@@ -122,6 +125,7 @@ const RESOLUTION_2160_PATTERN = /2160p|\b4k\b/i;
 const RESOLUTION_1080_PATTERN = /1080p/i;
 const RESOLUTION_ANY_PATTERN = /(\d{3,4})p/i;
 const SEEDERS_PATTERN = /👤[^\d]*(\d+)/;
+const SIZE_PATTERN = /(\d+(?:\.\d+)?)\s*(GiB|GB|MiB|MB)\b/i;
 
 /**
  * Pure title/filename classifier — no network. Exported for unit testing
@@ -216,6 +220,20 @@ export function parseSeeders(text: string): number {
   return m ? Number(m[1]) : 0;
 }
 
+/** Parse Torrentio's selected-file size footer into bytes. */
+export function parseSizeBytes(text: string): number | null {
+  const match = (text || "").match(SIZE_PATTERN);
+  if (!match?.[1] || !match[2]) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const unit = match[2].toLowerCase();
+  const multiplier =
+    unit === "gib" || unit === "gb"
+      ? 1024 ** 3
+      : 1024 ** 2;
+  return Math.round(value * multiplier);
+}
+
 function compatRank(c: DebridCandidate): number {
   return c.compat === "native" ? 0 : 1;
 }
@@ -224,24 +242,69 @@ function compatRank(c: DebridCandidate): number {
 const MP4_CONTAINER_BONUS = 50;
 const MOV_CONTAINER_BONUS = 30;
 /** Seeders reward, capped so one outlier torrent can't entirely dominate the in-class ranking. */
-const SEEDERS_SCORE_CAP = 500;
+const SEEDERS_SCORE_CAP = 50;
 const SEEDERS_WEIGHT = 2;
 
-/** Composite resolution + seeders + container signal — resolution is already fixed within a class (see `selectTopPerClass`), so in practice this mostly orders by seeders then container confidence. */
-function candidateRankScore(c: DebridCandidate): number {
+const SIZE_FITNESS_MAX_SCORE = 400;
+const SIZE_FITNESS_LOG2_PENALTY = 200;
+const TARGET_SIZE_BYTES: Record<MediaType, Record<720 | 1080 | 2160, number>> = {
+  movie: {
+    720: Math.round(1.2 * 1024 ** 3),
+    1080: 3 * 1024 ** 3,
+    2160: 12 * 1024 ** 3,
+  },
+  tv: {
+    720: Math.round(0.5 * 1024 ** 3),
+    1080: Math.round(1.25 * 1024 ** 3),
+    2160: 4 * 1024 ** 3,
+  },
+};
+
+/**
+ * Prefer a streaming-friendly size envelope within each resolution class.
+ * Huge remux-like MP4s have materially slower Chromium startup; tiny encodes
+ * sacrifice quality. Log distance keeps the signal symmetric and bounded.
+ */
+function sizeFitnessScore(c: DebridCandidate, mediaType: MediaType): number {
+  if (!c.sizeBytes) return 0;
+  const target = TARGET_SIZE_BYTES[mediaType][c.resolutionHeight];
+  const distance = Math.abs(Math.log2(c.sizeBytes / target));
+  return Math.max(
+    0,
+    Math.round(
+      SIZE_FITNESS_MAX_SCORE - distance * SIZE_FITNESS_LOG2_PENALTY
+    )
+  );
+}
+
+/** Composite size fitness + bounded popularity + container confidence. */
+function candidateRankScore(c: DebridCandidate, mediaType: MediaType): number {
   const seederScore = Math.min(c.seeders, SEEDERS_SCORE_CAP) * SEEDERS_WEIGHT;
   const containerScore =
     c.container === "mp4" ? MP4_CONTAINER_BONUS : c.container === "mov" ? MOV_CONTAINER_BONUS : 0;
-  return c.resolutionHeight + seederScore + containerScore;
+  const misleadingReleasePenalty =
+    /\b(?:hd-?ts|hdcam|camrip|telesync|telecine)\b/i.test(c.title)
+      ? 500
+      : 0;
+  return (
+    c.resolutionHeight +
+    sizeFitnessScore(c, mediaType) +
+    seederScore +
+    containerScore -
+    misleadingReleasePenalty
+  );
 }
 
 /** 1080p/4K H.264 MP4 first (browser-compat); HEVC/HDR releases sink to the back; ties broken by the resolution+seeders+container score. */
-function sortCandidates(list: DebridCandidate[]): DebridCandidate[] {
+function sortCandidates(
+  list: DebridCandidate[],
+  mediaType: MediaType
+): DebridCandidate[] {
   return [...list].sort((a, b) => {
     const compatDiff = compatRank(a) - compatRank(b);
     if (compatDiff !== 0) return compatDiff;
     if (a.resolutionHeight !== b.resolutionHeight) return b.resolutionHeight - a.resolutionHeight;
-    return candidateRankScore(b) - candidateRankScore(a);
+    return candidateRankScore(b, mediaType) - candidateRankScore(a, mediaType);
   });
 }
 
@@ -285,7 +348,10 @@ function candidateClass(c: DebridCandidate): CandidateClass {
  * 1080/2160 instead of being swamped by whichever class Torrentio happens to
  * return the most of (usually 4K HEVC/HDR remuxes, often MKV).
  */
-function selectTopPerClass(candidates: DebridCandidate[]): DebridCandidate[] {
+function selectTopPerClass(
+  candidates: DebridCandidate[],
+  mediaType: MediaType
+): DebridCandidate[] {
   const buckets = new Map<CandidateClass, DebridCandidate[]>();
   for (const c of candidates) {
     const key = candidateClass(c);
@@ -296,10 +362,14 @@ function selectTopPerClass(candidates: DebridCandidate[]): DebridCandidate[] {
   const out: DebridCandidate[] = [];
   for (const key of Object.keys(PER_CLASS_CAP) as CandidateClass[]) {
     const cap = PER_CLASS_CAP[key];
-    const ranked = (buckets.get(key) ?? []).sort((a, b) => candidateRankScore(b) - candidateRankScore(a));
+    const ranked = (buckets.get(key) ?? []).sort(
+      (a, b) =>
+        candidateRankScore(b, mediaType) -
+        candidateRankScore(a, mediaType)
+    );
     out.push(...ranked.slice(0, cap));
   }
-  return sortCandidates(out);
+  return sortCandidates(out, mediaType);
 }
 
 /** TMDB -> IMDb id. Torrentio (and Real-Debrid magnets generally) are keyed by imdb id. */
@@ -359,7 +429,8 @@ async function fetchTorrentioJson(url: string): Promise<TorrentioResponseRaw | n
  */
 function parseTorrentioStreams(
   data: TorrentioResponseRaw,
-  configuredDebrid: boolean
+  configuredDebrid: boolean,
+  mediaType: MediaType
 ): DebridCandidate[] {
   const streams = Array.isArray(data.streams) ? data.streams : [];
   const candidates: DebridCandidate[] = [];
@@ -373,6 +444,7 @@ function parseTorrentioStreams(
     const text = `${s.title ?? ""} ${s.name ?? ""} ${s.behaviorHints?.filename ?? ""}`;
     const parsed = parseReleaseTitle(text);
     const height = parsed.resolutionHeight;
+    const sizeBytes = parseSizeBytes(text);
     if (!isEligibleDebridQuality(height)) continue;
 
     const rawTitle = (s.title ?? s.name ?? "Unknown release").split("\n")[0]?.trim();
@@ -384,9 +456,10 @@ function parseTorrentioStreams(
       fileIdx: s.fileIdx,
       url: s.url,
       seeders: parseSeeders(text),
+      ...(sizeBytes != null ? { sizeBytes } : {}),
     });
   }
-  return selectTopPerClass(candidates).slice(0, MAX_CANDIDATES);
+  return selectTopPerClass(candidates, mediaType).slice(0, MAX_CANDIDATES);
 }
 
 /**
@@ -415,7 +488,7 @@ export async function fetchTorrentioCandidates(
     const url = `${TORRENTIO_BASE}/${configSegment}/${kindPath}`;
     const data = await fetchTorrentioJson(url);
     if (!data) return [];
-    return parseTorrentioStreams(data, true);
+    return parseTorrentioStreams(data, true, params.mediaType);
   } catch {
     return [];
   }
@@ -439,7 +512,7 @@ export async function fetchTorrentioCandidatesNoDebrid(
     const url = `${TORRENTIO_BASE}/${buildKindPath(params)}`;
     const data = await fetchTorrentioJson(url);
     if (!data) return [];
-    return parseTorrentioStreams(data, false);
+    return parseTorrentioStreams(data, false, params.mediaType);
   } catch {
     return [];
   }

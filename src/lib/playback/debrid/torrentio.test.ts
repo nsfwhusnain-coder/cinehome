@@ -7,6 +7,7 @@ import {
   isEligibleDebridQuality,
   parseReleaseTitle,
   parseSeeders,
+  parseSizeBytes,
 } from "./torrentio";
 
 describe("extractInfoHashFromResolveUrl", () => {
@@ -161,6 +162,21 @@ describe("parseSeeders", () => {
   });
 });
 
+describe("parseSizeBytes", () => {
+  it("parses decimal GB and integer MB Torrentio footers", () => {
+    expect(parseSizeBytes("Release\nseeders 2 size 1.68 GB source X")).toBe(
+      Math.round(1.68 * 1024 ** 3)
+    );
+    expect(parseSizeBytes("Release 401 MB")).toBe(401 * 1024 ** 2);
+  });
+
+  it("returns null for missing, zero, or malformed sizes", () => {
+    expect(parseSizeBytes("Release without a size")).toBeNull();
+    expect(parseSizeBytes("Release 0 GB")).toBeNull();
+    expect(parseSizeBytes("Release many GB")).toBeNull();
+  });
+});
+
 /**
  * Candidate pool stratification — the actual fix for the "top 8 by
  * resolution can miss every browser-safe release" gap. Mocks `fetch` at the
@@ -183,6 +199,38 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  it("prefers a balanced movie encode over an oversized peer and a mislabeled capture", async () => {
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        streams: [
+          {
+            title: "Movie.2024.1080p.WEB-DL.H264.mp4\n👤 5 💾 3 GB",
+            infoHash: "b".repeat(40),
+          },
+          {
+            title: "Movie.2024.1080p.BluRay.H264.mp4\n👤 9999 💾 8 GB",
+            infoHash: "h".repeat(40),
+          },
+          {
+            title: "Movie.2024.1080p.HD-TS.H264.mp4\n👤 9999 💾 3 GB",
+            infoHash: "t".repeat(40),
+          },
+        ],
+      })) as unknown as typeof fetch;
+
+    const candidates = await fetchTorrentioCandidates({
+      imdbId: "tt0000005",
+      mediaType: "movie",
+      rdToken: FAKE_TOKEN,
+    });
+
+    expect(candidates.map((candidate) => candidate.infoHash)).toEqual([
+      "b".repeat(40),
+      "h".repeat(40),
+      "t".repeat(40),
+    ]);
+  });
 
   it("drops explicit RD-download rows but retains an instant native 720p fallback", async () => {
     globalThis.fetch = (async () =>
