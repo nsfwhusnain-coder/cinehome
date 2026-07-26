@@ -61,6 +61,22 @@ set -euo pipefail
 cd "$DEPLOY_PATH"
 chmod +x scripts/*.sh start.sh 2>/dev/null || true
 ./scripts/disk-preflight.sh
+
+# Docker RUN steps normally use the daemon/host resolver, which can be broken
+# while CineHome's explicit container DNS remains healthy. Resolve nodejs.org
+# through the running production container when possible and pass the address
+# only to curl's TLS-verified --resolve path in the Dockerfile.
+if [[ -z "${NODE_DOWNLOAD_IP:-}" ]] && docker inspect cinehome >/dev/null 2>&1; then
+  NODE_DOWNLOAD_IP="$(
+    docker exec cinehome getent ahostsv4 nodejs.org 2>/dev/null \
+      | awk 'NR == 1 { print $1 }'
+  )"
+fi
+if [[ -n "${NODE_DOWNLOAD_IP:-}" ]]; then
+  export NODE_DOWNLOAD_IP
+  echo "Node runtime download address resolved"
+fi
+
 docker compose build
 docker compose up -d
 # Health: published app port (compose maps 4445:3000). Scraper stays internal :3030.

@@ -476,3 +476,167 @@ both configurable through `CINEHOME_DNS_PRIMARY` and
 `CINEHOME_DNS_FALLBACK`. This leaves global Tailscale configuration untouched
 while preventing its broken upstream from taking down CineHome's provider and
 media lookups. Docker internal service discovery remains available.
+
+### Production OOM: server-side debrid media drains
+
+A forced source-death test caused the Bun/Next process to be killed by the
+kernel at approximately 30.1 GiB anonymous RSS. The container restarted once;
+SQLite and all user invariants survived. HLS proxy caching was the first
+credible suspect because it cloned media responses and prefetched segments.
+Two reversible containment commits first bounded the cache and then disabled
+in-heap segment body caching:
+
+- `1bb262a` capped entries/readers and disabled HLS prefetch;
+- `b1ae04b` stopped teeing segment response bodies into the app heap.
+
+Those changes reduced one source of memory amplification but did not stop the
+growth. An idle control stayed flat near 162 MiB Next RSS. One resolver-only
+request, with no player or HLS media request, then took Next above 4.3 GiB and
+still rising. Running `resolveDebridSources` in its own Bun process isolated
+the fault further: it returned four rows in about 1.35 seconds, then climbed
+past 1.4 GiB during the following twelve seconds.
+
+There were two root causes at the debrid boundary:
+
+1. Torrentio resolution used `redirect: "follow"`, so the server followed the
+   small resolver redirect onto the final multi-gigabyte Real-Debrid object
+   merely to learn `response.url`.
+2. Range validation read the headers and called only
+   `response.body.cancel()`. When an origin ignored `Range: bytes=0-0`, Bun
+   continued draining the response asynchronously.
+
+Commit `8539982` changes resolver fetches to one manual redirect, returns only
+the sanitized token-free `Location`, and aborts the fetch controller as soon
+as redirect/range headers are available. The final CDN object is never fetched
+by the server-side redirect resolver. Regression coverage proves the local
+redirect target receives zero media requests.
+
+Verification:
+
+- isolated resolver: four sources in 1,337 ms, 82 MiB at return;
+- held-open process: RSS stayed 79–82 MiB for fifteen seconds instead of
+  exceeding 1.4 GiB;
+- production resolver-only request: Next stayed 170–171 MiB and the repeat
+  full resolve returned thirteen sources in 32 ms;
+- all 497 tests then passed and TypeScript was clean;
+- production image `sha256:f5b40e69baa2afa7d03ef1864947148dbdd4abdf69f6e45562a4c99af5f0b74f`
+  deployed healthy with zero restarts and unchanged user data.
+
+In-heap HLS segment caching remains disabled. Re-enable it only with a
+stream-to-disk or otherwise bounded design and a playback memory stress test;
+`Response.clone().arrayBuffer()` is not an acceptable production cache path.
+
+### Progressive MP4 source-death recovery
+
+The player gave every media engine one silent-stall recovery cycle. That was
+valid for hls.js and dash.js, but direct progressive MP4 has no loader to
+restart; its “recovery” was a 0.001-second seek. A dead RD source therefore sat
+through two twelve-second no-progress windows before failover.
+
+Commit `d2691e9` makes recovery capability explicit in the generation-scoped
+`SourceAttemptController`. HLS/DASH retain one bounded recovery nudge; direct
+progressive MP4 fails after one eight-second no-progress window. Late callbacks
+remain generation-safe and terminal arbitration is still single-owner.
+
+The identical Fight Club fault injection improved from 24,535 ms to 7,220 ms
+recovery (70.6% faster). Playback resumed at the preserved mid-title position
+on Luna, decoded at 1920x1080, and showed no waiting/stalled events. The
+healthy RD seek remained 2,055 ms. All 498 tests passed.
+
+### Scraper resource envelope and dead-provider removal
+
+A sequential cold availability matrix exposed a concurrency load problem
+after only three titles: five warm Chromium workers plus overlapping
+background enrichments reached 1,304% CPU, 2.3 GiB, and 645 container PIDs.
+The app stayed healthy, but that resident and burst cost was not justified for
+thirteen users.
+
+The production resource work was deliberately measured in stages:
+
+- `f8eef23`: browser pool default 5 → 3, configurable and clamped;
+- `ad4f534`: default 3 → 2 and health metrics stopped exposing signed media
+  URLs (only host plus `hls`/`dash`/`mp4`/`media` path kind remains);
+- `f8fef74`: default 2 → 1 and VidNest was removed from the primary browser
+  wave after 0/8 production enrichments plus 0/3 isolated provider-only
+  captures (Fight Club, Oppenheimer, The Office).
+
+CinePro was also disabled through the production `.env` after 11/11 circuit
+failures and a boot warmer pass that failed all twenty titles with HTTP 500.
+Its URL remains configured for deliberate re-evaluation, but explicit
+`PROVIDER_CINEPRO=0` prevents both request participation and the warmer.
+The pre-change environment is recoverable at
+`/home/hussy/cinehome-backups/20260726T114828Z-pre-f8eef23/.env`.
+
+Measured effects:
+
+- clean idle: about 405.6 MiB / 352 PIDs → 243.6 MiB / 130 PIDs;
+- three-title cold peak: 2.3 GiB → 1.34 GiB;
+- the same three-title slice remained 3/3 resolved and 3/3 with debrid;
+- under the cold burst, forty live app requests averaged 5.58 ms, p95 8.48 ms,
+  maximum 17.5 ms;
+- signed query/path data no longer appears in `/health`;
+- the pool is shared globally, reports live/idle/queued counts, and is bounded
+  to one worker by default (operator range 1–4).
+
+The current production image for this resource pass is
+`sha256:f943fe70ed705baf4fed3d3f892d969989e53d1183c9ca8ec523f28dfa329415`.
+
+### Debrid release quality and native-playability validation
+
+Commits `c6e6bb6`, `e74f13e`, and `d84de5c` corrected three separate quality
+failures instead of hiding them behind retries:
+
+- cached candidates now rank with media-size and bitrate evidence instead of
+  letting raw seeder counts dominate;
+- native slots preserve rank after a rejected candidate instead of assigning
+  round-robin positions before validation;
+- unknown native containers must prove an ISO-BMFF `ftyp` signature, while
+  M2TS, short clips, captures, featurettes, bonus/extras packs, soundtracks,
+  deleted scenes, and broad IMDb collection packs fail closed.
+
+The measured Oppenheimer M2TS object began with the MPEG-TS sync layout and
+failed Chromium with `MEDIA_ERR_SRC_NOT_SUPPORTED`; it is no longer surfaced.
+After the filters, Oppenheimer resolved only two validated native MP4 options
+plus the honest Safari MKV option. Both native sources decoded at 1920x1080.
+The authenticated eight-run production matrix remained 8/8 with the
+top-ranked source playing 8/8; p50 was 8,487 ms and p95 was 11,017 ms. This
+was an availability/quality win, not a general startup-speed claim: the
+original baseline p50 was 5,664 ms and requires more work.
+
+### Next runtime allocator containment
+
+A full eight-playback run reproduced a second, independent retention problem
+in the Next process:
+
+- normal Bun sidecar: 117.6 MiB before, 870.1 MiB after twenty seconds;
+- Bun `--smol`: 117.0 MiB before, 1,002 MiB after twenty seconds;
+- forced Bun GC: live ArrayBuffers fell from about 1.64 GiB to 8.6 MiB, but
+  process RSS remained 760.5 MiB.
+
+The browser trace showed the trigger: multiple HLS providers intentionally
+label 4–16 MiB media fragments as `image/jpeg`. CineHome already passed the
+upstream `ReadableStream` through rather than calling `arrayBuffer()`, so the
+retention was below the application cache in Bun's fetch/WebStream-to-Next
+bridge. `--smol`, guard clauses, and cache tuning did not address it.
+
+The standalone Next server was then isolated under Node while the scraper
+remained on Bun:
+
+- Node 20 diagnostic: 67.7 MiB before, 92.5 MiB after the matrix;
+- supported Node 24.18.0 LTS candidate: 66.8 MiB before, 121.9 MiB after;
+- Node 24 matrix: 8/8 playback, p50 8,776 ms, p95 14,608 ms, zero OOM;
+- same warm Fight Club/Vidking source: Node 10,863 ms versus Bun 10,817 ms
+  (46 ms difference);
+- exact built image Fight Club smoke: 10,415 ms, top source played, no
+  rebuffer/switch, 93.0 MiB RSS.
+
+Decision: `start.sh` runs the Next standalone server on Node 24.18.0 LTS and
+continues to run the scraper/build/tests on Bun 1.3.14. The official Node
+archive is SHA-256 verified during the build. The image passed 517 tests,
+1,147 expectations, TypeScript, full supervisor health, and real playback.
+
+The same pass found `.browser-qa/` missing from `.dockerignore`; the build
+context was 256.5 MiB and could include authenticated Playwright storage.
+`.browser-qa/`, `transcode-cache/`, and `.runtime-cache/` are now excluded.
+The verified context is 40.9 KiB, and image inspection proves
+`/app/.browser-qa` is absent.

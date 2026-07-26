@@ -7,3 +7,6 @@ db/
 !.env.example
 .git
 *.log
+.browser-qa/
+transcode-cache/
+.runtime-cache/

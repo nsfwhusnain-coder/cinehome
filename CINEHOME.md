@@ -14,7 +14,9 @@
 - **Canonical App Router**: `src/app` only. There is no root `app/` router.
 
 ## Stack
-- Next.js 16 + Bun + Prisma (SQLite)
+- Next.js 16 on Node 24.18 LTS + Prisma (SQLite)
+- Bun 1.3.14 for builds, tests, and the stream-scraper; do not run the Next
+  media proxy under Bun without repeating the playback memory stress matrix
 - `mini-services/stream-scraper` on port **3030 inside the container only** (never publish 3030)
 - HLS proxy: local `/api/hls/[sessionId]` by default (residential uplink — works with embed CDNs)
 - Optional Cloudflare Worker only when **`WORKER_PROXY_ENABLED=1`** (many CDNs 403 CF IPs — verify before enabling)
@@ -80,6 +82,8 @@ Manual equivalent:
 
 ```bash
 ./scripts/disk-preflight.sh   # abort if free disk on / < 20GB
+# deploy.sh supplies NODE_DOWNLOAD_IP automatically when host/Tailscale DNS is
+# broken but CineHome's explicit container DNS can resolve nodejs.org.
 docker compose build
 docker compose up -d
 curl -sf http://127.0.0.1:4445
@@ -97,7 +101,26 @@ Disk hygiene:
 
 **Note:** `docker builder prune` is always **host-wide** (every project’s BuildKit cache on the machine), not CineHome-only. Default uses `--filter until=168h` so recent cache is kept; use `--builder-all` only on a dedicated box when you need max reclaim.
 
-Secrets: copy `.env.example` → `.env` on the server. **Never commit `.env`.** `deploy.sh` rsync includes `.env.example` but never pushes `.env` / other `.env.*`.
+Secrets: copy `.env.example` → `.env` on the server. **Never commit `.env`.**
+`deploy.sh` rsync includes `.env.example` but never pushes `.env` / other
+`.env.*`. `.dockerignore` must continue to exclude `.browser-qa/` because it
+contains authenticated Playwright storage state; it also excludes persisted
+transcode data. A production image must pass `test ! -e /app/.browser-qa`.
+
+### Runtime memory envelope
+
+The single container deliberately uses two JavaScript runtimes. `start.sh`
+runs Next's standalone server with Node and the scraper with Bun. Several HLS
+CDNs serve 4–16 MiB video fragments as `image/jpeg`; Bun 1.3.14's
+fetch/WebStream-to-Next bridge released the live ArrayBuffers after GC but kept
+hundreds of MiB of allocator pages resident. The same eight-playback browser
+matrix retained 1,002 MiB in Bun `--smol` versus 121.9 MiB in Node 24.18.
+Do not collapse the runtime split based on a compile-only check.
+
+Node is installed from the official versioned archive in `Dockerfile` and
+verified against its fixed SHA-256. `NODE_DOWNLOAD_IP` changes only DNS
+routing for the TLS-verified download; it does not bypass certificate or
+archive verification.
 
 ### Transcoder safety
 

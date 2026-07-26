@@ -93,7 +93,11 @@ wait_for_scraper_health || exit 1
 
 start_transcoder
 
-bun run start &
+# Next's standalone output targets Node. Keep Bun for the scraper and build
+# tooling, but do not put media proxy WebStreams through Bun's server bridge.
+# Process substitution preserves container logs plus server.log while APP_PID
+# remains the actual Node process for health supervision and clean shutdown.
+NODE_ENV=production node .next/standalone/server.js > >(tee server.log) 2>&1 &
 APP_PID=$!
 echo "[start.sh] Next.js started (pid=$APP_PID)"
 

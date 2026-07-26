@@ -1,4 +1,4 @@
-FROM oven/bun:1
+FROM oven/bun:1.3.14
 
 WORKDIR /app
 
@@ -40,6 +40,28 @@ RUN rm -rf .next && bun run build
 RUN mkdir -p .next/standalone/node_modules/.prisma .next/standalone/node_modules/@prisma \
     && cp -r node_modules/.prisma/. .next/standalone/node_modules/.prisma/ \
     && cp -r node_modules/@prisma/client/. .next/standalone/node_modules/@prisma/client/
+
+# Next's standalone server is a Node target. Bun remains the package manager,
+# build/test runtime, and scraper runtime, but its fetch/WebStream bridge held
+# hundreds of MiB of media-fragment allocator pages after HLS playback.
+# Keep the app server on the current Node LTS and verify the official archive
+# before installing it. NODE_DOWNLOAD_IP is an optional DNS escape hatch for
+# hosts whose Docker builder cannot resolve nodejs.org.
+ARG NODE_VERSION=24.18.0
+ARG NODE_ARCHIVE_SHA256=783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8
+ARG NODE_DOWNLOAD_IP=""
+RUN set -eux; \
+    archive="node-v${NODE_VERSION}-linux-x64.tar.gz"; \
+    if [ -n "${NODE_DOWNLOAD_IP}" ]; then \
+      curl -fsS --resolve "nodejs.org:443:${NODE_DOWNLOAD_IP}" \
+        "https://nodejs.org/dist/v${NODE_VERSION}/${archive}" -o "/tmp/${archive}"; \
+    else \
+      curl -fsS "https://nodejs.org/dist/v${NODE_VERSION}/${archive}" -o "/tmp/${archive}"; \
+    fi; \
+    echo "${NODE_ARCHIVE_SHA256}  /tmp/${archive}" | sha256sum -c -; \
+    tar -xzf "/tmp/${archive}" -C /usr/local --strip-components=1 --no-same-owner; \
+    rm -f "/tmp/${archive}"; \
+    node --version
 
 ENV NODE_ENV=production
 

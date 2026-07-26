@@ -34,7 +34,7 @@ This document defines a **full product overhaul**, calibrated to the **actual se
 
 | Feature | Status | Evidence / files | Overhaul action |
 |---------|--------|------------------|-----------------|
-| Next.js 16 + Bun + Prisma SQLite | **Shipped** | `package.json`, `schema.prisma` | Keep |
+| Next.js 16 + Node 24 LTS + Prisma SQLite; Bun scraper/build | **Shipped** | `Dockerfile`, `start.sh`, `package.json`, `schema.prisma` | Keep the measured runtime split |
 | Single container `start.sh` | **Shipped** | `Dockerfile`, `docker-compose.yml`, `DECISIONS.md` | Keep; never publish 3030 |
 | Auth on `/api/playback` | **Shipped** | `getAuthenticatedUserId` → 401 | Keep (KD3) |
 | HLS session + SSRF allowlist | **Shipped** | `hls-session.ts`, `api/hls`, `isAllowedUpstreamUrl` | Harden only |
@@ -85,7 +85,7 @@ This document defines a **full product overhaul**, calibrated to the **actual se
 
 | Layer | Status |
 |-------|--------|
-| Stack | Next.js 16 + Bun + Prisma SQLite + Playwright stream-scraper |
+| Stack | Next.js 16 on Node 24 LTS + Prisma SQLite; Bun + Playwright stream-scraper |
 | Scraper | Health OK; `MAX_BROWSERS = 2`; Luna-first; fast + background enrich |
 | HLS proxy | **fetch + 2000-entry LRU + segment prefetch** (not curl-per-segment) |
 | Player | Multi-source + dock (partial polish) |

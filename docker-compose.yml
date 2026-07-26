@@ -13,6 +13,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Optional builder DNS escape hatch. scripts/deploy.sh resolves this
+        # through CineHome's explicit DNS when the host overlay resolver fails.
+        NODE_DOWNLOAD_IP: ${NODE_DOWNLOAD_IP:-}
     ports:
       # ONLY publish the Next.js app. Port 3030 (stream-scraper) must NEVER be published.
       # Scraper stays container-internal; app reaches it via SCRAPER_URL=http://127.0.0.1:3030/scrape.
