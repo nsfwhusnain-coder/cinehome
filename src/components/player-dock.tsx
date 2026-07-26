@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -61,6 +61,52 @@ export type DockSection =
   | "playback"
   | "subtitleSettings"
   | "sleep";
+
+type DirectionKey = "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown";
+
+function focusableDockButtons(root: HTMLElement): HTMLButtonElement[] {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>("button:not([disabled])")).filter(
+    (button) => {
+      const rect = button.getBoundingClientRect();
+      const style = window.getComputedStyle(button);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden";
+    }
+  );
+}
+
+function directionalButton(
+  current: HTMLButtonElement,
+  candidates: HTMLButtonElement[],
+  key: DirectionKey
+): HTMLButtonElement | null {
+  const from = current.getBoundingClientRect();
+  const fromX = from.left + from.width / 2;
+  const fromY = from.top + from.height / 2;
+  let best: { button: HTMLButtonElement; score: number } | null = null;
+
+  for (const button of candidates) {
+    if (button === current) continue;
+    const rect = button.getBoundingClientRect();
+    const dx = rect.left + rect.width / 2 - fromX;
+    const dy = rect.top + rect.height / 2 - fromY;
+    const inDirection =
+      (key === "ArrowLeft" && dx < -1) ||
+      (key === "ArrowRight" && dx > 1) ||
+      (key === "ArrowUp" && dy < -1) ||
+      (key === "ArrowDown" && dy > 1);
+    if (!inDirection) continue;
+
+    const primary =
+      key === "ArrowLeft" || key === "ArrowRight" ? Math.abs(dx) : Math.abs(dy);
+    const cross =
+      key === "ArrowLeft" || key === "ArrowRight" ? Math.abs(dy) : Math.abs(dx);
+    // Prefer the nearest control in the requested direction, strongly
+    // penalising diagonal jumps so a D-pad follows the visual grid.
+    const score = primary + cross * 2;
+    if (!best || score < best.score) best = { button, score };
+  }
+  return best?.button ?? null;
+}
 
 interface Props {
   open: boolean;
@@ -209,6 +255,8 @@ export function PlayerDock({
   sleepMinutes: sleepMinutesProp = null,
   onSleepMinutesChange,
 }: Props) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
   const quality = usePlayerStore((s) => s.quality);
   const playingHeight = usePlayerStore((s) => s.playingHeight);
   const levels = usePlayerStore((s) => s.levels);
@@ -358,10 +406,64 @@ export function PlayerDock({
 
   useEffect(() => {
     if (!open) return;
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => {
+      previousFocusRef.current?.focus();
+      previousFocusRef.current = null;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      const root = dialogRef.current;
+      if (!root) return;
+      focusableDockButtons(root)[0]?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, expandedSection]);
+
+  useEffect(() => {
+    if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         if (expandedSection) onExpandedSectionChange(null);
         else onClose();
+        return;
+      }
+
+      const root = dialogRef.current;
+      if (!root) return;
+      const buttons = focusableDockButtons(root);
+      if (e.key === "Tab") {
+        if (buttons.length === 0) return;
+        e.preventDefault();
+        const activeIndex = buttons.findIndex((button) => button === document.activeElement);
+        const delta = e.shiftKey ? -1 : 1;
+        const nextIndex =
+          activeIndex < 0
+            ? 0
+            : (activeIndex + delta + buttons.length) % buttons.length;
+        buttons[nextIndex]?.focus();
+        return;
+      }
+
+      if (
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowRight" ||
+        e.key === "ArrowUp" ||
+        e.key === "ArrowDown"
+      ) {
+        e.preventDefault();
+        const current =
+          document.activeElement instanceof HTMLButtonElement &&
+          root.contains(document.activeElement)
+            ? document.activeElement
+            : buttons[0];
+        if (!current) return;
+        (directionalButton(current, buttons, e.key) ?? current).focus();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -672,10 +774,11 @@ export function PlayerDock({
       />
       {/* Glass floating card — bottom-right over video (nav pill material) */}
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Player settings"
-        className="absolute bottom-16 right-3 z-50 w-[min(17.5rem,calc(100vw-1.5rem))] origin-bottom-right animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-200 sm:bottom-14 sm:right-4"
+        className="absolute bottom-16 right-3 z-50 w-[min(17.5rem,calc(100vw-1.5rem))] origin-bottom-right animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-200 sm:bottom-14 sm:right-4 [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-white/80"
         onClick={(e) => e.stopPropagation()}
       >
         <div

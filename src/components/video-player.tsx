@@ -3451,7 +3451,15 @@ export function VideoPlayer({
       const isEditable =
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable;
       if (isEditable) return;
-      if (dockOpenRef.current || shortcutsOpenRef.current) return;
+      if (shortcutsOpenRef.current) {
+        if (e.key === "Escape" || e.key === "?" || (e.key === "/" && e.shiftKey)) {
+          e.preventDefault();
+          setShortcutsOpen(false);
+          resetControlsTimer();
+        }
+        return;
+      }
+      if (dockOpenRef.current) return;
       if (!hasStream) return;
 
       switch (e.key) {
@@ -3492,6 +3500,12 @@ export function VideoPlayer({
           setShortcutsOpen((v) => !v);
           break;
         default:
+          // Some Chromium/TV keyboard implementations report Shift+/ as "/"
+          // instead of the printable "?". Treat that exact chord as help too.
+          if (e.key === "/" && e.shiftKey) {
+            setShortcutsOpen((v) => !v);
+            break;
+          }
           if (/^[0-9]$/.test(e.key)) {
             seekToPct(Number(e.key) / 10);
           }

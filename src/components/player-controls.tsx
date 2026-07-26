@@ -17,6 +17,7 @@ import {
   PictureInPicture2,
   SkipForward as NextEpisodeIcon,
   ListVideo,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePlayerStore } from "@/stores/player-store";
@@ -36,7 +37,7 @@ import {
   sourceMaxHeight,
 } from "@/lib/playback/source-quality";
 import type { QualityOption } from "@/lib/playback/hls-quality";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function formatTime(seconds: number): string {
   if (!seconds || !isFinite(seconds)) return "0:00";
@@ -163,6 +164,8 @@ export function PlayerControls({
   const [showServers, setShowServers] = useState(false);
   const [showSubsPanel, setShowSubsPanel] = useState(false);
   const [showEpisodes, setShowEpisodes] = useState(false);
+  const shortcutsDialogRef = useRef<HTMLDivElement>(null);
+  const shortcutsPreviousFocusRef = useRef<HTMLElement | null>(null);
 
   const showTvEpisodes =
     mediaType === "tv" &&
@@ -173,6 +176,23 @@ export function PlayerControls({
 
   const controlsVisible =
     showControls || alwaysShowControls || !!settingsOpen || showServers || showEpisodes;
+
+  useEffect(() => {
+    if (!shortcutsOpen) return;
+    shortcutsPreviousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => {
+      shortcutsDialogRef.current
+        ?.querySelector<HTMLElement>("button:not([disabled])")
+        ?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      shortcutsPreviousFocusRef.current?.focus();
+      shortcutsPreviousFocusRef.current = null;
+    };
+  }, [shortcutsOpen]);
+
   const showNextEpisode = mediaType === "tv" && !!hasNextEpisode;
   const hasCaptions = subtitleTracks.length > 0;
   const failedSet = useMemo(() => new Set(failedSourceIds), [failedSourceIds]);
@@ -398,8 +418,8 @@ export function PlayerControls({
           />
         </div>
 
-        <div className="flex items-center gap-2 px-3 pb-3 pt-0.5 sm:px-5">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 px-3 pb-3 pt-0.5 sm:gap-2 sm:px-5">
+          <div className="flex min-w-0 items-center gap-1 sm:gap-2">
             <IconBtn onClick={onTogglePlay} label={isPlaying ? "Pause" : "Play"}>
               {isPlaying ? (
                 <Pause className="h-5 w-5 fill-current" />
@@ -428,7 +448,7 @@ export function PlayerControls({
                 step={0.05}
                 value={isMuted ? 0 : volume}
                 onChange={(e) => onSetVolume(Number(e.target.value))}
-                className="h-1 w-16 cursor-pointer appearance-none bg-transparent
+                className="hidden h-1 w-16 cursor-pointer appearance-none bg-transparent sm:block
                   [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-white/30
                   [&::-webkit-slider-thumb]:-mt-[3px] [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
                   [&::-moz-range-track]:h-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-white/30
@@ -436,7 +456,7 @@ export function PlayerControls({
                 aria-label="Volume"
               />
             </div>
-            <div className="ml-1 text-[13px] tabular-nums text-white">
+            <div className="ml-1 hidden whitespace-nowrap text-[13px] tabular-nums text-white sm:block">
               {formatTime(currentTime)}
               <span className="text-white/50"> / </span>
               <span className="text-white/80">{formatTime(duration)}</span>
@@ -448,7 +468,7 @@ export function PlayerControls({
             )}
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
             {showTvEpisodes ? (
               <IconBtn
                 onClick={() => {
@@ -466,33 +486,36 @@ export function PlayerControls({
             <IconBtn onClick={onTogglePip} label="Picture in picture">
               <PictureInPicture2 className="h-5 w-5" />
             </IconBtn>
-            {/* Servers live in gear → SERVER. Cloud panel kept as quick switch. */}
-            <IconBtn
-              onClick={() => {
-                setShowSubsPanel(false);
-                setShowEpisodes(false);
-                onCloseDock();
-                setShowServers((v) => !v);
-              }}
-              label="Servers"
-              active={showServers}
-            >
-              <Cloud className="h-5 w-5" />
-            </IconBtn>
-            <IconBtn
-              onClick={() => {
-                setShowServers(false);
-                if (hasCaptions) {
-                  setShowSubsPanel((v) => !v);
-                } else {
-                  onToggleSubtitles?.();
-                }
-              }}
-              label="Subtitles"
-              active={showSubsPanel || subtitlesOn}
-            >
-              <Captions className="h-5 w-5" />
-            </IconBtn>
+            {/* On phones these live in Settings so the primary controls never
+                run off-screen. Desktop keeps the one-tap quick switches. */}
+            <div className="hidden items-center gap-2 sm:flex">
+              <IconBtn
+                onClick={() => {
+                  setShowSubsPanel(false);
+                  setShowEpisodes(false);
+                  onCloseDock();
+                  setShowServers((v) => !v);
+                }}
+                label="Servers"
+                active={showServers}
+              >
+                <Cloud className="h-5 w-5" />
+              </IconBtn>
+              <IconBtn
+                onClick={() => {
+                  setShowServers(false);
+                  if (hasCaptions) {
+                    setShowSubsPanel((v) => !v);
+                  } else {
+                    onToggleSubtitles?.();
+                  }
+                }}
+                label="Subtitles"
+                active={showSubsPanel || subtitlesOn}
+              >
+                <Captions className="h-5 w-5" />
+              </IconBtn>
+            </div>
             <IconBtn
               onClick={() => {
                 setShowServers(false);
@@ -514,13 +537,32 @@ export function PlayerControls({
 
       {shortcutsOpen && (
         <>
-          <div className="absolute inset-0 z-40" onClick={onToggleShortcuts} aria-hidden />
+          <button
+            type="button"
+            className="absolute inset-0 z-40 cursor-default bg-transparent"
+            onClick={onToggleShortcuts}
+            aria-label="Close keyboard shortcuts"
+          />
           <div
+            ref={shortcutsDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Keyboard shortcuts"
             className="absolute bottom-16 right-4 z-50 w-64 rounded-xl border border-white/10 bg-[rgba(15,15,15,0.95)] p-2 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-white/45">
-              Shortcuts
+            <div className="flex items-center justify-between px-2 py-1">
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-white/45">
+                Shortcuts
+              </div>
+              <button
+                type="button"
+                onClick={onToggleShortcuts}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+                aria-label="Close keyboard shortcuts"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
             {[
               ["Space", "Play / pause"],
@@ -561,7 +603,7 @@ function IconBtn({
       title={label}
       aria-label={label}
       className={cn(
-        "flex h-9 w-9 items-center justify-center text-white transition hover:opacity-70",
+        "flex h-9 w-9 items-center justify-center text-white transition hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
         active && "opacity-100"
       )}
     >
