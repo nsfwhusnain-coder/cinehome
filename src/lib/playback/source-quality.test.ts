@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   findNewSourceIds,
   findQualityUpgradeSource,
+  isFasterSource,
   isSourcePlayableHere,
   parseMaxHeight,
   pickDefaultSource,
@@ -214,6 +215,32 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
     });
     const picked = pickDefaultSource([fast720, untestedHd]);
     expect(picked?.id).toBe("untested-hd");
+  });
+
+  it("native 1080p debrid outranks equal-height Luna HLS", () => {
+    const luna = makeSource({
+      id: "luna",
+      provider: "Vixsrc",
+      label: "Luna",
+      type: "hls",
+      maxHeight: 1080,
+      url: "/api/hls/luna?u=clean",
+    });
+    const debrid = makeSource({
+      id: "debrid-native",
+      provider: "Debrid",
+      label: "1080p • Debrid",
+      origin: "debrid",
+      type: "mp4",
+      maxHeight: 1080,
+      codec: "h264",
+      container: "mp4",
+      compat: "native",
+      url: "https://download.real-debrid.example/movie.mp4",
+    });
+
+    expect(pickDefaultSource([luna, debrid])?.id).toBe("debrid-native");
+    expect(isFasterSource(luna, debrid)).toBe(true);
   });
 });
 

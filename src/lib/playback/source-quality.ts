@@ -615,6 +615,13 @@ export function isFastCdnSource(source: PlaybackSource): boolean {
  */
 export function isFasterSource(current: PlaybackSource, candidate: PlaybackSource): boolean {
   if (current.id === candidate.id) return false;
+  if (
+    candidate.origin === "debrid" &&
+    current.origin !== "debrid" &&
+    isSourcePlayableHere(candidate)
+  ) {
+    return true;
+  }
   if (candidate.probe?.ok && current.probe?.ok) {
     return candidate.probe.speedScore >= current.probe.speedScore + 10;
   }
@@ -636,7 +643,11 @@ export function isFasterSource(current: PlaybackSource, candidate: PlaybackSourc
 function sourceFailoverPriority(source: PlaybackSource): number {
   const p = source.provider.toLowerCase();
   const l = source.label.toLowerCase();
-  // #1 Solstice — most reliable through /api/hls for this setup
+  // Premium direct-play debrid is already media-validated server-side and
+  // avoids the residential HLS proxy hop. Keep it ahead of embed-provider
+  // name heuristics; incompatible debrid rows never reach the autoplay pool.
+  if (source.origin === "debrid" && isSourcePlayableHere(source)) return 110;
+  // Best free fallback: direct CDN + known referer overrides, single hop.
   if (isSolsticeSource(source)) return 100;
   // Share/Fshare progressive rungs — often probe-soft-fail; never auto-default over HLS CDNs.
   if (l.startsWith("share") || p.includes("fshare")) {
