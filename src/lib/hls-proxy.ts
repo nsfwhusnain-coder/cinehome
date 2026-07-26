@@ -50,10 +50,13 @@ const SEGMENT_CACHE_MAX = 2000;
 const SEGMENT_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 /** Byte-weighted LRU cap (~512MB). */
 const SEGMENT_CACHE_MAX_BYTES = 512 * 1024 * 1024;
-/** How many leading media segments to warm after a media playlist rewrite. */
-const PREFETCH_SEGMENT_COUNT = 14;
-/** Prefetch fetch timeout (background; shorter than interactive path). */
-const PREFETCH_TIMEOUT_MS = 18_000;
+/**
+ * Speculative prefetch is deliberately disabled. It raced hls.js for the same
+ * first segment and, for byte-range playlists whose URI is a whole `.mp4`,
+ * fetched the complete feature without a Range header. Interactive hls.js
+ * requests still populate the shared segment cache.
+ */
+const PREFETCH_SEGMENT_COUNT = 0;
 /** Upstream fetch timeout for interactive proxy requests. */
 const UPSTREAM_TIMEOUT_MS = 25_000;
 /** Bytes read before deciding text-manifest vs binary — keeps the sniff itself cheap. */
@@ -61,7 +64,14 @@ const MANIFEST_SNIFF_BYTES = 64 * 1024;
 /** Hard ceiling for buffering+rewriting a manifest body; anything bigger streams through raw. */
 const MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
 /** Prefetch fetches run in the background — bound concurrency so they never starve the interactive fetch. */
-const PREFETCH_MAX_CONCURRENCY = 4;
+/**
+ * Hard maximum for one buffered cache entry, including an entry that has not
+ * reached the LRU yet. The aggregate cache cap cannot protect the process
+ * before an unbounded arrayBuffer() completes.
+ */
+export const SEGMENT_CACHE_ENTRY_MAX_BYTES = 16 * 1024 * 1024;
+/** Caps aggregate memory held by cache readers before entries reach the LRU. */
+const CACHE_BODY_READ_MAX_CONCURRENCY = 8;
 /** VOD master/media playlist raw-body TTL (re-rewritten per session on hit). */
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000;
 /** Cap in-memory raw manifest entries (text only; small). */
@@ -157,6 +167,12 @@ export interface ProxyMetrics {
   cacheKeyMode: string;
   /** Raw VOD manifest entries currently held. */
   manifestEntries: number;
+  /** Bodies refused because one cache entry exceeded the hard cap. */
+  oversizedSkips: number;
+  /** Cache fills skipped because the bounded reader pool was saturated. */
+  saturatedSkips: number;
+  /** Explicitly exposes the production safety policy to system status. */
+  speculativePrefetchEnabled: boolean;
 }
 
 const segmentCache = new Map<string, CacheEntry>();
@@ -185,7 +201,11 @@ const metrics = {
   errors: 0,
   staleHits: 0,
   negativeHits: 0,
+  oversizedSkips: 0,
+  saturatedSkips: 0,
 };
+
+let cacheBodyReadsInFlight = 0;
 
 /**
  * Strip ephemeral auth query params so the same segment body reuses cache
@@ -557,6 +577,9 @@ export function getProxyMetrics(): ProxyMetrics {
     hitRate: total === 0 ? 0 : metrics.hits / total,
     cacheKeyMode: CACHE_KEY_MODE,
     manifestEntries: manifestCache.size,
+    oversizedSkips: metrics.oversizedSkips,
+    saturatedSkips: metrics.saturatedSkips,
+    speculativePrefetchEnabled: PREFETCH_SEGMENT_COUNT > 0,
   };
 }
 
@@ -590,6 +613,7 @@ function isKeyUrl(url: string): boolean {
  * Fire-and-forget; never blocks the playlist response.
  */
 function prefetchSegments(session: HlsSession, manifest: string, baseUrl: string): void {
+  if (PREFETCH_SEGMENT_COUNT <= 0) return;
   // Session must still be alive for upstream auth headers on miss.
   if (session.expiresAt <= Date.now()) return;
 
@@ -605,11 +629,14 @@ function prefetchSegments(session: HlsSession, manifest: string, baseUrl: string
   }
 
   const misses: string[] = [];
+  const seen = new Set<string>();
   let queued = 0;
   for (const url of urls) {
     if (queued >= PREFETCH_SEGMENT_COUNT) break;
     if (!isSegmentUrl(url)) continue;
     if (!isAllowedUpstreamUrl(url, session)) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
 
     const scope = resolveBodyCacheScope(session, url, "segment");
     // Fresh or SWR-stale counts as warm — no need to re-prefetch.
@@ -636,10 +663,11 @@ function prefetchSegments(session: HlsSession, manifest: string, baseUrl: string
         const res = await fetchUpstreamSafely(
           url,
           buildUpstreamHeaders(session, url, null),
-          PREFETCH_TIMEOUT_MS
+          UPSTREAM_TIMEOUT_MS
         );
         if (!res.ok) continue;
-        const body = await res.arrayBuffer();
+        const body = await readResponseBodyForCache(res);
+        if (!body) continue;
         const passthrough = pickPassthroughHeaders(res);
         if (!isIntactCacheableBody(res.status, body, passthrough)) continue;
         const prefetchTtl = segmentEntryTtlMs(session, scope.global);
@@ -659,7 +687,7 @@ function prefetchSegments(session: HlsSession, manifest: string, baseUrl: string
     }
   };
 
-  const workerCount = Math.min(PREFETCH_MAX_CONCURRENCY, misses.length);
+  const workerCount = Math.min(1, misses.length);
   for (let i = 0; i < workerCount; i++) void warmOne();
 }
 
@@ -695,7 +723,7 @@ function cacheSegmentAsync(
   status: number,
   contentType: string,
   headers: Record<string, string>,
-  bodyPromise: Promise<ArrayBuffer>
+  bodyPromise: Promise<ArrayBuffer | null>
 ): void {
   if (!CACHEABLE_SEGMENT_STATUSES.has(status)) return;
   const scope = resolveBodyCacheScope(session, upstream, "segment");
@@ -704,6 +732,7 @@ function cacheSegmentAsync(
   const segKey = bodyCacheKey(scope.keyScope, upstream, rangeHeader);
   void bodyPromise
     .then((body) => {
+      if (!body) return;
       // ECONNRESET / truncated body: reject before insert (do not poison).
       if (!isIntactCacheableBody(status, body, headers)) return;
       const remaining = segmentEntryTtlMs(session, scope.global);
@@ -1107,7 +1136,8 @@ function revalidateSegmentInBackground(
         }
         return;
       }
-      const body = await res.arrayBuffer();
+      const body = await readResponseBodyForCache(res);
+      if (!body) return;
       const passthrough = pickPassthroughHeaders(res);
       if (!isIntactCacheableBody(res.status, body, passthrough)) return;
       const scope = resolveBodyCacheScope(session, upstream, "segment");
@@ -1623,7 +1653,56 @@ async function readCapped(
 
 /** `Response`/BodyInit wants a concrete ArrayBuffer, not a generic ArrayBufferLike view. */
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  if (
+    bytes.byteOffset === 0 &&
+    bytes.buffer instanceof ArrayBuffer &&
+    bytes.byteLength === bytes.buffer.byteLength
+  ) {
+    return bytes.buffer;
+  }
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/**
+ * Buffer a cache candidate only while it remains below the per-entry ceiling.
+ *
+ * Content-Length avoids creating a tee branch for an obviously huge response.
+ * Chunked or misreported bodies use a bounded reader; the cache branch is
+ * cancelled at the ceiling while the client-facing branch remains streamable.
+ */
+export async function readResponseBodyForCache(
+  response: Response,
+  capBytes = SEGMENT_CACHE_ENTRY_MAX_BYTES
+): Promise<ArrayBuffer | null> {
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > capBytes) {
+    metrics.oversizedSkips += 1;
+    void response.body?.cancel("cache entry exceeds declared byte cap").catch(() => {});
+    return null;
+  }
+  if (!response.body) return null;
+  if (cacheBodyReadsInFlight >= CACHE_BODY_READ_MAX_CONCURRENCY) {
+    metrics.saturatedSkips += 1;
+    void response.body.cancel("cache reader pool saturated").catch(() => {});
+    return null;
+  }
+
+  const reader = response.body.getReader();
+  cacheBodyReadsInFlight += 1;
+  try {
+    const bounded = await readCapped(reader, capBytes + 1);
+    if (!bounded.complete || bounded.bytes.byteLength > capBytes) {
+      metrics.oversizedSkips += 1;
+      void reader.cancel("cache entry exceeds hard byte cap").catch(() => {});
+      return null;
+    }
+    return toArrayBuffer(bounded.bytes);
+  } catch {
+    void reader.cancel("cache body read failed").catch(() => {});
+    return null;
+  } finally {
+    cacheBodyReadsInFlight = Math.max(0, cacheBodyReadsInFlight - 1);
+  }
 }
 
 /**
@@ -1767,7 +1846,10 @@ export async function fetchProxied(
 
   // --- Binary key path: pass through raw bytes (AES-128 keys are 16 bytes) ---
   if (isKeyUrl(upstream)) {
-    const body = await upstreamRes.arrayBuffer();
+    const body = await readResponseBodyForCache(upstreamRes, 64 * 1024);
+    if (!body) {
+      return new Response("Upstream key body too large", { status: 502 });
+    }
     const out = new Headers();
     out.set("Content-Type", contentType || "application/octet-stream");
     out.set("Cache-Control", "no-store");
@@ -1893,7 +1975,7 @@ export async function fetchProxied(
         upstreamRes.status,
         contentType,
         pickPassthroughHeaders(upstreamRes),
-        cacheClone.arrayBuffer()
+        readResponseBodyForCache(cacheClone)
       );
     } catch {
       /* clone unavailable — still stream without caching */

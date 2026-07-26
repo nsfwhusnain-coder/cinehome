@@ -23,6 +23,7 @@ import {
   TRANSCODE_MAX_HEIGHT,
 } from "@/lib/playback/source-quality";
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
+import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
 import {
   SourceAttemptController,
@@ -1780,6 +1781,7 @@ export function VideoPlayer({
       .filter(
         (s) =>
           s.id !== activeSource?.id &&
+          !isPoisonStreamUrl(s.url) &&
           s.probe == null &&
           probedHealth[s.id] == null &&
           !probeInFlightRef.current.has(s.id)
