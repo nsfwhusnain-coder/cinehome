@@ -4,6 +4,7 @@ import { getProvider } from "@/lib/playback";
 import type { MediaType, PlaybackResponse, PlaybackSource } from "@/lib/playback";
 import { isPlaybackFastPathEnabled } from "@/lib/feature-flags";
 import { pickDefaultSource } from "@/lib/playback/source-quality";
+import { buildFastDebridResponse } from "@/lib/playback/fast-debrid";
 import { RateLimiter } from "@/lib/rate-limit";
 
 /**
@@ -180,21 +181,49 @@ export async function GET(
         episode,
       });
 
-  const [result, debridSources] = await Promise.all([
-    provider.resolve({
-      tmdbId,
-      mediaType: type as MediaType,
-      season,
-      episode,
-      userId,
-      fast,
-      noCache,
-      qualityHint,
-    }),
-    debridPromise,
-  ]);
+  const providerPromise = provider.resolve({
+    tmdbId,
+    mediaType: type as MediaType,
+    season,
+    episode,
+    userId,
+    fast,
+    noCache,
+    qualityHint,
+  });
 
-  mergeDebridSources(result, debridSources, qualityHint);
+  let result: PlaybackResponse;
+  if (fast) {
+    const debridSources = await debridPromise;
+    const debridOnly = buildFastDebridResponse(
+      debridSources,
+      qualityHint ?? "auto"
+    );
+    if (debridOnly) {
+      result = debridOnly;
+      // Provider discovery was already started in parallel. Let it populate
+      // its own scraper cache for the full request without gating first frame.
+      void providerPromise.catch(() => undefined);
+      console.info(
+        JSON.stringify({
+          event: "playback_fast_debrid_hit",
+          mediaType: type,
+          tmdbId,
+          sourceCount: debridSources.length,
+        })
+      );
+    } else {
+      result = await providerPromise;
+      mergeDebridSources(result, debridSources, qualityHint);
+    }
+  } else {
+    const [providerResult, debridSources] = await Promise.all([
+      providerPromise,
+      debridPromise,
+    ]);
+    result = providerResult;
+    mergeDebridSources(result, debridSources, qualityHint);
+  }
 
   // Cache available resolves for warm Play. Partial → short TTL so poll advances.
   if (!noCache && result && result.status !== "error") {
