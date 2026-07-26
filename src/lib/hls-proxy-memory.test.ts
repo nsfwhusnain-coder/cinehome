@@ -3,10 +3,15 @@
 import { describe, expect, it } from "bun:test";
 import {
   readResponseBodyForCache,
+  SEGMENT_BODY_CACHE_ENABLED,
   SEGMENT_CACHE_ENTRY_MAX_BYTES,
 } from "./hls-proxy";
 
 describe("HLS proxy cache memory envelope", () => {
+  it("does not tee media bodies into the app heap in production", () => {
+    expect(SEGMENT_BODY_CACHE_ENABLED).toBe(false);
+  });
+
   it("rejects an oversized declared body before reading it", async () => {
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {

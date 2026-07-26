@@ -51,6 +51,13 @@ const SEGMENT_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 /** Byte-weighted LRU cap (~512MB). */
 const SEGMENT_CACHE_MAX_BYTES = 512 * 1024 * 1024;
 /**
+ * Bun's Response.clone() tee retained client/cache branches after seeks and
+ * disconnects, growing the Next process until the kernel OOM-killed it.
+ * Keep the body-cache implementation dormant until it moves to a streaming
+ * disk/edge cache that never duplicates media in the application heap.
+ */
+export const SEGMENT_BODY_CACHE_ENABLED = false;
+/**
  * Speculative prefetch is deliberately disabled. It raced hls.js for the same
  * first segment and, for byte-range playlists whose URI is a whole `.mp4`,
  * fetched the complete feature without a Range header. Interactive hls.js
@@ -173,6 +180,8 @@ export interface ProxyMetrics {
   saturatedSkips: number;
   /** Explicitly exposes the production safety policy to system status. */
   speculativePrefetchEnabled: boolean;
+  /** False while media bodies are streamed without an in-process tee/cache. */
+  segmentBodyCacheEnabled: boolean;
 }
 
 const segmentCache = new Map<string, CacheEntry>();
@@ -580,6 +589,7 @@ export function getProxyMetrics(): ProxyMetrics {
     oversizedSkips: metrics.oversizedSkips,
     saturatedSkips: metrics.saturatedSkips,
     speculativePrefetchEnabled: PREFETCH_SEGMENT_COUNT > 0,
+    segmentBodyCacheEnabled: SEGMENT_BODY_CACHE_ENABLED,
   };
 }
 
@@ -1778,7 +1788,11 @@ export async function fetchProxied(
 
   // Positive body cache before negative — a prior SWR revalidate fail must not
   // shadow a still-serveable segment body.
-  if (!urlLooksLikePlaylist && (treatAsBinary || isSegmentUrl(upstream))) {
+  if (
+    SEGMENT_BODY_CACHE_ENABLED &&
+    !urlLooksLikePlaylist &&
+    (treatAsBinary || isSegmentUrl(upstream))
+  ) {
     const scope = resolveBodyCacheScope(session, upstream, "segment");
     const key = bodyCacheKey(scope.keyScope, upstream, rangeHeader);
     const cached = getCachedSegment(key);
@@ -1963,22 +1977,25 @@ export async function fetchProxied(
     });
   }
 
-  // Known media segment: stream first byte immediately; tee into cache when possible.
+  // Known media segment: stream first byte immediately. Production does not
+  // clone media bodies while the in-process cache is disabled.
   if (isSegmentUrl(upstream) && upstreamRes.body) {
     const outHeaders = segmentOutHeaders(upstreamRes, contentType, true);
-    try {
-      const cacheClone = upstreamRes.clone();
-      cacheSegmentAsync(
-        session,
-        upstream,
-        rangeHeader,
-        upstreamRes.status,
-        contentType,
-        pickPassthroughHeaders(upstreamRes),
-        readResponseBodyForCache(cacheClone)
-      );
-    } catch {
-      /* clone unavailable — still stream without caching */
+    if (SEGMENT_BODY_CACHE_ENABLED) {
+      try {
+        const cacheClone = upstreamRes.clone();
+        cacheSegmentAsync(
+          session,
+          upstream,
+          rangeHeader,
+          upstreamRes.status,
+          contentType,
+          pickPassthroughHeaders(upstreamRes),
+          readResponseBodyForCache(cacheClone)
+        );
+      } catch {
+        /* clone unavailable - still stream without caching */
+      }
     }
     return new Response(upstreamRes.body, {
       status: upstreamRes.status,
@@ -1998,7 +2015,7 @@ export async function fetchProxied(
 
   // No body stream available (rare) — bounded buffer read is the only option.
   const bodyBuffer = await upstreamRes.arrayBuffer();
-  if (isSegmentUrl(upstream)) {
+  if (SEGMENT_BODY_CACHE_ENABLED && isSegmentUrl(upstream)) {
     cacheSegmentAsync(
       session,
       upstream,
