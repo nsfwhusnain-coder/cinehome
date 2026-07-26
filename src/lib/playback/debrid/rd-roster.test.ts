@@ -60,6 +60,7 @@ const NATIVE_1080_HASHES = ["c".repeat(40), "d".repeat(40), "e".repeat(40)];
 const MKV_1080_HASH = "f".repeat(40);
 const SMALL_CLIP_HASH = "1".repeat(40);
 const FALLBACK_720_HASH = "7".repeat(40);
+const UNSUPPORTED_CONTAINER_HASH = "8".repeat(40);
 
 describe("Real-Debrid roster — full + fast paths", () => {
   const originalFetch = globalThis.fetch;
@@ -78,7 +79,12 @@ describe("Real-Debrid roster — full + fast paths", () => {
         const m = pathname.match(/^\/resolve\/realdebrid\/[^/]+\/([^/]+)\/null\/\d+\/.*$/);
         if (m) {
           const hash = (m[1] ?? "").toLowerCase();
-          return new Response(null, { status: 302, headers: { Location: `/cdn/${hash}.mp4` } });
+          const extension =
+            hash === UNSUPPORTED_CONTAINER_HASH ? "m2ts" : "mp4";
+          return new Response(null, {
+            status: 302,
+            headers: { Location: `/cdn/${hash}.${extension}` },
+          });
         }
         if (pathname.startsWith("/cdn/")) {
           if (req.headers.has("range")) {
@@ -240,6 +246,53 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(new Set(sources.map((source) => source.url)).size).toBe(5);
   });
 
+  it("full path: preserves native rank order when the first cold candidate fails validation", async () => {
+    for (const slot of ["native-2160", "safari-2160"] as const) {
+      cacheStore.set(`${IMDB}|movie|0|0|${slot}|realdebrid`, {
+        title: `Cached ${slot}`,
+        source: slot,
+        url: `http://127.0.0.1:${server.port}/cdn/cached-${slot}.mp4`,
+        compat: slot === "safari-2160" ? "safari" : "native",
+      });
+    }
+    const rankedGoodHashes = ["2".repeat(40), "3".repeat(40), "4".repeat(40)];
+    mockTorrentioStreams([
+      {
+        title: "Movie.2024.1080p.WEB-DL.H264.BAD.mp4\n👤 999 💾 3 GB",
+        infoHash: SMALL_CLIP_HASH,
+        fileIdx: 0,
+        url: resolveProxyUrl(
+          SMALL_CLIP_HASH,
+          0,
+          "movie.bad.1080p.h264.mp4"
+        ),
+      },
+      ...rankedGoodHashes.map((hash, index) => ({
+        title: `Movie.2024.1080p.WEB-DL.H264.GOOD${index}.mp4\n👤 ${
+          40 - index * 10
+        } 💾 3 GB`,
+        infoHash: hash,
+        fileIdx: 0,
+        url: resolveProxyUrl(hash, 0, `movie.good${index}.1080p.h264.mp4`),
+      })),
+    ]);
+
+    const sources = await resolveDebridSources({
+      tmdbId: 1,
+      mediaType: "movie",
+    });
+    const native1080 = sources
+      .filter((source) => source.id.includes("native-1080"))
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    expect(native1080).toHaveLength(3);
+    expect(native1080.map((source) => source.url)).toEqual(
+      rankedGoodHashes.map((hash) =>
+        expect.stringContaining(hash)
+      )
+    );
+  });
+
   /**
    * The real "kept, not dropped" regression coverage (transcoder-link task):
    * a 4K HEVC-in-MKV release, when it's the top-ranked candidate in a class
@@ -355,6 +408,51 @@ describe("Real-Debrid roster — full + fast paths", () => {
       | { url?: string }
       | undefined;
     expect(cached?.url).toContain(goodHash);
+  });
+
+  it("full path: rejects an unknown native container whose signature is M2TS", async () => {
+    const slots = [
+      "native-2160",
+      "safari-2160",
+      "native-1080-2",
+      "native-1080-3",
+    ];
+    for (const slot of slots) {
+      cacheStore.set(`${IMDB}|movie|0|0|${slot}|realdebrid`, {
+        title: `Cached ${slot}`,
+        source: slot,
+        url: `http://127.0.0.1:${server.port}/cdn/cached-${slot}.mp4`,
+        compat: slot === "safari-2160" ? "safari" : "native",
+      });
+    }
+    mockTorrentioStreams([
+      {
+        title: "Movie.2024.1080p.WEB-DL.H264-UNKNOWN\n👤 50 💾 3 GB",
+        infoHash: UNSUPPORTED_CONTAINER_HASH,
+        fileIdx: 0,
+        url: resolveProxyUrl(
+          UNSUPPORTED_CONTAINER_HASH,
+          0,
+          "movie.unknown.1080p.h264.m2ts"
+        ),
+      },
+    ]);
+
+    const sources = await resolveDebridSources({
+      tmdbId: 1,
+      mediaType: "movie",
+    });
+
+    expect(
+      sources.some((source) =>
+        source.url.includes(UNSUPPORTED_CONTAINER_HASH)
+      )
+    ).toBe(false);
+    expect(
+      cacheStore.has(
+        `${IMDB}|movie|0|0|native-1080-1|realdebrid`
+      )
+    ).toBe(false);
   });
 
   it("full path: ignores non-cached RD-download rows and uses an instant native 720p availability fallback", async () => {

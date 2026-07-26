@@ -21,11 +21,12 @@
  * 2160p source above a native 1080p one, so whichever height actually landed
  * a native slot naturally becomes the default.
  *
- * MKV (and any other container no browser plays, e.g. WebM) is dropped
- * ENTIRELY before a candidate ever reaches this module — see
- * `isBrowserPlayableContainer` in torrentio.ts. This is deliberate: with
- * 150-224 cached streams per title, RD can afford to only ever surface
- * something a browser can actually play.
+ * Explicit MKV/WebM candidates remain in the inventory with their honest
+ * container/compat metadata, but the player never auto-selects a container
+ * the current browser cannot play. Native candidates whose container is
+ * unknown are stricter: their resolved object must prove an ISO-BMFF
+ * (MP4/MOV) signature before it can be cached or surfaced. This prevents
+ * Blu-ray M2TS objects from masquerading as browser-native sources.
  *
  * FAST PATH (see `resolveFastDebridSources`, called from route.ts's `fast`/
  * `prefetch` branch): CACHE-ONLY — checks the two best-native slots with a
@@ -107,6 +108,7 @@ import {
 import { resolveTokenFreeRedirect, sanitizeStreamUrl, sanitizeTorboxStreamUrl } from "./token-safety";
 import {
   validateDebridMediaLink,
+  validateNativeBrowserContainer,
   type MediaValidationResult,
 } from "./media-validation";
 
@@ -319,9 +321,10 @@ function safariCandidatesAt(candidates: DebridCandidate[], height: 1080 | 2160):
 
 /**
  * Per-slot ranked candidate options — already-ranked lists (torrentio.ts
- * ranks by resolution+seeders+container per class). Missing native-1080
- * slots divide the unoccupied pool into disjoint fallback lanes, so
- * concurrent workers cannot resolve one release into multiple server rows.
+ * ranks by media-type size fitness, bounded seeders, and container confidence
+ * per class). All missing native-1080 slots share one ordered pool; the
+ * resolver validates that pool in bounded batches and assigns only the first
+ * successful candidates in rank order.
  */
 function candidateHashIdentity(candidate: DebridCandidate): string | null {
   return candidate.infoHash ? `hash:${candidate.infoHash.toLowerCase()}` : null;
@@ -376,15 +379,14 @@ function buildRdSlotOptions(
     "native-720": available(nativeCandidatesAt(candidates, 720)),
   };
 
-  // The old overlapping slices meant a fallback in slot 1 could select the
-  // primary candidate for slot 2, yielding duplicate server rows. Divide the
-  // remaining ranked pool among only the slots that are missing. Each slot
-  // keeps ordered fallbacks, all missing slots still resolve concurrently,
-  // and no candidate can be claimed by two workers in the same request.
+  // Keep one shared ranked pool. Disjoint round-robin lanes prevented
+  // duplicates, but when rank 0 failed they promoted rank 3 into slot 1 while
+  // ranks 1 and 2 landed in slots 2/3. Ordered batched resolution below keeps
+  // parallelism without breaking quality order.
   const nativeSlots = missing.filter((slot) => slot.startsWith("native-1080")) as DebridSlot[];
   const native1080 = available(nativeCandidatesAt(candidates, 1080));
-  nativeSlots.forEach((slot, slotIndex) => {
-    result[slot] = native1080.filter((_, candidateIndex) => candidateIndex % nativeSlots.length === slotIndex);
+  nativeSlots.forEach((slot) => {
+    result[slot] = native1080;
   });
   return result;
 }
@@ -456,10 +458,116 @@ async function resolveSlotCandidate(
       mediaType,
       Math.min(RD_MEDIA_VALIDATION_TIMEOUT_MS, remaining)
     );
-    if (validation.acceptable) return resolved;
-    logRejectedRdMedia(candidate, validation, mediaType, "fresh");
+    if (!validation.acceptable) {
+      logRejectedRdMedia(candidate, validation, mediaType, "fresh");
+      continue;
+    }
+
+    const effectiveContainer = effectiveReleaseContainer(
+      resolved.directUrl,
+      resolved.container
+    );
+    if (resolved.compat === "native" && effectiveContainer === "unknown") {
+      const containerRemaining = deadline - Date.now();
+      if (containerRemaining <= 0) return null;
+      const containerValidation = await validateNativeBrowserContainer(
+        resolved.directUrl,
+        Math.min(RD_MEDIA_VALIDATION_TIMEOUT_MS, containerRemaining)
+      );
+      if (!containerValidation.acceptable || !containerValidation.container) {
+        logRejectedRdMedia(
+          candidate,
+          {
+            acceptable: false,
+            reason: "unsupported_container",
+            totalBytes: validation.totalBytes,
+            status: containerValidation.status,
+            elapsedMs: validation.elapsedMs + containerValidation.elapsedMs,
+          },
+          mediaType,
+          "fresh"
+        );
+        continue;
+      }
+      return { ...resolved, container: containerValidation.container };
+    }
+
+    return resolved;
   }
   return null;
+}
+
+/**
+ * Resolve the first N valid candidates from one ranked pool. Each batch runs
+ * concurrently, but results are consumed in candidate order, so a failed
+ * winner cannot cause rank 4 to occupy slot 1 while ranks 2/3 occupy later
+ * slots. Batch width shrinks as the roster fills to avoid needless RD calls.
+ */
+async function resolveRankedCandidatePool(
+  options: DebridCandidate[],
+  count: number,
+  token: string,
+  deadline: number,
+  mediaType: MediaType,
+  occupiedIdentities: Set<string>
+): Promise<ResolvedCandidate[]> {
+  const resolvedCandidates: ResolvedCandidate[] = [];
+  const claimedIdentities = new Set(occupiedIdentities);
+  let cursor = 0;
+
+  while (
+    cursor < options.length &&
+    resolvedCandidates.length < count &&
+    Date.now() < deadline
+  ) {
+    const remainingNeeded = count - resolvedCandidates.length;
+    const batch = options.slice(
+      cursor,
+      cursor + Math.min(RESOLVE_CONCURRENCY, remainingNeeded)
+    );
+    cursor += batch.length;
+    const batchResults = await mapWithConcurrency(
+      batch,
+      RESOLVE_CONCURRENCY,
+      (candidate) =>
+        resolveSlotCandidate(
+          [candidate],
+          token,
+          deadline,
+          mediaType,
+          occupiedIdentities
+        )
+    );
+
+    for (const resolved of batchResults) {
+      if (!resolved || resolvedCandidates.length >= count) continue;
+      const hashIdentity = candidateHashIdentity(resolved);
+      const titleIdentity = releaseTitleIdentity(resolved.title);
+      const identities = [
+        `url:${resolved.directUrl}`,
+        ...(hashIdentity ? [hashIdentity] : []),
+        ...(titleIdentity ? [titleIdentity] : []),
+      ];
+      if (identities.some((identity) => claimedIdentities.has(identity))) {
+        console.warn(
+          JSON.stringify({
+            event: "debrid_resolved_duplicate_rejected",
+            provider: "realdebrid",
+            mediaType,
+            title: resolved.title,
+          })
+        );
+        continue;
+      }
+      identities.forEach((identity) => {
+        claimedIdentities.add(identity);
+        occupiedIdentities.add(identity);
+      });
+      resolvedCandidates.push(resolved);
+    }
+  }
+
+  return resolvedCandidates;
 }
 
 function logRejectedRdMedia(
@@ -497,10 +605,57 @@ async function readCachedRdSlots(
     RD_SLOTS.map((slot) => getFreshCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" }))
   );
   const validatedBySlot = await Promise.all(
-    cachedBySlot.map(async (hit) => {
+    cachedBySlot.map(async (hit, index) => {
       const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;
       if (!hit || !safeUrl) return { hit, safeUrl: null, validation: null };
-      const validation = await validateDebridMediaLink(safeUrl, keyBase.mediaType, validationTimeoutMs);
+      const validation = await validateDebridMediaLink(
+        safeUrl,
+        keyBase.mediaType,
+        validationTimeoutMs
+      );
+      const effectiveContainer = effectiveReleaseContainer(
+        safeUrl,
+        hit.container
+      );
+      if (
+        validation.acceptable &&
+        hit.compat === "native" &&
+        effectiveContainer === "unknown"
+      ) {
+        const containerValidation = await validateNativeBrowserContainer(
+          safeUrl,
+          validationTimeoutMs
+        );
+        if (!containerValidation.acceptable || !containerValidation.container) {
+          return {
+            hit,
+            safeUrl,
+            validation: {
+              acceptable: false,
+              reason: "unsupported_container" as const,
+              totalBytes: validation.totalBytes,
+              status: containerValidation.status,
+              elapsedMs:
+                validation.elapsedMs + containerValidation.elapsedMs,
+            },
+          };
+        }
+
+        const normalizedHit: CachedStreamRecord = {
+          ...hit,
+          url: safeUrl,
+          container: containerValidation.container,
+        };
+        await upsertCachedStream(
+          {
+            ...keyBase,
+            quality: RD_SLOTS[index]!,
+            provider: "realdebrid",
+          },
+          normalizedHit
+        );
+        return { hit: normalizedHit, safeUrl, validation };
+      }
       return { hit, safeUrl, validation };
     })
   );
@@ -600,7 +755,33 @@ async function resolveRealDebridSlots(
     }));
 
   const slotOptions = buildRdSlotOptions(candidates, missing, occupiedIdentities);
-  const resolvedPerSlot = await mapWithConcurrency(missing, RESOLVE_CONCURRENCY, async (slot) => {
+  const native1080Slots = missing.filter((slot) =>
+    slot.startsWith("native-1080")
+  );
+  const rankedNative1080 =
+    native1080Slots.length > 0
+      ? await resolveRankedCandidatePool(
+          slotOptions[native1080Slots[0]!] ?? [],
+          native1080Slots.length,
+          rdToken,
+          deadline,
+          req.mediaType,
+          occupiedIdentities
+        )
+      : [];
+  const nativeEntries = rankedNative1080.map((resolved, index) => ({
+    slot: native1080Slots[index]!,
+    resolved,
+  }));
+
+  // A successful native 1080p roster makes the 720p availability fallback
+  // redundant. Do not eagerly resolve/cache a sixth, lower-quality source.
+  const otherMissing = missing.filter(
+    (slot) =>
+      !slot.startsWith("native-1080") &&
+      !(slot === "native-720" && nativeEntries.length > 0)
+  );
+  const otherEntries = await mapWithConcurrency(otherMissing, RESOLVE_CONCURRENCY, async (slot) => {
     const options = slotOptions[slot];
     if (!options?.length) return null;
     const resolved = await resolveSlotCandidate(
@@ -612,6 +793,33 @@ async function resolveRealDebridSlots(
     );
     return resolved ? { slot, resolved } : null;
   });
+  let resolvedPerSlot = [...nativeEntries, ...otherEntries].filter(
+    (entry): entry is { slot: DebridSlot; resolved: ResolvedCandidate } =>
+      entry !== null
+  );
+
+  // If a native 4K source resolved while 1080p was absent, it also supersedes
+  // a simultaneously resolved 720p fallback before anything is persisted.
+  const hasHigherNative =
+    hits.some(
+      (source) =>
+        source.compat === "native" &&
+        typeof source.maxHeight === "number" &&
+        source.maxHeight >= 1080
+    ) ||
+    resolvedPerSlot.some(
+      (entry) =>
+        entry.slot === "native-2160" ||
+        entry.slot.startsWith("native-1080")
+    );
+  if (hasHigherNative) {
+    resolvedPerSlot = resolvedPerSlot.filter(
+      (entry) => entry.slot !== "native-720"
+    );
+  }
+  resolvedPerSlot.sort(
+    (a, b) => RD_SLOTS.indexOf(a.slot) - RD_SLOTS.indexOf(b.slot)
+  );
 
   const newSources: PlaybackSource[] = [];
   for (const entry of resolvedPerSlot) {
