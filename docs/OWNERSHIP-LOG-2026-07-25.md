@@ -19,7 +19,11 @@ tokens, PINs, cookies, and environment values are deliberately excluded.
 - Decision: the server Git repository is the temporary canonical source and
   deployment tree. If the old Mac repository returns, its history must be
   reconciled into this repository; it must never be rsynced over production.
-- A working clone was made at `C:\Users\husna\projects\cinehome`.
+- The current clean working clone is
+  `C:\Users\husna\projects\cinehome-main`. On 2026-07-26 an older
+  `cinehome-authoritative` mirror was found at `18d5336` with 48 dirty paths;
+  every path was content-identical to server commit `60e067f` after CRLF/LF
+  normalization. It remains preserved but is not a deploy source.
 
 ## Rollback snapshot and restore proof
 
@@ -669,3 +673,68 @@ Rebuilding `latest` removed the live d84 image's Docker metadata before it
 could be retagged, so the snapshot does not pretend otherwise: emergency tag
 `cinehome-cinehome:pre-adfd321` points to the previously deployed and verified
 `c6e6bb6` image. The snapshot's `ROLLBACK-NOTE.txt` records that limitation.
+
+## Player control, phone, and remote product pass
+
+The playback timing matrix proved media delivery but did not exercise the
+controls users actually touch. A new production-browser harness,
+`scripts/browser/player-product-pass.ts`, was written to cover real advancing
+video plus desktop keyboard controls, phone/TV layout, modal focus, D-pad
+navigation, fullscreen, PiP, artwork, overflow, and tap-target size.
+
+The pre-change production pass found:
+
+- desktop playback, pause/resume, mute, volume, and ±10-second seeks passed,
+  but the standard `Shift+/` help chord did not open reliably in this Chromium
+  keyboard path;
+- the shortcut overlay had no Escape handler or focus-managed close control;
+- the settings UI declared itself modal but left focus behind the dialog and
+  ignored D-pad arrows, making it unusable with a remote;
+- at 390×844, the single non-wrapping desktop control row pushed Settings and
+  Fullscreen completely off-screen and wrapped the time label through the icon
+  row. The mobile pass was 2/3 before the fix.
+
+Commit `1d480ea` fixes the control architecture rather than adding player
+guard clauses:
+
+- phone controls now retain play/pause, both seeks, mute, PiP, Settings, and
+  Fullscreen in one bounded row; duplicate Server/Subtitles quick buttons and
+  the volume slider/time label collapse into Settings at the phone breakpoint;
+- settings captures and restores focus, traps Tab, visibly focuses controls,
+  and uses geometric D-pad navigation through the actual rendered button grid;
+- shortcut help is an accessible modal with explicit close control, focus
+  lifecycle, Escape handling, and both printable `?` and Chromium/TV
+  `Shift+/` key-reporting paths;
+- the repeatable harness was committed with the fix.
+
+The exact candidate image
+`sha256:ff3a1d29fe5d73523ac22fbe3d9a8482928a6b926ac2d4ad1ae514d8ae138e4b`
+passed TypeScript, 517 tests / 1,147 expectations, an isolated app+scraper
+health boot, and 23/23 candidate interaction checks before deployment. The
+post-deploy production pass was 25/25 after the harness also made decoded
+dimensions explicit for phone and TV: all three viewports advanced real
+1920×800 video; desktop keyboard, D-pad, fullscreen, and PiP passed; phone and
+TV had no overflow and every required control fit its viewport.
+
+### Rollback incident prevention
+
+The pre-deploy snapshot again caught Docker removing metadata for the
+still-running image after `latest` was rebuilt. Deployment was stopped. The
+exact live source commit `60e067f` was rebuilt on the already-verified,
+lockfile-identical candidate dependency/runtime layer as
+`cinehome-cinehome:pre-1d480ea`
+(`sha256:12076198bfead3c844cde6bce8e6954e14df8113faa853cdf71687e3e5f41ec1`).
+That rollback image was booted on an isolated port against the restored
+database and passed app health, scraper health, and 4/4 TV playback checks
+with an advancing 1920×800 first frame.
+
+The full snapshot is
+`/home/hussy/cinehome-backups/20260726T191313Z-pre-1d480ea`; its checksums and
+SQLite restore rehearsal pass with 13 users, 17 watchlist rows, 82 progress
+rows, and 122 cached streams. `scripts/deploy.sh` now tags the exact live image
+before any build and fails closed if its metadata is not addressable, so the
+same ordering mistake cannot silently recur.
+
+After production deployment: container health is healthy, restart count is
+zero, OOM is false, SQLite `quick_check` is `ok`, and the four data invariants
+remain 13 / 17 / 82 / 122.

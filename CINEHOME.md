@@ -11,6 +11,11 @@
   the verified deploy copy so every production build now has one recoverable
   authority. Developer-machine copies are mirrors until the old repository is
   reconciled; never push a stale local tree over the server authority.
+- The current clean Windows working clone is
+  `C:\Users\husna\projects\cinehome-main`. The older
+  `cinehome-authoritative` directory is a preserved stale mirror; its 48
+  apparent changes were verified content-identical to server commit `60e067f`
+  after line-ending normalization. Do not edit or deploy from it.
 - **Canonical App Router**: `src/app` only. There is no root `app/` router.
 
 ## Stack
@@ -84,6 +89,11 @@ Manual equivalent:
 ./scripts/disk-preflight.sh   # abort if free disk on / < 20GB
 # deploy.sh supplies NODE_DOWNLOAD_IP automatically when host/Tailscale DNS is
 # broken but CineHome's explicit container DNS can resolve nodejs.org.
+# Manual deploys must also tag BEFORE build. Never rebuild `latest` first.
+live_image=$(docker inspect --format '{{.Image}}' cinehome)
+docker image inspect "$live_image" >/dev/null
+docker image tag "$live_image" \
+  "cinehome-cinehome:predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
 docker compose build
 docker compose up -d
 curl -sf http://127.0.0.1:4445
@@ -106,6 +116,24 @@ Secrets: copy `.env.example` → `.env` on the server. **Never commit `.env`.**
 `.env.*`. `.dockerignore` must continue to exclude `.browser-qa/` because it
 contains authenticated Playwright storage state; it also excludes persisted
 transcode data. A production image must pass `test ! -e /app/.browser-qa`.
+
+### Player interaction product pass
+
+`scripts/browser/player-product-pass.ts` exercises real playback plus the
+user-facing control surface at desktop (1440×900), phone (390×844), and TV
+(1920×1080) sizes. It verifies decoded/advancing video, pause/resume, keyboard
+seek and volume, mute, shortcuts open/escape, modal focus, D-pad settings
+navigation, fullscreen enter/exit, PiP, artwork, overflow, control fit, and
+minimum tap targets. Run it from the exact production image with an
+authenticated Playwright storage state; never bake that state into an image.
+
+```bash
+image_id=$(docker inspect --format '{{.Image}}' cinehome)
+docker run --rm --network host \
+  -e STORAGE_STATE=/app/.browser-qa/storage-state.json \
+  -v /home/hussy/cinehome/.browser-qa:/app/.browser-qa \
+  "$image_id" bun scripts/browser/player-product-pass.ts
+```
 
 ### Runtime memory envelope
 

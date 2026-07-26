@@ -77,6 +77,27 @@ if [[ -n "${NODE_DOWNLOAD_IP:-}" ]]; then
   echo "Node runtime download address resolved"
 fi
 
+# Compose retags `cinehome-cinehome:latest` during a build. BuildKit may then
+# discard metadata for the image still backing the live container, which makes
+# that otherwise-healthy image impossible to tag after the build. Capture the
+# exact live image before touching `latest`; fail closed if Docker can no longer
+# resolve it, because continuing would mean deploying without an image rollback.
+if docker inspect cinehome >/dev/null 2>&1; then
+  live_image_id="$(docker inspect --format '{{.Image}}' cinehome)"
+  if ! docker image inspect "${live_image_id}" >/dev/null 2>&1; then
+    echo "ERROR: live CineHome image metadata is unavailable: ${live_image_id}" >&2
+    echo "       Reconstruct and prove a rollback image before building." >&2
+    exit 1
+  fi
+  predeploy_tag="${PREDEPLOY_TAG:-cinehome-cinehome:predeploy-$(date -u +%Y%m%dT%H%M%SZ)}"
+  if docker image inspect "${predeploy_tag}" >/dev/null 2>&1; then
+    echo "ERROR: refusing to overwrite existing rollback tag: ${predeploy_tag}" >&2
+    exit 1
+  fi
+  docker image tag "${live_image_id}" "${predeploy_tag}"
+  echo "rollback image tagged: ${predeploy_tag} -> ${live_image_id}"
+fi
+
 docker compose build
 docker compose up -d
 # Health: published app port (compose maps 4445:3000). Scraper stays internal :3030.

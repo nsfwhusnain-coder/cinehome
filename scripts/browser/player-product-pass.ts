@@ -383,6 +383,13 @@ async function runCompactViewport(
   viewport: Extract<ViewportName, "mobile" | "tv">
 ): Promise<void> {
   await waitForFirstFrame(page);
+  const playing = await videoState(page);
+  check(
+    viewport,
+    "real first frame advances",
+    true,
+    `${playing.videoWidth}x${playing.videoHeight}`
+  );
   await showControls(page);
 
   const layout = await page.evaluate(() => ({
