@@ -126,6 +126,10 @@ const RESOLUTION_1080_PATTERN = /1080p/i;
 const RESOLUTION_ANY_PATTERN = /(\d{3,4})p/i;
 const SEEDERS_PATTERN = /👤[^\d]*(\d+)/;
 const SIZE_PATTERN = /(\d+(?:\.\d+)?)\s*(GiB|GB|MiB|MB)\b/i;
+const CAPTURE_RELEASE_PATTERN =
+  /\b(?:hd[ ._-]?ts|hdcam|camrip|cam|telesync|telecine)\b/i;
+const MOVIE_NON_FEATURE_PATTERN =
+  /\b(?:featurettes?|bonus(?:es)?|extras?|soundtracks?|deleted[ ._-]?scenes?|imdb[ ._-]*top[ ._-]*\d+)\b/i;
 
 /**
  * Pure title/filename classifier — no network. Exported for unit testing
@@ -282,16 +286,11 @@ function candidateRankScore(c: DebridCandidate, mediaType: MediaType): number {
   const seederScore = Math.min(c.seeders, SEEDERS_SCORE_CAP) * SEEDERS_WEIGHT;
   const containerScore =
     c.container === "mp4" ? MP4_CONTAINER_BONUS : c.container === "mov" ? MOV_CONTAINER_BONUS : 0;
-  const misleadingReleasePenalty =
-    /\b(?:hd-?ts|hdcam|camrip|telesync|telecine)\b/i.test(c.title)
-      ? 500
-      : 0;
   return (
     c.resolutionHeight +
     sizeFitnessScore(c, mediaType) +
     seederScore +
-    containerScore -
-    misleadingReleasePenalty
+    containerScore
   );
 }
 
@@ -442,6 +441,10 @@ function parseTorrentioStreams(
       continue;
     }
     const text = `${s.title ?? ""} ${s.name ?? ""} ${s.behaviorHints?.filename ?? ""}`;
+    if (CAPTURE_RELEASE_PATTERN.test(text)) continue;
+    if (mediaType === "movie" && MOVIE_NON_FEATURE_PATTERN.test(text)) {
+      continue;
+    }
     const parsed = parseReleaseTitle(text);
     const height = parsed.resolutionHeight;
     const sizeBytes = parseSizeBytes(text);

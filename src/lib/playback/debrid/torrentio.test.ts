@@ -200,7 +200,7 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
     });
   }
 
-  it("prefers a balanced movie encode over an oversized peer and a mislabeled capture", async () => {
+  it("prefers a balanced movie encode over an oversized peer and drops obvious captures/packs", async () => {
     globalThis.fetch = (async () =>
       jsonResponse({
         streams: [
@@ -216,6 +216,14 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
             title: "Movie.2024.1080p.HD-TS.H264.mp4\n👤 9999 💾 3 GB",
             infoHash: "t".repeat(40),
           },
+          {
+            title: "IMDb Top 250 - 1080p BluRay H264.mp4\n👤 9999 💾 3 GB",
+            infoHash: "p".repeat(40),
+          },
+          {
+            title: "Movie.2024.Featurettes.1080p.H264.mp4\n👤 9999 💾 3 GB",
+            infoHash: "f".repeat(40),
+          },
         ],
       })) as unknown as typeof fetch;
 
@@ -228,7 +236,6 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
     expect(candidates.map((candidate) => candidate.infoHash)).toEqual([
       "b".repeat(40),
       "h".repeat(40),
-      "t".repeat(40),
     ]);
   });
 
