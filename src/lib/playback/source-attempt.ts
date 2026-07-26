@@ -6,9 +6,13 @@
  * generation token makes those callbacks harmless: only the currently bound
  * source attempt may accrue failures or claim a terminal transition.
  *
- * The policy is deliberately engine-independent:
+ * The policy keeps identity/arbitration engine-independent while making
+ * recovery capability explicit:
  * - two hard transport failures without playback progress => fail over;
- * - one silent-stall recovery nudge is allowed;
+ * - one silent-stall recovery nudge is allowed when the active engine has a
+ *   real recovery primitive (hls.js/dash.js);
+ * - a native progressive source, which has no recovery engine, fails over on
+ *   its first complete no-progress window;
  * - a second full no-progress window => fail over;
  * - real playhead progress clears transient strikes.
  */
@@ -96,8 +100,12 @@ export class SourceAttemptController {
       : "retry";
   }
 
-  noteSilentStall(token: SourceAttemptToken): AttemptFailureSignal {
+  noteSilentStall(
+    token: SourceAttemptToken,
+    recoveryAvailable = true
+  ): AttemptFailureSignal {
     if (!this.isCurrent(token) || !this.current) return "ignored";
+    if (!recoveryAvailable) return "terminal";
     if (this.current.stallRecoveries < this.stallRecoveryLimit) {
       this.current.stallRecoveries += 1;
       return "recover";

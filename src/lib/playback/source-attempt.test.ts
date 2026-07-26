@@ -40,6 +40,13 @@ describe("SourceAttemptController", () => {
     expect(controller.noteSilentStall(attempt)).toBe("terminal");
   });
 
+  it("fails a silent stall immediately when the media path has no recovery engine", () => {
+    const controller = new SourceAttemptController();
+    const attempt = controller.begin("progressive-mp4");
+
+    expect(controller.noteSilentStall(attempt, false)).toBe("terminal");
+  });
+
   it("resets the stall budget when the playhead advances", () => {
     const controller = new SourceAttemptController();
     const attempt = controller.begin("source-a");

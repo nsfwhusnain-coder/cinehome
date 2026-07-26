@@ -159,6 +159,14 @@ const STALL_WATCHDOG_POLL_MS = 3_000;
  * The shared source-attempt controller allows one engine recovery nudge; a
  * second complete window without progress fails over. */
 const STALL_WATCHDOG_THRESHOLD_MS = 12_000;
+/**
+ * Direct progressive MP4 has no engine recovery primitive: unlike hls.js or
+ * dash.js, there is no loader to restart after the browser's opaque media
+ * request dies. Waiting through a fake "recovery" cycle doubled failover to
+ * ~24s. One bounded window is enough, and still comfortably exceeds measured
+ * healthy RD seek latency (~2s).
+ */
+const NATIVE_PROGRESSIVE_STALL_THRESHOLD_MS = 8_000;
 const STALL_WATCHDOG_MIN_ADVANCE_S = 0.34;
 /** Grace period after background discovery closes before re-checking for a
  * stuck "Finding sources…" spinner with nothing left to try (task 2). */
@@ -3023,12 +3031,21 @@ export function VideoPlayer({
         stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
         return;
       }
-      if (Date.now() - baseline.t < STALL_WATCHDOG_THRESHOLD_MS) return;
+      const hasEngineRecovery = Boolean(hlsRef.current || dashRef.current);
+      const isNativeProgressive =
+        activeSourceRef.current?.type === "mp4" && !hasEngineRecovery;
+      const thresholdMs = isNativeProgressive
+        ? NATIVE_PROGRESSIVE_STALL_THRESHOLD_MS
+        : STALL_WATCHDOG_THRESHOLD_MS;
+      if (Date.now() - baseline.t < thresholdMs) return;
 
       const attempt = sourceAttemptControllerRef.current.currentToken();
       if (!attempt) return;
       const stallSignal =
-        sourceAttemptControllerRef.current.noteSilentStall(attempt);
+        sourceAttemptControllerRef.current.noteSilentStall(
+          attempt,
+          !isNativeProgressive
+        );
       stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
       if (stallSignal === "terminal") {
         failActiveSource("silent_stall", attempt);
