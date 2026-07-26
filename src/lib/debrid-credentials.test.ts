@@ -92,7 +92,7 @@ function stubFetchJson(status: number, body: unknown): void {
       status,
       json: async () => body,
     } as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 }
 
 function stubFetchNetworkFailure(): void {
@@ -100,7 +100,7 @@ function stubFetchNetworkFailure(): void {
   globalThis.fetch = (async () => {
     fetchCalls++;
     throw new Error("network down");
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 }
 
 const FUTURE_ISO = new Date(Date.now() + 30 * 86_400_000).toISOString();
