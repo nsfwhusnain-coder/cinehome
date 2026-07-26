@@ -5,6 +5,7 @@ import {
   cinemaosQualityRank,
   cinemaosStreamLabel,
   isCinemaosRateLimitedWorkerUrl,
+  isCinemaosRejectedStreamUrl,
   isCinemaosEnglish,
   parseCinemaosQuality,
   sortCinemaosStreams,
@@ -28,6 +29,19 @@ describe("CinemaOS worker quarantine", () => {
     expect(
       isCinemaosRateLimitedWorkerUrl(
         "https://macdn.hakunaymatata.com/resource/movie"
+      )
+    ).toBe(false);
+  });
+
+  it("drops poison hosts before proxy wrapping can hide their identity", () => {
+    expect(
+      isCinemaosRejectedStreamUrl(
+        "https://aqua-vulture-337623.hostingersite.com/video/fight-club.mp4"
+      )
+    ).toBe(true);
+    expect(
+      isCinemaosRejectedStreamUrl(
+        "https://hcdn.hakunaymatata.com/resource/fight-club.mp4"
       )
     ).toBe(false);
   });

@@ -63,6 +63,13 @@ describe("isPoisonStreamUrl", () => {
     expect(isNeverAutoDefaultUrl(clean)).toBe(false);
   });
 
+  it("detects a poison upstream hidden inside the same-origin HLS proxy", () => {
+    const upstream =
+      "https://aqua-vulture-337623.hostingersite.com/video/fight-club.mp4";
+    const encoded = Buffer.from(upstream, "utf8").toString("base64url");
+    expect(isPoisonStreamUrl(`/api/hls/session-1?u=${encoded}`)).toBe(true);
+  });
+
   it("empty / invalid inputs are not poison", () => {
     expect(isPoisonStreamUrl("")).toBe(false);
     expect(isPoisonStreamUrl("   ")).toBe(false);

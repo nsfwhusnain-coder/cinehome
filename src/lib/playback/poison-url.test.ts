@@ -29,4 +29,11 @@ describe("client isPoisonStreamUrl (mirror of scraper)", () => {
     expect(isNeverAutoDefaultUrl("https://a.hostingersite.com/x.php?1")).toBe(true);
     expect(isNeverAutoDefaultUrl("https://moon.ironwallnet.net/a.m3u8")).toBe(false);
   });
+
+  it("detects a poison upstream hidden inside the same-origin HLS proxy", () => {
+    const upstream =
+      "https://aqua-vulture-337623.hostingersite.com/video/fight-club.mp4";
+    const encoded = Buffer.from(upstream, "utf8").toString("base64url");
+    expect(isPoisonStreamUrl(`/api/hls/session-1?u=${encoded}`)).toBe(true);
+  });
 });

@@ -7,6 +7,7 @@
  */
 
 import type { ProviderStream } from "./types";
+import { isPoisonStreamUrl } from "../poison-url";
 
 const BASE = "https://cinemaos.tech";
 /** NEXT_PUBLIC_API_HASH_SECRET from cinemaos.tech client bundle (may rotate). */
@@ -121,6 +122,10 @@ export function isCinemaosRateLimitedWorkerUrl(raw: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function isCinemaosRejectedStreamUrl(raw: string): boolean {
+  return isCinemaosRateLimitedWorkerUrl(raw) || isPoisonStreamUrl(raw);
 }
 
 function extractLangCode(text: string): string | null {
@@ -286,7 +291,7 @@ export async function resolveCinemaos(
       if (
         !streamUrl ||
         seen.has(streamUrl) ||
-        isCinemaosRateLimitedWorkerUrl(streamUrl)
+        isCinemaosRejectedStreamUrl(streamUrl)
       ) {
         continue;
       }
