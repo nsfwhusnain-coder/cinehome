@@ -123,6 +123,18 @@ describe("bounded cooldown + self-heal (no permanent blacklist)", () => {
     expect(isEmbedHostDead("probe.example")).toBe(true);
   });
 
+  it("an exhausted-roster recovery claims one immediate half-open probe", () => {
+    recordEmbedOutcome("recovery.example", false);
+    recordEmbedOutcome("recovery.example", false);
+
+    expect(isEmbedHostDead("recovery.example")).toBe(true);
+    expect(isEmbedHostDead("recovery.example", true)).toBe(false);
+    expect(isEmbedHostDead("recovery.example", true)).toBe(true);
+
+    recordEmbedOutcome("recovery.example", true);
+    expect(isEmbedHostDead("recovery.example")).toBe(false);
+  });
+
   it("a successful bounded probe revives the host immediately (self-healing)", () => {
     recordEmbedOutcome("revives.example", false);
     recordEmbedOutcome("revives.example", false);

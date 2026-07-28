@@ -69,7 +69,6 @@ import {
   type EmbedSourceSpec,
   buildPrimarySourceUrls,
   buildSecondarySourceUrls,
-  countVerifiedNonPoison,
   PW_WAIT_MS,
   ENRICH_HARD_TIMEOUT_MS,
   SECONDARY_MIN_REMAINING_MS,
@@ -83,6 +82,12 @@ import {
   shouldEarlyExitWait,
 } from "./capture-early-exit";
 import { browserPoolSize } from "./browser-pool-config";
+import {
+  countAutoPlayableRosterSources,
+  countMeasuredPlayableRosterSources,
+  partialForPlayableRoster,
+} from "./roster-health";
+import { appendNewSourceIdentities } from "./progressive-merge";
 
 const PORT = 3030;
 /**
@@ -2089,6 +2094,8 @@ async function playwrightFallback(
     budgetMs?: number;
     /** Log tag for wave diagnostics. */
     wave?: "primary" | "secondary";
+    /** Exhausted-roster recovery may claim one immediate half-open host probe. */
+    forceDeadHostProbe?: boolean;
   } = {}
 ): Promise<SourceEntry[]> {
   if (!isProviderEnabled("playwright") || !canAttempt("playwright")) {
@@ -2140,7 +2147,7 @@ async function playwrightFallback(
     } catch {
       host = "";
     }
-    if (host && isEmbedHostDead(host)) {
+    if (host && isEmbedHostDead(host, options.forceDeadHostProbe ?? false)) {
       logAt("debug", `[scrape] skipping dead embed host: ${host}`);
       return;
     }
@@ -2297,7 +2304,8 @@ function mergeIntoCache(key: string, entries: SourceEntry[]): ScrapeResult | nul
   const combined = [...(existing?.sources ?? []), ...entries];
   const merged = buildMergedResult(combined);
   if (!merged.streamUrl) return null;
-  const stillThin = merged.sources.length < PARTIAL_CLEAR_MIN;
+  const stillThin =
+    countAutoPlayableRosterSources(merged.sources) < PARTIAL_CLEAR_MIN;
   const withPartial: ScrapeResult = {
     ...merged,
     // Never force partial just because enrich is in-flight when roster is thick enough.
@@ -2308,8 +2316,8 @@ function mergeIntoCache(key: string, entries: SourceEntry[]): ScrapeResult | nul
 }
 
 /** First-response / return partial flag: thin roster only — not bare enrichingKeys. */
-function partialFlagForResult(sourceCount: number): true | undefined {
-  return sourceCount < PARTIAL_CLEAR_MIN ? true : undefined;
+function partialFlagForResult(sources: SourceEntry[]): true | undefined {
+  return partialForPlayableRoster(sources, PARTIAL_CLEAR_MIN);
 }
 
 async function enrichMissingSources(
@@ -2323,9 +2331,16 @@ async function enrichMissingSources(
     skipNotorrent?: boolean;
     /** Sync path must skip PW — 60s+ embeds block first frame. Background only. */
     skipPlaywright?: boolean;
+    /** Let recovery probe one host even while its normal cooldown is active. */
+    forceDeadHostProbe?: boolean;
   } = {}
 ): Promise<SourceEntry[]> {
   let result = [...collected];
+  // Only measured seed rows and newly captured browser rows are health
+  // evidence. Background API refreshes can return the same dead signed URL
+  // without a probe; treating that duplicate as healthy previously suppressed
+  // every secondary browser provider.
+  let healthEvidence = [...collected];
 
   // Always pull API providers when under the hard cap (enc-dec outages just yield []).
   if (countUniqueSources(result) < MAX_SOURCES) {
@@ -2353,7 +2368,9 @@ async function enrichMissingSources(
   }
 
   // Playwright embed fan-out — only from scheduleBackgroundEnrich.
-  // Phase 3 Option B: primary wave always; secondary only if verified/non-poison < 2.
+  // Phase 3 Option B: primary wave always; secondary only if fewer than two
+  // sources remain auto-playable after measured probes. Provider labels alone
+  // are not health evidence: CinemaOS can return a large HTTP-428 roster.
   // Both waves share one PW_WAIT_MS hard wall so enrich settles ~20s for PW.
   if (countUniqueSources(result) < MAX_SOURCES) {
     const pwWallStarted = Date.now();
@@ -2365,15 +2382,19 @@ async function enrichMissingSources(
       embeds: primaryEmbeds,
       budgetMs: PW_WAIT_MS,
       wave: "primary",
+      forceDeadHostProbe: options.forceDeadHostProbe,
     });
     if (primaryPw.length) {
       const kept = await filterAndKeepPwSources(primaryPw);
       result = [...result, ...kept];
+      healthEvidence = [...healthEvidence, ...kept];
     } else {
       logAt("info", `[scrape] PW primary sources before merge: 0`);
     }
 
-    const goodCount = countVerifiedNonPoison(result, isPoisonStreamUrl);
+    const goodCount = countMeasuredPlayableRosterSources(
+      mergeSourceEntries(healthEvidence)
+    );
     const elapsed = Date.now() - pwWallStarted;
     const remainingMs = PW_WAIT_MS - elapsed;
     if (
@@ -2385,7 +2406,7 @@ async function enrichMissingSources(
       const secondaryEmbeds = buildSecondarySourceUrls(tmdbId, mediaType, season, episode);
       logAt(
         "info",
-        `[scrape] PW secondary wave (verifiedNonPoison=${goodCount} < ${VERIFIED_MIN_SKIP_SECONDARY}, remaining=${remainingMs}ms)`
+        `[scrape] PW secondary wave (autoPlayable=${goodCount} < ${VERIFIED_MIN_SKIP_SECONDARY}, remaining=${remainingMs}ms)`
       );
       const secondaryPw = await playwrightFallback(tmdbId, mediaType, season, episode, {
         skipVerify: true,
@@ -2393,6 +2414,7 @@ async function enrichMissingSources(
         embeds: secondaryEmbeds,
         budgetMs: remainingMs,
         wave: "secondary",
+        forceDeadHostProbe: options.forceDeadHostProbe,
       });
       if (secondaryPw.length) {
         const kept = await filterAndKeepPwSources(secondaryPw);
@@ -2401,7 +2423,7 @@ async function enrichMissingSources(
     } else if (goodCount >= VERIFIED_MIN_SKIP_SECONDARY) {
       logAt(
         "info",
-        `[scrape] PW secondary skipped (verifiedNonPoison=${goodCount} ≥ ${VERIFIED_MIN_SKIP_SECONDARY})`
+        `[scrape] PW secondary skipped (autoPlayable=${goodCount} ≥ ${VERIFIED_MIN_SKIP_SECONDARY})`
       );
     } else if (remainingMs < SECONDARY_MIN_REMAINING_MS) {
       logAt(
@@ -2423,7 +2445,7 @@ function scheduleBackgroundEnrich(
   mediaType: "movie" | "tv",
   season?: number,
   episode?: number,
-  options: { force?: boolean } = {}
+  options: { force?: boolean; forceDeadHostProbe?: boolean } = {}
 ): void {
   if (enrichingKeys.has(key)) return;
   if (!options.force && enrichCompletedKeys.has(key)) return;
@@ -2436,7 +2458,9 @@ function scheduleBackgroundEnrich(
   const enrichStarted = Date.now();
 
   // Hard timeout guarantees the promise settles — UI must never await forever.
-  const enrichWork = enrichMissingSources(seed, tmdbId, mediaType, season, episode).then(
+  const enrichWork = enrichMissingSources(seed, tmdbId, mediaType, season, episode, {
+    forceDeadHostProbe: options.forceDeadHostProbe,
+  }).then(
     async (enriched) => {
       // `seed` is a snapshot. Provider arms may settle while the browser wave
       // runs, so merge the latest cache too. The replacement write previously
@@ -2482,9 +2506,13 @@ function scheduleBackgroundEnrich(
     }
   ).finally(() => {
     enrichingKeys.delete(key);
-    const n = getCached(key)?.sources.length ?? 0;
-    if (n >= PARTIAL_CLEAR_MIN) {
+    const cachedSources = getCached(key)?.sources ?? [];
+    if (
+      countAutoPlayableRosterSources(cachedSources) >= PARTIAL_CLEAR_MIN
+    ) {
       enrichCompletedKeys.add(key);
+    } else {
+      enrichCompletedKeys.delete(key);
     }
     // Always clear partial after enrich attempt settles.
     const existing = getCached(key);
@@ -2550,7 +2578,8 @@ async function scrapeStream(
       // and roster is still under the clear floor.
       scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode);
     }
-    const stillThin = cached.sources.length < PARTIAL_CLEAR_MIN;
+    const stillThin =
+      countAutoPlayableRosterSources(cached.sources) < PARTIAL_CLEAR_MIN;
     return {
       ...cached,
       partial: (enrichingKeys.has(key) && stillThin) || undefined,
@@ -2579,7 +2608,7 @@ async function scrapeStream(
     });
     const fastMerged = buildMergedResult(fastCollected);
     if (fastMerged.streamUrl) {
-      const fastPartial = partialFlagForResult(fastMerged.sources.length);
+      const fastPartial = partialFlagForResult(fastMerged.sources);
       // Always schedule enrich; partial only while roster still thin.
       setCachedResult(key, { ...fastMerged, partial: fastPartial });
       logAt(
@@ -2599,7 +2628,10 @@ async function scrapeStream(
       return { ...fastMerged, partial: fastPartial };
     }
     captureScrapeTiming(key, true, Date.now() - scrapeStarted);
-    scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode);
+    scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode, {
+      force: Boolean(options.noCache),
+      forceDeadHostProbe: Boolean(options.noCache),
+    });
     return {
       streamUrl: null,
       sources: [],
@@ -2703,10 +2735,13 @@ async function scrapeStream(
     merged = await applyLatencyProbes(merged);
     const latestWhileProbing = getCached(key);
     if (latestWhileProbing?.sources.length) {
-      merged = buildMergedResult([
-        ...latestWhileProbing.sources,
-        ...merged.sources,
-      ]);
+      merged = buildMergedResult(
+        appendNewSourceIdentities(
+          merged.sources,
+          latestWhileProbing.sources,
+          entryIdentity
+        )
+      );
     }
     setCachedResult(key, merged);
     logAt(
@@ -2718,14 +2753,17 @@ async function scrapeStream(
       ...lastScrapeLifecycle,
       lastFullSources: merged.sources.length,
       lastReturnedSources: merged.sources.length,
-      lastPartial: Boolean(partialFlagForResult(merged.sources.length)),
+      lastPartial: Boolean(partialFlagForResult(merged.sources)),
       lastKey: key,
       lastTotalMs: Date.now() - scrapeStarted,
     };
-    scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode);
+    scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode, {
+      force: Boolean(options.noCache),
+      forceDeadHostProbe: Boolean(options.noCache),
+    });
     return {
       ...merged,
-      partial: partialFlagForResult(merged.sources.length),
+      partial: partialFlagForResult(merged.sources),
     };
   }
 
@@ -2755,10 +2793,13 @@ async function scrapeStream(
     );
     captureScrapeTiming(key, false, Date.now() - scrapeStarted);
     if (merged.sources.length < MAX_SOURCES) {
-      scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode);
+      scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode, {
+        force: Boolean(options.noCache),
+        forceDeadHostProbe: Boolean(options.noCache),
+      });
       return {
         ...merged,
-        partial: partialFlagForResult(merged.sources.length),
+        partial: partialFlagForResult(merged.sources),
       };
     }
     return merged;
@@ -2766,6 +2807,7 @@ async function scrapeStream(
 
   scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode, {
     force: true,
+    forceDeadHostProbe: Boolean(options.noCache),
   });
   captureScrapeTiming(key, false, Date.now() - scrapeStarted);
   return {

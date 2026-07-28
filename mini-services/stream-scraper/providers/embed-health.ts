@@ -135,13 +135,26 @@ export function recordEmbedOutcome(host: string, ok: boolean): void {
  * A stalled probe (never resolved via recordEmbedOutcome) auto-releases
  * after PROBE_STALL_TIMEOUT_MS so a crash can never wedge a host dead.
  */
-export function isEmbedHostDead(host: string): boolean {
+export function isEmbedHostDead(host: string, forceProbe = false): boolean {
   if (!host) return false;
   const lower = host.toLowerCase();
   const entry = getOrCreate(lower);
   if (!entry.dead) return false;
 
   const now = Date.now();
+  if (forceProbe) {
+    if (
+      entry.probingSince != null &&
+      now - entry.probingSince < PROBE_STALL_TIMEOUT_MS
+    ) {
+      return true;
+    }
+    // A user-visible exhausted-roster recovery is stronger evidence than the
+    // host cooldown. Claim exactly one half-open slot now; concurrent recovery
+    // requests remain short-circuited until this attempt records an outcome.
+    entry.probingSince = now;
+    return false;
+  }
   const cooledDown = entry.deadAt != null && now - entry.deadAt >= DEAD_HOST_COOLDOWN_MS;
   if (!cooledDown) return true;
 

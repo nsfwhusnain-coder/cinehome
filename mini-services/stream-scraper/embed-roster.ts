@@ -44,12 +44,15 @@ export const SECONDARY_MAX = 3;
  */
 export const VERIFIED_MIN_SKIP_SECONDARY = 2;
 
-/** Primary embed page.goto timeout — Phase 3 intercept: tighter with early-exit. */
-export const PRIMARY_GOTO_TIMEOUT_MS = 15_000;
+/**
+ * Primary embed page.goto timeout. A dead Vidking arm must leave half of the
+ * shared wall for an independent secondary provider.
+ */
+export const PRIMARY_GOTO_TIMEOUT_MS = 11_000;
 /** Primary post-goto capture window (early-exit often finishes 1.5–8s). */
 export const PRIMARY_CAPTURE_WAIT_MS = 8_000;
-/** Primary per-embed hard wall. */
-export const PRIMARY_WORKER_BUDGET_MS = 16_000;
+/** Primary per-embed hard wall; deliberately bounded below the 20s wave wall. */
+export const PRIMARY_WORKER_BUDGET_MS = 12_000;
 
 /** Secondary embeds — shorter so they fit residual PW wall. */
 export const SECONDARY_GOTO_TIMEOUT_MS = 8_000;

@@ -200,12 +200,13 @@ describe("Phase 3 intercept budget constants", () => {
     expect(ENRICH_HARD_TIMEOUT_MS).toBeGreaterThan(PW_WAIT_MS);
   });
 
-  it("primary capture wait is 8s with early-exit headroom", () => {
+  it("primary capture keeps early-exit headroom without consuming the secondary wall", () => {
     const primary = buildPrimarySourceUrls(550, "movie");
     for (const s of primary) {
       expect(s.captureWaitMs).toBe(8_000);
-      expect(s.workerBudgetMs).toBe(16_000);
-      expect(s.gotoTimeoutMs).toBe(15_000);
+      expect(s.workerBudgetMs).toBe(12_000);
+      expect(s.gotoTimeoutMs).toBe(11_000);
+      expect(PW_WAIT_MS - s.workerBudgetMs).toBeGreaterThanOrEqual(8_000);
     }
   });
 

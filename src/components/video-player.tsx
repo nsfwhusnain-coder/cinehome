@@ -333,6 +333,8 @@ interface Props {
   isDiscoveringSources?: boolean;
   /** Authenticated profile default from the playback response. */
   profileQuality?: PlayerQualityTarget;
+  /** Changes when a cache-bypassing roster recovery returns. */
+  refreshNonce?: number;
   /** Progressive source count for loading status. */
   sourceCount?: number;
   poster?: string | null;
@@ -948,6 +950,7 @@ export function VideoPlayer({
   onRetrySources,
   isDiscoveringSources,
   profileQuality,
+  refreshNonce,
   sourceCount = 0,
   poster,
   title,
@@ -998,6 +1001,8 @@ export function VideoPlayer({
    * the same id is observed; otherwise stays armed and harmless.
    */
   const pendingUrlRefreshRef = useRef(false);
+  /** One automatic cache-bypassing roster refresh per title session. */
+  const automaticRosterRefreshRef = useRef(false);
   /** At most one post-play quality auto-upgrade (Change 12) per title session. */
   const qualityAutoUpgradeDoneRef = useRef(false);
   /**
@@ -1282,6 +1287,22 @@ export function VideoPlayer({
     setIsSwitchingServer(false);
   }, []);
 
+  const requestAutomaticRosterRefresh = useCallback((): boolean => {
+    if (
+      automaticRosterRefreshRef.current ||
+      !onRetrySourcesRef.current
+    ) {
+      return false;
+    }
+    automaticRosterRefreshRef.current = true;
+    pendingUrlRefreshRef.current = true;
+    setError(null);
+    setBuffering(true);
+    if (everPlayedRef.current) setIsSwitchingServer(true);
+    onRetrySourcesRef.current();
+    return true;
+  }, [setBuffering, setError]);
+
   useEffect(() => {
     return () => {
       usePlayerStore.getState().reset();
@@ -1331,6 +1352,7 @@ export function VideoPlayer({
     setProbedHealth({});
     probeInFlightRef.current.clear();
     pendingUrlRefreshRef.current = false;
+    automaticRosterRefreshRef.current = false;
     if (failoverNoticeTimerRef.current) {
       clearTimeout(failoverNoticeTimerRef.current);
       failoverNoticeTimerRef.current = null;
@@ -1345,6 +1367,24 @@ export function VideoPlayer({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- identity change only
   }, [mediaKey, setCurrentTime, setError, invalidateSourceAttempt]);
+
+  useEffect(() => {
+    if (refreshNonce == null) return;
+    // The response is a newly scraped roster. Re-arm every logical source ID
+    // because its signed URL may have changed even when the stable ID did not.
+    failedSourceIdsRef.current.clear();
+    pendingUrlRefreshRef.current = true;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setFailedSourceIds([]);
+      setError(null);
+      setBuffering(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshNonce, setBuffering, setError]);
 
   useEffect(() => {
     if (!orderedSources.length) {
@@ -1364,7 +1404,7 @@ export function VideoPlayer({
     // is what left the player silently re-requesting a dead 410 link forever.
     if (stillValid && activeSource && pendingUrlRefreshRef.current) {
       const refreshed = orderedSources.find((s) => s.id === activeSource.id);
-      if (refreshed && refreshed.url !== activeSource.url) {
+      if (refreshed) {
         invalidateSourceAttempt();
         pendingUrlRefreshRef.current = false;
         // Preserve playhead — the dying/expired stream still reflects where the
@@ -1373,6 +1413,12 @@ export function VideoPlayer({
         if (t > RESUME_CAPTURE_MIN_S) resumeAtRef.current = t;
         initialTimeAppliedRef.current = false;
         setActiveSource(refreshed);
+        if (refreshed.url === activeSource.url) {
+          // A transient origin failure can recover without changing its URL.
+          // Force a new media attempt instead of leaving the errored element
+          // mounted under the same React identity.
+          setSourceReloadGeneration((generation) => generation + 1);
+        }
         return;
       }
     }
@@ -1460,17 +1506,28 @@ export function VideoPlayer({
         // The dedicated sourcesError card (parent fetch failure) already
         // owns this screen — don't layer a second full-bleed card on top.
         if (hasStream || sourcesError) return;
+        if (requestAutomaticRosterRefresh()) return;
         setBuffering(false);
         setError(ALL_SOURCES_FAILED_MSG);
         return;
       }
       const allFailed = orderedSources.every((s) => failedSourceIdsRef.current.has(s.id));
       if (!allFailed || !state.buffering) return;
+      if (requestAutomaticRosterRefresh()) return;
       setBuffering(false);
       setError(ALL_SOURCES_FAILED_MSG);
     }, DISCOVERY_CLOSED_GRACE_MS);
     return () => clearTimeout(timer);
-  }, [isDiscoveringSources, sourcesLoading, orderedSources, hasStream, sourcesError, setBuffering, setError]);
+  }, [
+    isDiscoveringSources,
+    sourcesLoading,
+    orderedSources,
+    hasStream,
+    sourcesError,
+    setBuffering,
+    setError,
+    requestAutomaticRosterRefresh,
+  ]);
 
   useEffect(() => {
     const count = orderedSources.length;
@@ -1949,11 +2006,17 @@ export function VideoPlayer({
         setError(null);
         return true;
       }
+      if (requestAutomaticRosterRefresh()) return true;
       setBuffering(false);
       setError(ALL_SOURCES_FAILED_MSG);
       return true;
     },
-    [markSourceFailed, setBuffering, setError]
+    [
+      markSourceFailed,
+      setBuffering,
+      setError,
+      requestAutomaticRosterRefresh,
+    ]
   );
 
   const noteHardTransportFailure = useCallback(

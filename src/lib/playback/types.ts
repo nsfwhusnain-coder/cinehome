@@ -105,6 +105,8 @@ export interface PlaybackResponse {
     playbackQuality: import("@/lib/profile-preferences").PlaybackQualityPreference;
     audioLanguage: string;
   };
+  /** Fresh-roster generation returned only by an explicit recovery resolve. */
+  refreshNonce?: number;
 }
 
 export interface PlaybackProvider {

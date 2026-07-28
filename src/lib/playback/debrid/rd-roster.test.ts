@@ -134,10 +134,14 @@ describe("Real-Debrid roster — full + fast paths", () => {
   }
 
   /** Routes Torrentio's JSON endpoint to a synthetic response; everything else (the local resolve-proxy server) goes out over the real loopback fetch. */
-  function mockTorrentioStreams(streams: unknown[]): void {
+  function mockTorrentioStreams(
+    streams: unknown[],
+    onTorrentioRequest?: () => void
+  ): void {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       if (url.includes("torrentio") && url.includes("/stream/")) {
+        onTorrentioRequest?.();
         return new Response(JSON.stringify({ streams }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -350,6 +354,25 @@ describe("Real-Debrid roster — full + fast paths", () => {
     const second = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
     expect(second.length).toBe(5);
     expect(calls).toBe(0);
+  });
+
+  it("full recovery: expires signed RD slots and resolves a fresh roster", async () => {
+    mockTorrentioStreams(buildStreams());
+    const first = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(first.length).toBe(5);
+
+    let torrentioCalls = 0;
+    mockTorrentioStreams(buildStreams(), () => {
+      torrentioCalls++;
+    });
+    const refreshed = await resolveDebridSources({
+      tmdbId: 1,
+      mediaType: "movie",
+      forceRefresh: true,
+    });
+
+    expect(torrentioCalls).toBe(1);
+    expect(refreshed.length).toBe(5);
   });
 
   it("fast path: legacy cache URL restores an omitted MKV container before it reaches the player", async () => {

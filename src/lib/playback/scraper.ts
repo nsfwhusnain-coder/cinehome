@@ -242,7 +242,9 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
 
         data = (await res.json()) as ScraperResult;
         // Cross-user warm: complete results 20m; partial short so poll can re-fetch.
-        if (!req.noCache && data.streamUrl && data.sources.length) {
+        // A forced recovery replaces the stale cross-user roster so the next
+        // navigation cannot immediately revive the dead URLs.
+        if (data.streamUrl && data.sources.length) {
           const ttl = data.partial ? RAW_SCRAPE_PARTIAL_TTL_MS : undefined;
           setCachedRawScrape(rawKey, data, ttl);
         }

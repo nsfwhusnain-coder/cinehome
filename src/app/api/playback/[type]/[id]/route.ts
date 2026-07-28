@@ -7,6 +7,7 @@ import { pickDefaultSource } from "@/lib/playback/source-quality";
 import { buildFastDebridResponse } from "@/lib/playback/fast-debrid";
 import { RateLimiter } from "@/lib/rate-limit";
 import { getUserPlaybackPreferences } from "@/lib/profile-preferences.server";
+import { playbackRefreshMode } from "@/lib/playback/refresh-mode";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -22,6 +23,9 @@ import { getUserPlaybackPreferences } from "@/lib/profile-preferences.server";
  * - `noCacheResolveLimiter` bounds `nocache=1` requests specifically (admin
  *   -only — see below), which skip even the raw-scrape cache and force a
  *   brand new scrape + debrid resolve every single call.
+ * - `recoveryRefreshLimiter` gives an authenticated user at most three
+ *   cache-bypassing recovery attempts per title in ten minutes after the
+ *   player exhausts a roster. The global full-resolve limiter still applies.
  */
 const FULL_RESOLVE_LIMIT = 30;
 const FULL_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
@@ -35,6 +39,13 @@ const NOCACHE_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
 const noCacheResolveLimiter = new RateLimiter({
   limit: NOCACHE_RESOLVE_LIMIT,
   windowMs: NOCACHE_RESOLVE_WINDOW_MS,
+});
+
+const RECOVERY_REFRESH_LIMIT = 3;
+const RECOVERY_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+const recoveryRefreshLimiter = new RateLimiter({
+  limit: RECOVERY_REFRESH_LIMIT,
+  windowMs: RECOVERY_REFRESH_WINDOW_MS,
 });
 
 function tooManyRequests(retryAfterMs: number, message: string): NextResponse {
@@ -90,13 +101,17 @@ export async function GET(
   // Admin flag can disable Luna fast-path; full resolve only.
   const fastPathOk = await isPlaybackFastPathEnabled();
   const fast = wantFast && fastPathOk;
-  // KD-sec fix #4: nocache=1 forces a brand-new Playwright scrape + debrid
-  // resolve, skipping every cache. A non-admin's nocache request is silently
-  // downgraded to a normal cached resolve rather than erroring — that keeps
-  // ordinary playback smooth (no confusing failure) while still removing the
-  // abuse lever from every non-admin account.
+  // nocache=1 remains the admin diagnostic control. refresh=1 is the bounded
+  // authenticated recovery path used after a real player roster is exhausted.
   const noCacheRequested = url.searchParams.get("nocache") === "1";
-  const noCache = noCacheRequested && user.isAdmin;
+  const recoveryRefreshRequested = url.searchParams.get("refresh") === "1";
+  const refreshMode = playbackRefreshMode({
+    fast,
+    adminNoCacheRequested: noCacheRequested,
+    recoveryRefreshRequested,
+    isAdmin: user.isAdmin,
+  });
+  const noCache = refreshMode !== "none";
 
   if (!fast) {
     const fullCheck = fullResolveLimiter.consume(userId);
@@ -108,10 +123,17 @@ export async function GET(
     }
   }
   if (noCache) {
-    const noCacheCheck = noCacheResolveLimiter.consume(userId);
-    if (!noCacheCheck.allowed) {
+    const refreshKey =
+      refreshMode === "recovery"
+        ? `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`
+        : userId;
+    const refreshCheck =
+      refreshMode === "recovery"
+        ? recoveryRefreshLimiter.consume(refreshKey)
+        : noCacheResolveLimiter.consume(refreshKey);
+    if (!refreshCheck.allowed) {
       return tooManyRequests(
-        noCacheCheck.retryAfterMs,
+        refreshCheck.retryAfterMs,
         "Too many forced refreshes. Please wait a few minutes and try again."
       );
     }
@@ -184,6 +206,7 @@ export async function GET(
         mediaType: type as MediaType,
         season,
         episode,
+        forceRefresh: noCache,
       });
 
   const providerPromise = provider.resolve({
@@ -231,12 +254,16 @@ export async function GET(
   }
 
   // Cache available resolves for warm Play. Partial → short TTL so poll advances.
-  if (!noCache && result && result.status !== "error") {
+  if (result && result.status !== "error") {
     const ttl = result.partial ? PLAYBACK_PARTIAL_TTL_MS : PLAYBACK_TTL_MS;
     setCachedPlayback(cacheKey, result, ttl);
   }
 
-  return NextResponse.json({ ...result, preferences: profilePreferences }, {
+  return NextResponse.json({
+    ...result,
+    preferences: profilePreferences,
+    ...(noCache ? { refreshNonce: Date.now() } : {}),
+  }, {
     headers: {
       "Cache-Control": "private, no-store",
       "X-Playback-Cache": "MISS",
@@ -254,6 +281,7 @@ async function resolveDebridSourcesSafely(req: {
   mediaType: MediaType;
   season?: number;
   episode?: number;
+  forceRefresh?: boolean;
 }): Promise<PlaybackSource[]> {
   try {
     const { resolveDebridSources } = await import("@/lib/playback/debrid");

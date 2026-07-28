@@ -167,6 +167,8 @@ export interface ResolveDebridSourcesRequest {
   mediaType: MediaType;
   season?: number;
   episode?: number;
+  /** Discard signed RD links after the player proves the roster is dead. */
+  forceRefresh?: boolean;
 }
 
 interface ResolvedCandidate extends DebridCandidate {
@@ -1066,6 +1068,20 @@ export async function resolveDebridSources(
     let rdCandidates: DebridCandidate[] = [];
 
     if (rdConfigured) {
+      if (req.forceRefresh) {
+        // A server-side range probe can pass while an old signed CDN URL later
+        // fails in the browser. Roster exhaustion is stronger evidence than
+        // cache age, so expire every RD slot and obtain fresh unrestrict links.
+        await Promise.all(
+          RD_SLOTS.map((slot) =>
+            invalidateCachedStream({
+              ...keyBase,
+              quality: slot,
+              provider: "realdebrid",
+            })
+          )
+        );
+      }
       const rdToken = process.env.REAL_DEBRID_API_TOKEN as string;
       const { sources: rdSources, candidates } = await resolveRealDebridSlots(keyBase, req, rdToken);
       sources.push(...rdSources);

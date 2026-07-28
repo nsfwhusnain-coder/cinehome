@@ -3,8 +3,12 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
-import type { MediaType, PlaybackResponse, PlaybackSource } from "@/lib/playback/types";
-import { pickDefaultSource } from "@/lib/playback/source-quality";
+import type { MediaType, PlaybackResponse } from "@/lib/playback/types";
+import {
+  isSourcePlayableHere,
+  pickDefaultSource,
+} from "@/lib/playback/source-quality";
+import { mergeProgressivePlaybackSources } from "@/lib/playback/merge-sources";
 import {
   getPreferredQualityHeight,
   syncProfilePlaybackPreferences,
@@ -43,7 +47,7 @@ async function fetchPlayback(
   season?: number,
   episode?: number,
   fast?: boolean,
-  noCache?: boolean
+  recoveryRefresh?: boolean
 ): Promise<PlaybackResponse> {
   const params = new URLSearchParams();
   if (mediaType === "tv") {
@@ -52,7 +56,7 @@ async function fetchPlayback(
     params.set("episode", String(episode && episode > 0 ? episode : 1));
   }
   if (fast) params.set("fast", "1");
-  if (noCache) params.set("nocache", "1");
+  if (recoveryRefresh) params.set("refresh", "1");
   // Settings preferred quality → scraper ranking (Change 3).
   try {
     const qh = getPreferredQualityHeight();
@@ -95,6 +99,15 @@ function hasPlayableSources(resp?: PlaybackResponse): boolean {
   return Boolean(resp?.sources?.length || resp?.streamUrl);
 }
 
+function usableSourceCount(resp?: PlaybackResponse): number {
+  return (resp?.sources ?? []).filter(
+    (source) =>
+      source.verified !== false &&
+      source.probe?.ok !== false &&
+      isSourcePlayableHere(source)
+  ).length;
+}
+
 /** Keep proxy URLs stable for sources already playing; only append new servers. */
 function mergePlaybackResponses(
   fast?: PlaybackResponse,
@@ -129,30 +142,11 @@ function mergePlaybackResponses(
     };
   }
 
-  const byId = new Map<string, PlaybackSource>();
-  for (const s of fast?.sources ?? []) byId.set(s.id, s);
-  for (const s of full?.sources ?? []) {
-    const existing = byId.get(s.id);
-    if (!existing) {
-      byId.set(s.id, s);
-      continue;
-    }
-    // Keep stable proxy URL from first sighting; attach/update measured probe +
-    // real quality capture from full (fast never quality-probes — TTFF-critical).
-    const patch: Partial<PlaybackSource> = {};
-    if (s.probe != null) patch.probe = s.probe;
-    if (s.maxHeight != null) patch.maxHeight = s.maxHeight;
-    if (s.ladder != null && s.ladder.length) patch.ladder = s.ladder;
-    if (s.type) patch.type = s.type;
-    if (s.qualitySource) patch.qualitySource = s.qualitySource;
-    if (s.verified !== undefined) patch.verified = s.verified;
-    if (Object.keys(patch).length) {
-      byId.set(s.id, { ...existing, ...patch });
-    }
-  }
-
-  const mergedSources =
-    byId.size > 0 ? Array.from(byId.values()) : (base.sources ?? []);
+  const mergedSources = mergeProgressivePlaybackSources(
+    fast?.sources,
+    full?.sources,
+    full?.refreshNonce != null
+  );
   const streamUrlStillValid =
     !!base.streamUrl && mergedSources.some((s) => s.url === base.streamUrl);
   // Prefer multi-rung HD when re-defaulting streamUrl (same policy as player).
@@ -181,6 +175,7 @@ function mergePlaybackResponses(
     streamUrl: streamUrlStillValid ? base.streamUrl : (defaultSource?.url ?? base.streamUrl),
     partial: partial || undefined,
     preferences: profilePreferences,
+    refreshNonce: full?.refreshNonce ?? fast?.refreshNonce,
   };
 }
 
@@ -223,8 +218,8 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const { data: session } = useSession();
   const qc = useQueryClient();
   const canFetch = (args.enabled ?? true) && !!session;
-  /** Only `retryFull()` may force nocache on the full scrape path. */
-  const forceNoCacheRef = useRef(false);
+  /** Only `retryFull()` may force a bounded recovery refresh. */
+  const forceRefreshRef = useRef(false);
 
   // Hero/detail hover preresolve warms client memory — seed RQ so first paint skips cold wait.
   const memSeed = useMemo((): PlaybackResponse | undefined => {
@@ -255,15 +250,15 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const full = useQuery({
     queryKey: playbackQueryKey(args.mediaType, args.tmdbId, args.season, args.episode, false),
     queryFn: () => {
-      const noCache = forceNoCacheRef.current;
-      forceNoCacheRef.current = false;
+      const recoveryRefresh = forceRefreshRef.current;
+      forceRefreshRef.current = false;
       return fetchPlayback(
         args.mediaType,
         args.tmdbId,
         args.season,
         args.episode,
         false,
-        noCache
+        recoveryRefresh
       );
     },
     // Fires in parallel with `fast` (not gated on it settling) — first usable
@@ -273,10 +268,12 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
-      const mergedCount = Math.max(
-        fast.data?.sources?.length ?? 0,
-        query.state.data?.sources?.length ?? 0
-      );
+      // Once full has measured the roster, its healthy count is authoritative.
+      // A large fast roster of unprobed/dead URLs must not stop polling before
+      // a late healthy provider arrives.
+      const mergedCount = query.state.data
+        ? usableSourceCount(query.state.data)
+        : usableSourceCount(fast.data);
       const stillPartial =
         Boolean(query.state.data?.partial) || Boolean(fast.data?.partial);
       // Enough sources + complete → stop.
@@ -405,14 +402,22 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
       ? null
       : (fast.error ?? full.error);
 
-  /** Full nocache re-resolve — resets both progressive queries. */
+  /** Full recovery resolve. Keep fast data visible while fresh URLs arrive. */
   const retryFull = useCallback(async () => {
-    forceNoCacheRef.current = true;
+    forceRefreshRef.current = true;
     pollStartedAtRef.current = null;
     setDiscoveryWallHit(false);
     setSoftMissWallHit(false);
-    const prefix = ["playback", args.mediaType, args.tmdbId, args.season, args.episode] as const;
-    await qc.resetQueries({ queryKey: [...prefix] });
+    await qc.resetQueries({
+      queryKey: playbackQueryKey(
+        args.mediaType,
+        args.tmdbId,
+        args.season,
+        args.episode,
+        false
+      ),
+      exact: true,
+    });
   }, [qc, args.mediaType, args.tmdbId, args.season, args.episode]);
 
   return {
