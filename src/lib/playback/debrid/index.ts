@@ -148,8 +148,6 @@ const RD_FULL_DEADLINE_MS = 12_000;
 const RD_RESOLVE_TIMEOUT_CEILING_MS = 8_000;
 /** Range-probe ceiling inside the shared full-resolve budget. */
 const RD_MEDIA_VALIDATION_TIMEOUT_MS = 2_000;
-/** Fast cache validation must fit inside RD_FAST_DEADLINE_MS. */
-const RD_FAST_VALIDATION_TIMEOUT_MS = 1_000;
 
 /**
  * QUOTA CAP — TorBox's FREE tier allows only ~10 torrent adds/month, and each
@@ -928,11 +926,19 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
   for (const slot of bestNativeSlots) {
     const hit = await getFreshCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" });
     const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;
-    const validation =
-      hit && safeUrl
-        ? await validateDebridMediaLink(safeUrl, req.mediaType, RD_FAST_VALIDATION_TIMEOUT_MS)
-        : null;
-    if (hit && safeUrl && validation?.acceptable) {
+    const effectiveContainer =
+      hit && safeUrl ? effectiveReleaseContainer(safeUrl, hit.container) : undefined;
+
+    // These rows were range-probed before insertion by the full resolver and
+    // getFreshCachedStream already enforced their TTL. Trust only the subset
+    // that can be classified locally as browser-native; a network probe here
+    // would turn a "fast cache hit" into a one-second CDN round trip. Unknown,
+    // MKV and WebM legacy rows are deliberately left to the validating full
+    // resolver running in the background.
+    const trustedNativeCacheHit =
+      hit?.compat === "native" &&
+      (effectiveContainer === "mp4" || effectiveContainer === "mov");
+    if (hit && safeUrl && trustedNativeCacheHit) {
       return [
         toRdPlaybackSource(
           slot,
@@ -942,12 +948,9 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
           episode,
           { ...hit, url: safeUrl },
           hit.codec,
-          hit.container
+          effectiveContainer
         ),
       ];
-    }
-    if (hit && validation && !validation.acceptable) {
-      logRejectedRdMedia(hit, validation, req.mediaType, "cache", imdbId, slot);
     }
   }
 

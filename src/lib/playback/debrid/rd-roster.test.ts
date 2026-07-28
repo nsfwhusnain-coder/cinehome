@@ -11,9 +11,9 @@ import { clearMediaValidationCache } from "./media-validation";
  * in its class, wins a slot honestly tagged `container: "mkv"` so the
  * client's `isSourcePlayableHere` (source-quality.ts) can route it through
  * /api/transcode rather than ever claiming it plays natively. Also covers
- * the fast/prefetch path: a cold cache resolves exactly one native pick
- * within its own bounded deadline and backgrounds the rest; a warm cache
- * returns near-instantly with no network.
+ * the fast/prefetch path: a cold cache returns immediately and backgrounds
+ * the live work; a warm, already-validated native MP4/MOV cache row returns
+ * near-instantly without placing a CDN probe on the awaited path.
  *
  * Two boundaries are exercised for real, mirroring the existing conventions
  * in this folder: a genuine local HTTP server (`Bun.serve`, same technique as
@@ -375,7 +375,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(refreshed.length).toBe(5);
   });
 
-  it("fast path: legacy cache URL restores an omitted MKV container before it reaches the player", async () => {
+  it("fast path: legacy MKV cache URL is classified locally and withheld from native playback", async () => {
     mockTorrentioStreams([]);
     cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
       title: "Legacy.1080p.H264",
@@ -390,8 +390,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
       mediaType: "movie",
     });
 
-    expect(sources).toHaveLength(1);
-    expect(sources[0]?.container).toBe("mkv");
+    expect(sources).toEqual([]);
   });
 
   it("full path: rejects a resolved short clip and falls through to the next ranked release", async () => {
@@ -624,6 +623,51 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(sources[0]?.url).toBe("https://51.download.real-debrid.com/d/cached4k/movie.mp4");
     expect(sources[0]?.maxHeight).toBe(2160);
     expect(elapsedMs).toBeLessThan(500);
+  });
+
+  it("fast path: warm native cache hit does not await a live CDN probe", async () => {
+    let releaseSlowProbe: () => void = () => {};
+    const slowProbe = new Promise<void>((resolve) => {
+      releaseSlowProbe = resolve;
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("download.real-debrid.com")) {
+        await slowProbe;
+        return new Response(new Uint8Array([0]), {
+          status: 206,
+          headers: {
+            "Content-Range": `bytes 0-0/${2 * 1024 * 1024 * 1024}`,
+            "Content-Length": "1",
+          },
+        });
+      }
+      if (url.includes("torrentio") && url.includes("/stream/")) {
+        return new Response(JSON.stringify({ streams: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return originalFetch(input as never, init);
+    }) as unknown as typeof fetch;
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
+      title: "Movie.2024.1080p.WEB-DL.H264-GRP",
+      source: NATIVE_1080_HASHES[0],
+      url: "https://51.download.real-debrid.com/d/cached1080/movie.mp4",
+      compat: "native",
+      codec: "h264",
+      container: "mp4",
+    });
+
+    const started = Date.now();
+    const sources = await resolveFastDebridSources({ tmdbId: 1, mediaType: "movie" });
+    const elapsedMs = Date.now() - started;
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.container).toBe("mp4");
+    expect(elapsedMs).toBeLessThan(500);
+    releaseSlowProbe();
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
 
   it("fast path: no token configured -> [] immediately, no network", async () => {

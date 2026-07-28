@@ -11,8 +11,10 @@
  * their own schedule) — callers MUST treat a stale row (past `expiresAt`) as
  * a cache miss and re-resolve; this module only enforces the TTL on read, it
  * does not attempt to detect a dead link (the player owns playback, not this
- * tier — a 404/410 during actual playback can only be caught by re-resolving
- * on the next request once expired).
+ * tier. The Real-Debrid fast path trusts only fresh, already-validated
+ * browser-native rows so it can return without a CDN round trip; the parallel
+ * full resolver revalidates the roster, and the player's recovery request
+ * invalidates/re-resolves links proven dead during playback.
  *
  * The `quality` column (`prisma/schema.prisma` — plain `String`, no DB-level
  * enum, so widening its value set below needs no migration) historically
