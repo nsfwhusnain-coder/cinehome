@@ -17,10 +17,16 @@
  *   PLAYER_PRODUCT_OUT_DIR=/app/.browser-qa/player-product-pass
  *   PLAYER_PRODUCT_TITLE=/watch/movie/550
  *   PLAYER_PRODUCT_VIEWPORT=desktop|mobile|tv
+ *   PLAYER_PRODUCT_EXPECT_TERMINAL=1  # synthetic no-source input contract
  *   FIRST_FRAME_TIMEOUT_MS=45000
  */
 
-import { chromium, type BrowserContext, type Page } from "playwright";
+import {
+  chromium,
+  type BrowserContext,
+  type Page,
+  type Response as PlaywrightResponse,
+} from "playwright";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -47,7 +53,16 @@ interface VideoState {
   activeProvider: string | null;
 }
 
+interface ApiResponseObservation {
+  viewport: ViewportName;
+  path: string;
+  status: number;
+  mode: "fast" | "full" | "recovery" | null;
+  cache: string | null;
+}
+
 const BASE = (process.env.CINEHOME_BASE_URL || "http://100.89.184.84:4445").replace(/\/$/, "");
+const BASE_ORIGIN = new URL(BASE).origin;
 const STORAGE_STATE =
   process.env.STORAGE_STATE || "/app/.browser-qa/storage-state.json";
 const OUT_DIR =
@@ -55,9 +70,11 @@ const OUT_DIR =
   "/app/.browser-qa/player-product-pass";
 const WATCH_PATH = process.env.PLAYER_PRODUCT_TITLE || "/watch/movie/550";
 const VIEWPORT_FILTER = process.env.PLAYER_PRODUCT_VIEWPORT as ViewportName | undefined;
+const EXPECT_TERMINAL = process.env.PLAYER_PRODUCT_EXPECT_TERMINAL === "1";
 const FIRST_FRAME_TIMEOUT_MS = Number(process.env.FIRST_FRAME_TIMEOUT_MS || "45000");
 
 const checks: Check[] = [];
+const apiResponses: ApiResponseObservation[] = [];
 
 function check(
   viewport: ViewportName,
@@ -79,6 +96,59 @@ function skip(viewport: ViewportName, name: string, detail: string): void {
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300);
+}
+
+function observeApiResponse(
+  viewport: ViewportName,
+  response: PlaywrightResponse
+): void {
+  const url = new URL(response.url());
+  if (url.origin !== BASE_ORIGIN) return;
+  const isPlayback = url.pathname.startsWith("/api/playback/");
+  if (!isPlayback && url.pathname !== "/api/system-status") return;
+  const mode = isPlayback
+    ? url.searchParams.get("refresh") === "1"
+      ? "recovery"
+      : url.searchParams.get("fast") === "1" ||
+          url.searchParams.get("prefetch") === "1"
+        ? "fast"
+        : "full"
+    : null;
+  apiResponses.push({
+    viewport,
+    path: url.pathname,
+    status: response.status(),
+    mode,
+    cache: response.headers()["x-playback-cache"] || null,
+  });
+}
+
+function checkApiContract(viewport: ViewportName): void {
+  const observed = apiResponses.filter((item) => item.viewport === viewport);
+  const statusPolls = observed.filter(
+    (item) => item.path === "/api/system-status"
+  );
+  check(
+    viewport,
+    "normal playback does not poll admin system status",
+    statusPolls.length === 0,
+    statusPolls.length ? `${statusPolls.length} unexpected request(s)` : undefined
+  );
+  const playbackFailures = observed.filter(
+    (item) =>
+      item.path.startsWith("/api/playback/") &&
+      (item.status === 403 || item.status === 429 || item.status >= 500)
+  );
+  check(
+    viewport,
+    "playback API avoids authorization, rate-limit, and server errors",
+    playbackFailures.length === 0,
+    playbackFailures.length
+      ? playbackFailures
+          .map((item) => `${item.status} ${item.mode || "unknown"} ${item.path}`)
+          .join(", ")
+      : undefined
+  );
 }
 
 async function videoState(page: Page): Promise<VideoState> {
@@ -121,6 +191,76 @@ async function waitForFirstFrame(page: Page): Promise<void> {
     at.currentTime,
     { timeout: 8_000 }
   );
+}
+
+async function installTerminalPlaybackFault(page: Page): Promise<void> {
+  await page.route("**/api/playback/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "error",
+        message: "No stream available",
+        sources: [],
+      }),
+    });
+  });
+}
+
+async function runTerminalState(
+  page: Page,
+  viewport: ViewportName
+): Promise<void> {
+  const terminal = page.getByText(/No stream available|All servers are unavailable/i).first();
+  await terminal.waitFor({ state: "visible", timeout: 35_000 });
+  check(viewport, "terminal playback error is visible", true);
+
+  const before = await videoState(page);
+  await page.keyboard.press("Space");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("KeyK");
+  await page.waitForTimeout(500);
+  const after = await videoState(page);
+  check(
+    viewport,
+    "terminal state ignores playback and seek input",
+    after.paused &&
+      after.videoWidth === 0 &&
+      after.videoHeight === 0 &&
+      Math.abs(after.currentTime - before.currentTime) < 0.01,
+    `${before.currentTime.toFixed(2)}s → ${after.currentTime.toFixed(2)}s, paused=${after.paused}`
+  );
+
+  const visibleTransportButtons = await page
+    .getByRole("button", { name: /^(Play|Pause)$/ })
+    .evaluateAll((buttons) =>
+      buttons.filter((button) => {
+        const style = window.getComputedStyle(button);
+        const rect = button.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) > 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      }).length
+    );
+  check(
+    viewport,
+    "terminal state hides contradictory transport controls",
+    visibleTransportButtons === 0,
+    `${visibleTransportButtons} visible Play/Pause control(s)`
+  );
+  check(
+    viewport,
+    "terminal error remains visible after input",
+    await terminal.isVisible()
+  );
+
+  await page.screenshot({
+    path: join(OUT_DIR, `${viewport}-terminal.png`),
+  });
 }
 
 async function showControls(page: Page): Promise<void> {
@@ -468,13 +608,17 @@ async function runViewport(
   const context = await makeContext(browser, viewport);
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
+  page.on("response", (response) => observeApiResponse(viewport, response));
   try {
+    if (EXPECT_TERMINAL) await installTerminalPlaybackFault(page);
     await page.goto(WATCH_PATH, { waitUntil: "domcontentloaded" });
-    if (viewport === "desktop") await runDesktop(page);
+    if (EXPECT_TERMINAL) await runTerminalState(page, viewport);
+    else if (viewport === "desktop") await runDesktop(page);
     else await runCompactViewport(page, viewport);
   } catch (error) {
     check(viewport, "viewport pass completed", false, safeError(error));
   } finally {
+    checkApiContract(viewport);
     await context.close();
     console.log(`VIEWPORT ${viewport} END`);
   }
@@ -505,12 +649,14 @@ async function main(): Promise<void> {
     at: new Date().toISOString(),
     base: BASE,
     watchPath: WATCH_PATH,
+    expectTerminal: EXPECT_TERMINAL,
     summary: {
       pass: checks.filter((item) => item.state === "pass").length,
       fail: checks.filter((item) => item.state === "fail").length,
       skip: checks.filter((item) => item.state === "skip").length,
     },
     checks,
+    apiResponses,
   };
   const reportPath = join(OUT_DIR, "report.json");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);

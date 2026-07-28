@@ -154,7 +154,12 @@ geography shows a globe, and debrid rows also carry the premium crown.
 `scripts/browser/cineby-player-pass.ts` is the release gate for this contract.
 It exercises real advancing playback, the stable rail, source-row provenance,
 dead-row removal, flags, profile persistence/reload, playing and paused source
-switches, and desktop/phone sheet bounds.
+switches, and desktop/phone sheet bounds. The profile test verifies the decoded
+effective quality (or an explicit unavailable/fallback state), and restores the
+original profile from a `finally` block even when an intermediate assertion
+fails. Both player passes also fail on normal-user `/api/system-status` polling
+or playback API `403`/`429`/`5xx` responses; their reports retain only safe path,
+mode, status, and cache metadata.
 
 ```bash
 image_id=$(docker inspect --format '{{.Image}}' cinehome)
@@ -165,6 +170,27 @@ docker run --rm --network embedin_default \
   -v /home/hussy/cinehome/.browser-qa:/app/.browser-qa \
   "$image_id" bun scripts/browser/cineby-player-pass.ts
 ```
+
+### Combined browser release gate
+
+`scripts/browser/release-pass.ts` runs the interactive player pass, a
+deterministic terminal-error keyboard/transport pass, the Cineby-style
+quality/source contract, and exhausted-roster recovery in sequence. It stops
+on the first failed gate and writes a small aggregate report while each child
+keeps its detailed screenshots and evidence.
+
+```bash
+image_id=$(docker inspect --format '{{.Image}}' cinehome)
+docker run --rm --network embedin_default \
+  --dns 192.168.1.1 --dns 1.1.1.1 \
+  -e CINEHOME_BASE_URL=http://cinehome:3000 \
+  -e STORAGE_STATE=/app/.browser-qa/storage-state.json \
+  -v /home/hussy/cinehome/.browser-qa:/app/.browser-qa \
+  "$image_id" bun run qa:release
+```
+
+Use `RELEASE_SKIP_RECOVERY=1` only for a non-release UI iteration. The final
+pre/post-cutover gate must include recovery.
 
 ### Runtime memory envelope
 

@@ -19,6 +19,11 @@
     "qa:smoke": "bun scripts/browser/qa.ts flow smoke",
     "qa:home": "bun scripts/browser/qa.ts flow home",
     "qa:login": "bun scripts/browser/qa.ts login",
+    "qa:player": "bun scripts/browser/player-product-pass.ts",
+    "qa:terminal": "PLAYER_PRODUCT_EXPECT_TERMINAL=1 PLAYER_PRODUCT_VIEWPORT=desktop bun scripts/browser/player-product-pass.ts",
+    "qa:cineby": "bun scripts/browser/cineby-player-pass.ts",
+    "qa:recovery": "bun scripts/browser/roster-refresh-pass.ts",
+    "qa:release": "bun scripts/browser/release-pass.ts",
     "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {

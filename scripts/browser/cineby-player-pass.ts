@@ -24,6 +24,7 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
+  type Response as PlaywrightResponse,
 } from "playwright";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -60,7 +61,16 @@ interface Preferences {
   audioLanguage: string;
 }
 
+interface ApiResponseObservation {
+  viewport: ViewportName;
+  path: string;
+  status: number;
+  mode: "fast" | "full" | "recovery" | null;
+  cache: string | null;
+}
+
 const BASE = (process.env.CINEHOME_BASE_URL || "http://127.0.0.1:4447").replace(/\/$/, "");
+const BASE_ORIGIN = new URL(BASE).origin;
 const STORAGE_STATE =
   process.env.STORAGE_STATE || "/app/.browser-qa/storage-state.json";
 
@@ -84,6 +94,7 @@ const WATCH_PATH = process.env.CINEBY_PLAYER_WATCH_PATH || "/watch/movie/550";
 const EXPECTED_TABS = ["Quality", "Sources", "Subtitles", "Audio", "Speed"];
 const EXPECTED_QUALITIES = ["Auto", "4K", "1440p", "1080p", "720p", "480p", "360p"];
 const checks: Check[] = [];
+const apiResponses: ApiResponseObservation[] = [];
 
 function record(
   viewport: ViewportName,
@@ -105,8 +116,73 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 400) : String(error).slice(0, 400);
 }
 
+function observeApiResponse(
+  viewport: ViewportName,
+  response: PlaywrightResponse
+): void {
+  const url = new URL(response.url());
+  if (url.origin !== BASE_ORIGIN) return;
+  const isPlayback = url.pathname.startsWith("/api/playback/");
+  if (!isPlayback && url.pathname !== "/api/system-status") return;
+  const mode = isPlayback
+    ? url.searchParams.get("refresh") === "1"
+      ? "recovery"
+      : url.searchParams.get("fast") === "1" ||
+          url.searchParams.get("prefetch") === "1"
+        ? "fast"
+        : "full"
+    : null;
+  apiResponses.push({
+    viewport,
+    path: url.pathname,
+    status: response.status(),
+    mode,
+    cache: response.headers()["x-playback-cache"] || null,
+  });
+}
+
+function auditApiContract(viewport: ViewportName): void {
+  const observed = apiResponses.filter((item) => item.viewport === viewport);
+  const statusPolls = observed.filter(
+    (item) => item.path === "/api/system-status"
+  );
+  record(
+    viewport,
+    "normal playback does not poll admin system status",
+    statusPolls.length === 0,
+    statusPolls.length ? `${statusPolls.length} unexpected request(s)` : undefined
+  );
+  const playbackFailures = observed.filter(
+    (item) =>
+      item.path.startsWith("/api/playback/") &&
+      (item.status === 403 || item.status === 429 || item.status >= 500)
+  );
+  record(
+    viewport,
+    "playback API avoids authorization, rate-limit, and server errors",
+    playbackFailures.length === 0,
+    playbackFailures.length
+      ? playbackFailures
+          .map((item) => `${item.status} ${item.mode || "unknown"} ${item.path}`)
+          .join(", ")
+      : undefined
+  );
+}
+
 function sameList(actual: string[], expected: string[]): boolean {
   return actual.length === expected.length && actual.every((item, index) => item === expected[index]);
+}
+
+function decodedQualityHeight(video: VideoState): number | null {
+  const longEdge = Math.max(video.width, video.height);
+  const shortEdge = Math.min(video.width, video.height);
+  if (longEdge >= 3_800 || shortEdge >= 1_800) return 2160;
+  if (longEdge >= 2_500 || shortEdge >= 1_400) return 1440;
+  if (longEdge >= 1_900 || shortEdge >= 850) return 1080;
+  if (longEdge >= 1_200 || shortEdge >= 600) return 720;
+  if (longEdge >= 700 || shortEdge >= 400) return 480;
+  if (longEdge >= 500 || shortEdge >= 280) return 360;
+  return null;
 }
 
 async function state(page: Page): Promise<VideoState> {
@@ -346,6 +422,7 @@ async function runDesktop(
   page.setDefaultTimeout(20_000);
 
   page.on("response", async (response) => {
+    observeApiResponse(viewport, response);
     if (!response.url().includes("/api/playback/") || !response.ok()) return;
     try {
       const payload = (await response.json()) as { sources?: unknown[] };
@@ -369,6 +446,7 @@ async function runDesktop(
     }
   });
 
+  let initialProfile: Preferences | null = null;
   try {
     await page.goto(WATCH_PATH, { waitUntil: "domcontentloaded" });
     const initial = await waitForAdvancingVideo(page);
@@ -379,7 +457,7 @@ async function runDesktop(
       `${initial.width}x${initial.height} via ${initial.provider || "unknown"}`
     );
     await page.waitForTimeout(1_000);
-    const initialProfile = await preferences(page);
+    initialProfile = await preferences(page);
     record(
       viewport,
       "profile exposes an explicit playback default",
@@ -446,31 +524,50 @@ async function runDesktop(
       String(readBack.playbackQuality)
     );
     await page.reload({ waitUntil: "domcontentloaded" });
-    await waitForAdvancingVideo(page);
+    const profilePlayback = await waitForAdvancingVideo(page);
     const profileDialog = await openSheet(page);
     await profileDialog.getByRole("tab", { name: "Quality", exact: true }).click();
-    const activeProfileQuality = profileDialog.getByRole("button", {
+    const profileQualityRow = profileDialog.getByRole("button", {
       name: new RegExp(`^${testProfile.playbackQuality}p(?:\\s|$)`),
-      pressed: true,
     });
+    const profileQualityText = await profileQualityRow
+      .innerText()
+      .catch(() => "");
+    const effectiveHeight = decodedQualityHeight(profilePlayback);
+    const explicitFallback = /unavailable|fallback/i.test(profileQualityText);
     record(
       viewport,
-      "player initializes from the selected profile default",
-      (await activeProfileQuality.count()) === 1,
-      `${testProfile.playbackQuality}p`
+      "profile default changes effective playback or declares a fallback",
+      effectiveHeight === testProfile.playbackQuality || explicitFallback,
+      `requested ${testProfile.playbackQuality}p, decoded ${
+        effectiveHeight == null ? "unknown" : `${effectiveHeight}p`
+      }, row "${profileQualityText || "missing"}"`
     );
     await closeSheet(page);
-    await savePreferences(page, initialProfile);
-    const restored = await preferences(page);
-    record(
-      viewport,
-      "profile default is restored after the isolated test",
-      restored.playbackQuality === initialProfile.playbackQuality,
-      String(restored.playbackQuality)
-    );
   } catch (error) {
     record(viewport, "desktop Cineby-style player pass completed", false, safeError(error));
   } finally {
+    if (initialProfile) {
+      try {
+        await savePreferences(page, initialProfile);
+        const restored = await preferences(page);
+        record(
+          viewport,
+          "profile default is restored after the isolated test",
+          restored.playbackQuality === initialProfile.playbackQuality &&
+            restored.audioLanguage === initialProfile.audioLanguage,
+          String(restored.playbackQuality)
+        );
+      } catch (error) {
+        record(
+          viewport,
+          "profile default is restored after the isolated test",
+          false,
+          safeError(error)
+        );
+      }
+    }
+    auditApiContract(viewport);
     await context.close();
   }
 }
@@ -490,6 +587,7 @@ async function runMobile(
   await ensureBaseCookieScope(context);
   const page = await context.newPage();
   page.setDefaultTimeout(20_000);
+  page.on("response", (response) => observeApiResponse(viewport, response));
   try {
     await page.goto(WATCH_PATH, { waitUntil: "domcontentloaded" });
     await waitForAdvancingVideo(page);
@@ -498,6 +596,7 @@ async function runMobile(
   } catch (error) {
     record(viewport, "mobile Cineby-style player pass completed", false, safeError(error));
   } finally {
+    auditApiContract(viewport);
     await context.close();
   }
 }
@@ -526,6 +625,7 @@ async function main(): Promise<void> {
       skip: checks.filter((check) => check.state === "skip").length,
     },
     checks,
+    apiResponses,
   };
   const reportPath = join(OUT_DIR, "report.json");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
