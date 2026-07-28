@@ -155,6 +155,20 @@ export function baseServerToken(provider: string, label?: string): string {
 }
 
 /**
+ * Stable logical identity for deduping rows. Presentation names are not
+ * identities: unrelated unknown providers may hash to the same Greek name.
+ */
+export function serverIdentityKey(provider: string, label?: string, id?: string): string {
+  const lowerProvider = provider.trim().toLowerCase();
+  const rawLabel = (label ?? "").trim();
+  if (isDebridProvider(lowerProvider) || isDebridLabel(rawLabel)) {
+    return `premium:${lowerProvider}:${debridGreekName(lowerProvider, rawLabel.toLowerCase(), id)}`;
+  }
+  const { token, instance } = resolveEmbedToken(provider, label);
+  return `embed:${token}:${instance}`;
+}
+
+/**
  * The server's stable, Greek-themed display name — see the module
  * docstring for the determinism contract. `id` is optional (existing call
  * sites that only have provider/label keep working unchanged) but should be
@@ -178,8 +192,8 @@ export function getServerDisplayName(provider: string, label?: string, id?: stri
  * source needs the in-container transcoder rather than native decode) —
  * quality lives HERE, never in the server name above. Strips
  * `qualityBadge`'s own "(Debrid)"/"(TorBox)" suffix since every caller that
- * uses this also renders a dedicated premium crown marker (ServersPanel,
- * PlayerDock's Server section) — showing both would be redundant. Single
+ * uses this also renders a dedicated premium crown marker (PlayerDock's
+ * Server section) — showing both would be redundant. Single
  * shared implementation so the Cloud panel and the settings-dock Server
  * section can never disagree on a source's badge text.
  */

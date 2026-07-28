@@ -1,6 +1,6 @@
 import type { PlaybackSource } from "./types";
 import {
-  isSourcePlayableHere,
+  eligiblePlaybackSources,
   pickDefaultSource,
   scoreSource,
 } from "./source-quality";
@@ -8,6 +8,7 @@ import {
   baseServerToken,
   getServerDisplayName,
   resolutionBadge,
+  serverIdentityKey,
 } from "./server-names";
 import { SERVER_NAME_THEME } from "./server-theme";
 import { flagForServerName } from "@/config/servers";
@@ -23,7 +24,13 @@ export interface ExpectedServer {
   labelHints?: string[];
 }
 
-export type ServerSlotStatus = "active" | "available" | "loading" | "failed" | "unavailable";
+export type ServerSlotStatus =
+  | "active"
+  | "available"
+  | "checking"
+  | "loading"
+  | "failed"
+  | "unavailable";
 
 export interface ServerSlot {
   id: string;
@@ -132,29 +139,6 @@ function displayName(source: PlaybackSource): string {
   return getServerDisplayName(source.provider, source.label, source.id);
 }
 
-/**
- * Server-list filter for LordFlix-style multi-server switching.
- * Keep probe-ok + unprobed always. Keep probe-failed when allowUnprobed
- * (manual test) or sticky; auto-default still prefers ok via pickDefault.
- */
-export function filterPlayableSources(
-  sources: PlaybackSource[],
-  opts?: { allowUnprobed?: boolean; stickyId?: string }
-): PlaybackSource[] {
-  if (!sources.length) return [];
-  const allowUnprobed = opts?.allowUnprobed ?? false;
-  const stickyId = opts?.stickyId;
-
-  return sources.filter((s) => {
-    if (stickyId && s.id === stickyId) return true;
-    if (s.probe?.ok === true) return true;
-    if (s.probe == null) return true;
-    // probe.ok === false: still list when allowUnprobed so user can re-test.
-    if (s.probe?.ok === false) return allowUnprobed;
-    return true;
-  });
-}
-
 function slotStatus(
   source: PlaybackSource,
   failedSet: Set<string>,
@@ -162,7 +146,8 @@ function slotStatus(
 ): ServerSlotStatus {
   if (failedSet.has(source.id)) return "failed";
   if (source.id === activeSourceId) return "active";
-  return "available";
+  if (source.probe?.ok === true || source.origin === "debrid") return "available";
+  return "checking";
 }
 
 /**
@@ -172,21 +157,11 @@ function slotStatus(
 export function buildServerSlots(
   sources: PlaybackSource[],
   failedIds: string[],
-  isDiscovering: boolean,
+  _isDiscovering: boolean,
   activeSourceId?: string
 ): ServerSlot[] {
   const failedSet = new Set(failedIds);
-  // Always allow unprobed in the picker so background enrich can surface new servers.
-  const playable = filterPlayableSources(sources, {
-    allowUnprobed: true,
-    stickyId: activeSourceId,
-  }).filter(
-    (source) =>
-      !failedSet.has(source.id) &&
-      source.probe?.ok !== false &&
-      source.verified !== false &&
-      isSourcePlayableHere(source)
-  );
+  const playable = eligiblePlaybackSources(sources, failedSet);
 
   // Session-failed and conclusively dead rows are removed above. Keep the
   // surviving roster ranked by measured source score without placeholders.
@@ -196,12 +171,12 @@ export function buildServerSlots(
   // A provider can publish the same logical server as separate fixed-quality
   // URLs (CinemaOS commonly returns RU 1080 + RU 720). Quality belongs in
   // the quality rail, not as duplicate server rows. Since ranking happens
-  // first, keep the best healthy representation for each stable server name.
-  const seenNames = new Set<string>();
+  // first, keep the best healthy representation for each logical identity.
+  const seenIdentities = new Set<string>();
   const uniqueServers = ranked.filter((source) => {
-    const name = displayName(source);
-    if (seenNames.has(name)) return false;
-    seenNames.add(name);
+    const identity = serverIdentityKey(source.provider, source.label, source.id);
+    if (seenIdentities.has(identity)) return false;
+    seenIdentities.add(identity);
     return true;
   });
 
@@ -222,10 +197,7 @@ export function pickPlayableDefault(
   preferred?: string | null,
   failedIds: string[] = []
 ): PlaybackSource | null {
-  const failed = new Set(failedIds);
-  const playable = filterPlayableSources(sources, { allowUnprobed: true }).filter(
-    (s) => !failed.has(s.id)
-  );
+  const playable = eligiblePlaybackSources(sources, new Set(failedIds));
   if (!playable.length) return null;
   return pickDefaultSource(playable, preferred);
 }

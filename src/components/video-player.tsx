@@ -19,6 +19,7 @@ import {
   isSourcePlayableHere,
   HD_FLOOR_HEIGHT,
   TRANSCODE_MAX_HEIGHT,
+  eligiblePlaybackSources,
 } from "@/lib/playback/source-quality";
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
@@ -60,6 +61,7 @@ import type { DockSection } from "@/components/player-dock";
 import {
   buildPlayerQualityOptions,
   qualityLabel as playerQualityLabel,
+  shouldCommitQualityTarget,
   type PlayerQualityTarget,
 } from "@/lib/playback/quality-router";
 
@@ -184,7 +186,18 @@ const STICKY_SOURCE_MIN_POSITION_S = 8;
 /** Mark stream healthy (locks auto-upgrade) after this much continuous play. */
 const HEALTHY_PLAY_LOCK_S = 2;
 /** Hard HTTP statuses that count toward immediate failover (CDN / proxy denials). */
-const HLS_HARD_HTTP_CODES = new Set([403, 404, 410, 502, 503, 520, 521, 522, 524]);
+const HLS_HARD_HTTP_CODES = new Set([
+  403,
+  404,
+  410,
+  428,
+  502,
+  503,
+  520,
+  521,
+  522,
+  524,
+]);
 /** If play never advances past t≈0 after load, fail over (stuck Aether/PNG ads). */
 /** Cold start: allow large pure-media level fetch after multi-variant master (R10). */
 const HLS_ZERO_PROGRESS_FAIL_MS = 22_000;
@@ -259,28 +272,26 @@ function isSameOriginPlaybackUrl(url: string): boolean {
 }
 
 /**
- * One reachability check against a source URL. Same-origin (`/api/hls/...`)
- * proxy URLs get a real byte-range GET so status/latency are trustworthy;
- * cross-origin URLs (direct CDN / Worker proxy) fall back to `no-cors` — the
- * response is opaque (status/headers unreadable), but a resolved fetch still
- * proves the request reached a server without throwing or timing out, which
- * is the only reachability signal available cross-origin without CORS
- * headers on someone else's CDN.
+ * One bounded reachability check against a same-origin source URL. We never
+ * "probe" a cross-origin media file with an opaque no-cors GET: that cannot
+ * prove status and can accidentally start downloading the whole asset.
  */
 async function probeSourceReachability(url: string): Promise<SourceProbeMetrics> {
-  const sameOrigin = isSameOriginPlaybackUrl(url);
+  if (!isSameOriginPlaybackUrl(url)) {
+    return { ok: false, ttfbMs: 0, bytesPerSec: 0, speedScore: 0 };
+  }
   const start = Date.now();
   try {
     const res = await fetch(url, {
       method: "GET",
       cache: "no-store",
-      credentials: sameOrigin ? "include" : "omit",
-      mode: sameOrigin ? "same-origin" : "no-cors",
+      credentials: "include",
+      mode: "same-origin",
       signal: AbortSignal.timeout(BG_HEALTH_PROBE_TIMEOUT_MS),
-      ...(sameOrigin ? { headers: { Range: "bytes=0-16384" } } : {}),
+      headers: { Range: "bytes=0-16384" },
     });
     const ttfbMs = Math.max(1, Date.now() - start);
-    const ok = sameOrigin ? res.ok || res.status === 206 : true;
+    const ok = res.ok || res.status === 206;
     return {
       ok,
       ttfbMs,
@@ -769,6 +780,17 @@ function forceHlsLevel(hls: Hls, levelIndex: number): number {
   return levelIndex;
 }
 
+function isInteractivePlayerTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        "button,a,input,select,textarea,[role='button'],[role='slider'],[role='dialog'],[role='alertdialog']"
+      )
+    )
+  );
+}
+
 /**
  * Manual mid-play switch without `currentLevel`: keep the decoded buffer and
  * move on the next fragment boundary. This avoids the time reset/black flash
@@ -968,10 +990,12 @@ export function VideoPlayer({
   const [activeSource, setActiveSource] = useState<PlaybackSource | null>(null);
   const [sourceReloadGeneration, setSourceReloadGeneration] = useState(0);
   const orderedSources = useMemo(() => {
-    // Full roster for switching — do not strip unprobed or probe-failed rows.
-    // Auto-pick / failover still prefer probe.ok via sortSourcesForPicker + pickDefault.
+    // This is the single player-facing roster. Conclusively dead, rejected,
+    // poisoned, or browser-incompatible rows never reach initial selection,
+    // failover, discovery state, or the visible server/quality controls.
+    // Unprobed clean rows remain eligible and are shown with neutral health.
     const deduped = dedupePlaybackSources(sources);
-    return sortSourcesForPicker(deduped);
+    return sortSourcesForPicker(eligiblePlaybackSources(deduped));
   }, [sources]);
   const [failedSourceIds, setFailedSourceIds] = useState<string[]>([]);
   const failedSourceIdsRef = useRef<Set<string>>(new Set());
@@ -1072,13 +1096,7 @@ export function VideoPlayer({
    * "Finding sources…".
    */
   const healthySourceCount = useMemo(
-    () =>
-      orderedSources.filter(
-        (s) =>
-          s.verified !== false &&
-          s.probe?.ok !== false &&
-          !failedSourceIds.includes(s.id)
-      ).length,
+    () => eligiblePlaybackSources(orderedSources, new Set(failedSourceIds)).length,
     [orderedSources, failedSourceIds]
   );
   const src = activeSource?.url ?? "";
@@ -1126,6 +1144,7 @@ export function VideoPlayer({
   /** Fire-once next-episode source preresolve at 80% progress. */
   const nextEpPreloadedRef = useRef(false);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const touchStartedOnInteractive = useRef(false);
 
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const buffering = usePlayerStore((s) => s.buffering);
@@ -1139,7 +1158,7 @@ export function VideoPlayer({
   const activeSubtitleId = usePlayerStore((s) => s.activeSubtitleId);
 
   const huntingName = activeSource
-    ? getServerDisplayName(activeSource.provider, activeSource.label)
+    ? getServerDisplayName(activeSource.provider, activeSource.label, activeSource.id)
     : "servers";
   // CRITICAL: overlay is gated on firstPlayable (hasStream), NOT scrape complete.
   const needsSourceHunt =
@@ -1311,7 +1330,7 @@ export function VideoPlayer({
   }, []);
 
   /** Episode/title identity — reset session flags so next title never inherits resume/source state. */
-  const mediaKey = `${mediaType ?? "movie"}:${tvId ?? title}:${tvSeason ?? ""}:${tvEpisode ?? ""}`;
+  const mediaKey = `${mediaType ?? "movie"}:${tmdbId ?? tvId ?? title}:${tvSeason ?? ""}:${tvEpisode ?? ""}`;
 
   useEffect(() => {
     invalidateSourceAttempt();
@@ -1434,11 +1453,10 @@ export function VideoPlayer({
     // (or higher) source. After first healthy play, sticky unless active failed.
     const preferred = getPreferredProvider();
     const preferredHeight = qualityTargetRef.current;
-    let remaining = orderedSources.filter((s) => !failedSourceIdsRef.current.has(s.id));
-    if (!remaining.length && isDiscoveringRef.current) {
-      remaining = orderedSources;
-    }
-    const pool = remaining.length ? remaining : orderedSources;
+    const pool = eligiblePlaybackSources(
+      orderedSources,
+      failedSourceIdsRef.current
+    );
     const best = pickDefaultSource(pool, preferred, preferredHeight);
 
     if (stillValid && !activeFailed && activeSource && best) {
@@ -1473,10 +1491,6 @@ export function VideoPlayer({
         invalidateSourceAttempt();
         setActiveSource(best);
         setBuffering(true);
-      }
-      if (!stillValid) {
-        failedSourceIdsRef.current.clear();
-        setFailedSourceIds([]);
       }
     }
   }, [
@@ -1564,7 +1578,9 @@ export function VideoPlayer({
 
   useEffect(() => {
     if (activeSource) {
-      setServerDisplayName(getServerDisplayName(activeSource.provider, activeSource.label));
+      setServerDisplayName(
+        getServerDisplayName(activeSource.provider, activeSource.label, activeSource.id)
+      );
     }
   }, [activeSource, setServerDisplayName]);
 
@@ -1689,7 +1705,9 @@ export function VideoPlayer({
         // used to leave the next real media error permanently ownerless.
         setActiveSource(resolved);
         if (opts?.userPick) setPreferredProvider(preferenceKey(resolved));
-        setServerDisplayName(getServerDisplayName(resolved.provider, resolved.label));
+        setServerDisplayName(
+          getServerDisplayName(resolved.provider, resolved.label, resolved.id)
+        );
         return;
       }
       // Capture live position when available; never wipe an existing resume target
@@ -1715,15 +1733,19 @@ export function VideoPlayer({
       if (sameMediaIdentity) {
         // A failed same-URL manual retry needs an explicit setup-effect key;
         // setting the same source object/id/url alone does not remount media.
-        failedSourceIdsRef.current.delete(resolved.id);
-        setFailedSourceIds((prev) => prev.filter((id) => id !== resolved.id));
+        if (opts?.userPick) {
+          failedSourceIdsRef.current.delete(resolved.id);
+          setFailedSourceIds((prev) => prev.filter((id) => id !== resolved.id));
+        }
         setSourceReloadGeneration((generation) => generation + 1);
       }
       // Only persist preference on explicit user pick — auto failover must not stick Luna forever.
       if (opts?.userPick) {
         setPreferredProvider(preferenceKey(resolved));
       }
-      setServerDisplayName(getServerDisplayName(resolved.provider, resolved.label));
+      setServerDisplayName(
+        getServerDisplayName(resolved.provider, resolved.label, resolved.id)
+      );
     },
     [
       setError,
@@ -1746,8 +1768,8 @@ export function VideoPlayer({
 
   /** "'Zeus' unavailable — switched to 'Apollo'" — names both ends of the hop. */
   const showFailoverNotice = useCallback((failed: PlaybackSource, next: PlaybackSource) => {
-    const failedName = getServerDisplayName(failed.provider, failed.label);
-    const nextName = getServerDisplayName(next.provider, next.label);
+    const failedName = getServerDisplayName(failed.provider, failed.label, failed.id);
+    const nextName = getServerDisplayName(next.provider, next.label, next.id);
     setFailoverNotice(`'${failedName}' unavailable — switched to '${nextName}'`);
     if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
     failoverNoticeTimerRef.current = setTimeout(() => {
@@ -1785,7 +1807,10 @@ export function VideoPlayer({
 
   const tryNextSource = useCallback(() => {
     if (activeSource) markSourceFailed(activeSource.id);
-    const available = orderedSources.filter((s) => !failedSourceIdsRef.current.has(s.id));
+    const available = eligiblePlaybackSources(
+      orderedSources,
+      failedSourceIdsRef.current
+    );
     const next = pickDefaultSource(
       available,
       getPreferredProvider(),
@@ -1898,6 +1923,7 @@ export function VideoPlayer({
         (s) =>
           s.id !== activeSource?.id &&
           !isPoisonStreamUrl(s.url) &&
+          isSameOriginPlaybackUrl(s.url) &&
           s.probe == null &&
           probedHealth[s.id] == null &&
           !probeInFlightRef.current.has(s.id)
@@ -1935,8 +1961,6 @@ export function VideoPlayer({
   tryNextSourceRef.current = tryNextSource;
 
   const handleRetryFull = useCallback(() => {
-    failedSourceIdsRef.current.clear();
-    setFailedSourceIds([]);
     // Same source id may come back from the re-fetch with a renewed URL
     // (expired token, transient scrape miss) — see pendingUrlRefreshRef.
     pendingUrlRefreshRef.current = true;
@@ -1984,8 +2008,9 @@ export function VideoPlayer({
       // AND enrich is still open — otherwise surface hard error immediately.
       // Read roster via ref so this callback stays stable across enrich polls.
       const roster = orderedSourcesRef.current;
-      const remaining = roster.filter(
-        (s) => !failedSourceIdsRef.current.has(s.id) && s.id !== source.id
+      const remaining = eligiblePlaybackSources(
+        roster.filter((s) => s.id !== source.id),
+        failedSourceIdsRef.current
       );
       if (isDiscoveringRef.current && remaining.length === 0) {
         setBuffering(true);
@@ -2047,6 +2072,10 @@ export function VideoPlayer({
       return;
     }
 
+    // crossOrigin is sticky on a reused <video>. A Worker source may require
+    // anonymous CORS, while the next Real-Debrid/native source must not inherit
+    // it or the browser rejects an otherwise playable file.
+    video.removeAttribute("crossorigin");
     resetStream();
     setBuffering(true);
     setLevelsPending(true);
@@ -2722,8 +2751,6 @@ export function VideoPlayer({
             }
           }
           if (isSessionExpiredError(data) && onRetrySourcesRef.current) {
-            failedSourceIdsRef.current.clear();
-            setFailedSourceIds([]);
             // Re-fetch will hand back this same source id with a renewed URL —
             // without arming this, the reconciliation effect refuses to touch
             // `activeSource` post-first-play and the player keeps silently
@@ -2810,9 +2837,7 @@ export function VideoPlayer({
         setError("Your browser can't play HLS streams.");
       }
     } else {
-      if (isHomeHlsProxy) {
-        video.crossOrigin = "use-credentials";
-      } else if (isWorkerProxy) {
+      if (isWorkerProxy) {
         video.crossOrigin = "anonymous";
       }
       video.src = effectiveSrc;
@@ -3288,6 +3313,27 @@ export function VideoPlayer({
     setDockSection(null);
   }, []);
 
+  const terminalError = Boolean(
+    error || (!hasStream && sourcesError && !sourcesLoading)
+  );
+
+  useEffect(() => {
+    if (!terminalError) return;
+    videoRef.current?.pause();
+    setIsPlaying(false);
+    setBuffering(false);
+    setIsSwitchingServer(false);
+    setDockOpen(false);
+    setDockSection(null);
+    setShortcutsOpen(false);
+    setShowControls(false);
+  }, [
+    terminalError,
+    setBuffering,
+    setIsPlaying,
+    setShowControls,
+  ]);
+
   /** Sleep timer — pause when it fires; clear on Off / unmount / media change. */
   useEffect(() => {
     if (sleepTimerRef.current != null) {
@@ -3408,15 +3454,18 @@ export function VideoPlayer({
   const dismissError = useCallback(() => setError(null), [setError]);
 
   const handleQualityTargetChange = useCallback(
-    (target: PlayerQualityTarget, announce = true) => {
-      qualityTargetRef.current = target;
-      setQualityTarget(target);
-
+    (
+      target: PlayerQualityTarget,
+      announce = true,
+      allowUnavailablePreference = false
+    ): boolean => {
       const hls = hlsRef.current;
       const dash = dashRef.current;
       const activeLevels = usePlayerStore.getState().levels;
 
       if (target === "auto") {
+        qualityTargetRef.current = target;
+        setQualityTarget(target);
         if (hls) {
           applyPreferredHlsQuality(hls, levelsFromHls(hls), "auto");
         } else if (dash) {
@@ -3426,7 +3475,7 @@ export function VideoPlayer({
         }
         setQuality(-1);
         if (announce) showStatusNotice("Quality set to Auto", 1_800);
-        return;
+        return true;
       }
 
       const option = buildPlayerQualityOptions({
@@ -3436,7 +3485,35 @@ export function VideoPlayer({
         selected: target,
         failedIds: failedSourceIdsRef.current,
         discovering: Boolean(isDiscoveringRef.current),
+        actualHeight: usePlayerStore.getState().playingHeight,
       }).find((candidate) => candidate.value === target);
+
+      const replacement = option?.sourceId
+        ? orderedSourcesRef.current.find((source) => source.id === option.sourceId)
+        : undefined;
+      const canCommit =
+        option != null &&
+        shouldCommitQualityTarget(option, allowUnavailablePreference);
+      if (!canCommit) {
+        if (allowUnavailablePreference) {
+          qualityTargetRef.current = target;
+          setQualityTarget(target);
+        }
+        if (announce) {
+          showStatusNotice(
+            `${playerQualityLabel(target)} unavailable · playing the best available quality`,
+            2_800
+          );
+        }
+        return false;
+      }
+
+      qualityTargetRef.current = target;
+      setQualityTarget(target);
+
+      if (option.status === "unavailable" || option.status === "searching") {
+        return false;
+      }
 
       if (option?.levelIndex != null && hls) {
         const switched = switchHlsLevelSmooth(hls, option.levelIndex);
@@ -3444,7 +3521,7 @@ export function VideoPlayer({
         if (announce) {
           showStatusNotice(`Switching to ${playerQualityLabel(target)}`, 1_800);
         }
-        return;
+        return true;
       }
 
       if (option?.levelIndex != null && dash) {
@@ -3456,14 +3533,10 @@ export function VideoPlayer({
         if (announce) {
           showStatusNotice(`Switching to ${playerQualityLabel(target)}`, 1_800);
         }
-        return;
+        return true;
       }
 
-      const replacement = option?.sourceId
-        ? orderedSourcesRef.current.find((source) => source.id === option.sourceId)
-        : undefined;
-      if (!replacement) return;
-
+      if (!replacement) return false;
       userSelectedSourceRef.current = true;
       setQuality(-1);
       handleSourceChange(replacement);
@@ -3473,6 +3546,7 @@ export function VideoPlayer({
           2_400
         );
       }
+      return true;
     },
     [
       displaySources,
@@ -3491,13 +3565,14 @@ export function VideoPlayer({
     ) {
       return;
     }
-    handleQualityTargetChange(profileQuality, false);
+    handleQualityTargetChange(profileQuality, false, true);
   }, [profileQuality, handleQualityTargetChange]);
 
   const handleUserQualityTargetChange = useCallback(
     (target: PlayerQualityTarget) => {
-      userSelectedQualityRef.current = true;
-      handleQualityTargetChange(target);
+      if (handleQualityTargetChange(target)) {
+        userSelectedQualityRef.current = true;
+      }
     },
     [handleQualityTargetChange]
   );
@@ -3622,11 +3697,13 @@ export function VideoPlayer({
    */
   useEffect(() => {
     const onWindowKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || terminalError) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       const isEditable =
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable;
       if (isEditable) return;
+      if (isInteractivePlayerTarget(target)) return;
       if (shortcutsOpenRef.current) {
         if (e.key === "Escape" || e.key === "?" || (e.key === "/" && e.shiftKey)) {
           e.preventDefault();
@@ -3641,9 +3718,23 @@ export function VideoPlayer({
       switch (e.key) {
         case " ":
         case "k":
+        case "Enter":
+        case "MediaPlayPause":
           e.preventDefault();
           togglePlay();
           break;
+        case "MediaPlay": {
+          e.preventDefault();
+          const video = videoRef.current;
+          if (video?.paused) togglePlay();
+          break;
+        }
+        case "MediaPause": {
+          e.preventDefault();
+          const video = videoRef.current;
+          if (video && !video.paused) togglePlay();
+          break;
+        }
         case "ArrowLeft":
         case "j":
           seekRelative(-10);
@@ -3670,6 +3761,7 @@ export function VideoPlayer({
           toggleSubtitles();
           break;
         case "n":
+        case "MediaTrackNext":
           if (hasNextEpisode) onNextEpisode?.();
           break;
         case "?":
@@ -3703,14 +3795,30 @@ export function VideoPlayer({
     hasNextEpisode,
     onNextEpisode,
     resetControlsTimer,
+    terminalError,
   ]);
 
   const onTouchStart = (e: React.TouchEvent) => {
+    touchStartedOnInteractive.current = isInteractivePlayerTarget(e.target);
+    if (terminalError || touchStartedOnInteractive.current) {
+      touchStart.current = null;
+      return;
+    }
     const t = e.touches[0];
     touchStart.current = { x: t.clientX, y: t.clientY };
   };
 
   const onTouchEnd = (e: React.TouchEvent) => {
+    if (
+      terminalError ||
+      touchStartedOnInteractive.current ||
+      isInteractivePlayerTarget(e.target)
+    ) {
+      touchStartedOnInteractive.current = false;
+      touchStart.current = null;
+      return;
+    }
+    touchStartedOnInteractive.current = false;
     if (!touchStart.current) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - touchStart.current.x;
@@ -3730,8 +3838,9 @@ export function VideoPlayer({
   const levels = usePlayerStore((s) => s.levels);
 
   const waitingForSource = !hasStream && (sourcesLoading || !sourcesError);
-  const controlsPinned = !hasStream || !!error || waitingForSource || showHunting;
-  const controlsVisible = showControls || controlsPinned || !!error;
+  const controlsPinned =
+    !terminalError && (!hasStream || waitingForSource || showHunting);
+  const controlsVisible = !terminalError && (showControls || controlsPinned);
 
   const qualityTargets = useMemo(
     () =>
@@ -3742,6 +3851,7 @@ export function VideoPlayer({
         selected: qualityTarget,
         failedIds: new Set(failedSourceIds),
         discovering: Boolean(isDiscoveringSources),
+        actualHeight: playingHeight,
       }),
     [
       displaySources,
@@ -3750,12 +3860,14 @@ export function VideoPlayer({
       qualityTarget,
       failedSourceIds,
       isDiscoveringSources,
+      playingHeight,
     ]
   );
 
-  const hasAlternateSource = orderedSources.some(
-    (s) => !failedSourceIdsRef.current.has(s.id) && s.id !== activeSource?.id
-  );
+  const hasAlternateSource = eligiblePlaybackSources(
+    orderedSources.filter((source) => source.id !== activeSource?.id),
+    failedSourceIdsRef.current
+  ).length > 0;
   const isExhausted = error === ALL_SOURCES_FAILED_MSG;
   const errorActions: PlayerErrorAction[] = [
     ...(hasAlternateSource
@@ -3833,6 +3945,7 @@ export function VideoPlayer({
           display: "block",
         }}
         onClick={() => {
+          if (terminalError) return;
           if (dockOpen) closeDock();
           if (autoplayHint === MUTED_AUTOPLAY_HINT) {
             const v = videoRef.current;
@@ -3842,7 +3955,9 @@ export function VideoPlayer({
           }
           togglePlay();
         }}
-        onDoubleClick={toggleFullscreen}
+        onDoubleClick={() => {
+          if (!terminalError) toggleFullscreen();
+        }}
         playsInline
       />
 
@@ -4015,7 +4130,7 @@ export function VideoPlayer({
         </div>
       )}
 
-      {swipeHint !== "hidden" && (
+      {!terminalError && swipeHint !== "hidden" && (
         <div
           className={`pointer-events-none absolute inset-x-0 top-1/2 z-10 flex -translate-y-1/2 justify-center px-4 transition-opacity duration-500 ${
             swipeHint === "visible" ? "opacity-100" : "opacity-0"
@@ -4031,9 +4146,9 @@ export function VideoPlayer({
         </div>
       )}
 
-      <SkipIntroButton onSkip={seekTo} />
+      {!terminalError && <SkipIntroButton onSkip={seekTo} />}
 
-      <PlayerControls
+      {!terminalError && <PlayerControls
         title={title}
         mediaType={mediaType}
         sources={displaySources}
@@ -4088,7 +4203,7 @@ export function VideoPlayer({
         onSelectEpisode={onSelectEpisode}
         sleepMinutes={sleepMinutes}
         onSleepMinutesChange={setSleepMinutes}
-      />
+      />}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import {
   buildPlayerQualityOptions,
   normalizePlayerQualityHeight,
   selectSourceForQuality,
+  shouldCommitQualityTarget,
 } from "./quality-router";
 import type { PlaybackSource } from "./types";
 
@@ -64,5 +65,23 @@ describe("quality router", () => {
     const alive = source("alive", 1080);
     expect(selectSourceForQuality([dead, alive], 2160)).toBeNull();
     expect(selectSourceForQuality([source("failed", 2160)], 2160, new Set(["failed"]))).toBeNull();
+  });
+
+  it("shows a stored unavailable preference separately from the effective fallback", () => {
+    const options = buildPlayerQualityOptions({
+      sources: [source("hd", 720)],
+      activeSourceId: "hd",
+      activeLevels: [{ index: 0, height: 720 }],
+      selected: 2160,
+      actualHeight: 720,
+    });
+    const preferred = options.find((option) => option.value === 2160)!;
+    const effective = options.find((option) => option.value === 720)!;
+
+    expect(preferred.status).toBe("unavailable");
+    expect(preferred.preferred).toBe(true);
+    expect(effective.status).toBe("active");
+    expect(shouldCommitQualityTarget(preferred)).toBe(false);
+    expect(shouldCommitQualityTarget(preferred, true)).toBe(true);
   });
 });

@@ -730,51 +730,25 @@ function sourceFailoverPriority(source: PlaybackSource): number {
   return 0;
 }
 
-function isSoftKept(source: PlaybackSource): boolean {
-  return source.verified === false;
-}
-
 /**
- * Auto-play pool: trust filter only — NEVER filter by resolution.
- * HD preference is ranking weight in pickDefaultSource, not a hard gate.
- * Fallback order for ranking (not exclusion): ≥1080 known → unknown → <1080.
- * Poison / junk URLs never enter the auto-default pool when any clean source exists.
+ * Shared player-facing eligibility. The server picker, quality picker,
+ * initial selection and failover all use this exact roster so a conclusively
+ * dead source can never remain visible or be resurrected.
  */
-function autoPlayPool(sources: PlaybackSource[]): PlaybackSource[] {
+export function eligiblePlaybackSources(
+  sources: readonly PlaybackSource[],
+  failedIds: ReadonlySet<string> = new Set()
+): PlaybackSource[] {
   const hevcOk = browserSupportsHevc();
-  const browserPlayable = sources.filter(isSourcePlayableHere);
-  const notHardDead = browserPlayable.filter(
+  return sources.filter(
     (s) =>
+      !failedIds.has(s.id) &&
       s.probe?.ok !== false &&
-      !isSoftKept(s) &&
+      s.verified !== false &&
+      !isNeverAutoDefaultUrl(s.url) &&
       (!isHevcSource(s) || hevcOk) &&
       isSourcePlayableHere(s)
   );
-  if (!notHardDead.length) {
-    // Keep failed/soft sources as manual auto-recovery fallbacks, but never
-    // route an incompatible source into the production-disabled transcoder.
-    const soft = browserPlayable.filter((s) => s.probe?.ok !== false);
-    // Prefer non-poison even among soft fallbacks.
-    const softClean = soft.filter((s) => !isNeverAutoDefaultUrl(s.url));
-    if (softClean.length) return softClean;
-    return soft.length ? soft : browserPlayable;
-  }
-
-  // Strip poison when any non-poison playable source exists.
-  const noPoison = notHardDead.filter((s) => !isNeverAutoDefaultUrl(s.url));
-  const pool = noPoison.length ? noPoison : notHardDead;
-
-  const probeOk = pool.filter((s) => s.probe?.ok === true);
-  if (probeOk.some((s) => sourceMaxHeight(s) >= HD_FLOOR_HEIGHT)) {
-    // Prefer probed HD, but still keep untested HD + unknowns in the pool
-    // so ranking can choose them and the roster is not silently thinned.
-    const extras = pool.filter((s) => !probeOk.includes(s));
-    return [...probeOk, ...extras];
-  }
-
-  // No confirmed HD yet — entire clean pool (includes unknowns + 720p).
-  // pickDefaultSource ranks ≥1080 first, then multi-rung, then unknowns above sub-HD.
-  return pool;
 }
 
 /**
@@ -815,7 +789,8 @@ export function pickDefaultSource(
   preferredHeight?: "auto" | number | null
 ): PlaybackSource | null {
   if (!sources.length) return null;
-  const pickPool = autoPlayPool(sources);
+  const pickPool = eligiblePlaybackSources(sources);
+  if (!pickPool.length) return null;
   const heightTarget = resolvePreferredHeightTarget(preferredHeight);
 
   // Honor stored preference only when non-empty and source is in the playable pool.

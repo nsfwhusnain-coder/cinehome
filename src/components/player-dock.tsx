@@ -115,6 +115,8 @@ function statusDotClass(status: ReturnType<typeof buildServerSlots>[number]["sta
       return "bg-emerald-400";
     case "loading":
       return "bg-zinc-400 animate-pulse";
+    case "checking":
+      return "bg-zinc-400";
     case "failed":
       return "bg-red-400";
     default:
@@ -378,7 +380,7 @@ export function PlayerDock({
             return (
               <OptionRow
                 key={option.value}
-                active={activeQualityTarget === option.value}
+                active={option.status === "active"}
                 disabled={disabled}
                 onClick={() => onQualityTargetChange(option.value)}
               >
@@ -389,6 +391,13 @@ export function PlayerDock({
                 {option.status === "unavailable" && (
                   <span className="text-white/35"> · unavailable</span>
                 )}
+                {option.preferred && option.status !== "active" && (
+                  <span className="text-white/40"> · default</span>
+                )}
+                {option.status === "active" &&
+                  option.value !== activeQualityTarget && (
+                    <span className="text-white/40"> · now</span>
+                  )}
                 {option.value === "auto" && playingHeight > 0 && (
                   <span className="text-white/40">
                     {" "}· now {formatResolutionLabel(playingHeight)}
@@ -458,6 +467,11 @@ export function PlayerDock({
                 )}
                 {slot.status === "loading" && (
                   <Loader2 className="h-3 w-3 shrink-0 animate-spin text-white/40" />
+                )}
+                {slot.status === "checking" && (
+                  <span className="shrink-0 text-[9px] uppercase tracking-wide text-white/40">
+                    Checking
+                  </span>
                 )}
                 {slot.status === "active" && <Check className="h-3.5 w-3.5 shrink-0 text-[#c026d3]" />}
                 {hasSource && !selectable && (

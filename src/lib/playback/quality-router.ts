@@ -1,7 +1,7 @@
 import type { QualityLevel } from "@/stores/player-store";
 import type { PlaybackSource } from "./types";
 import {
-  isSourcePlayableHere,
+  eligiblePlaybackSources,
   pickDefaultSource,
   sourceMaxHeight,
 } from "./source-quality";
@@ -21,10 +21,21 @@ export interface PlayerQualityOption {
   levelIndex?: number;
   /** Cross-source switch when the active manifest does not carry this rung. */
   sourceId?: string;
+  /** Stored user target, even while playback is honestly using a fallback. */
+  preferred?: boolean;
 }
 
 export function qualityLabel(height: PlayerQualityHeight): string {
   return height === 2160 ? "4K" : `${height}p`;
+}
+
+export function shouldCommitQualityTarget(
+  option: PlayerQualityOption,
+  allowUnavailablePreference = false
+): boolean {
+  if (option.value === "auto") return true;
+  if (allowUnavailablePreference) return true;
+  return option.status !== "unavailable" && option.status !== "searching";
 }
 
 /**
@@ -71,13 +82,7 @@ function viableSources(
   sources: PlaybackSource[],
   failedIds: ReadonlySet<string>
 ): PlaybackSource[] {
-  return sources.filter(
-    (source) =>
-      !failedIds.has(source.id) &&
-      source.probe?.ok !== false &&
-      source.verified !== false &&
-      isSourcePlayableHere(source)
-  );
+  return eligiblePlaybackSources(sources, failedIds);
 }
 
 export function selectSourceForQuality(
@@ -98,8 +103,11 @@ export function buildPlayerQualityOptions(args: {
   selected: PlayerQualityTarget;
   failedIds?: ReadonlySet<string>;
   discovering?: boolean;
+  /** Measured delivery height, separate from the user's preferred target. */
+  actualHeight?: number;
 }): PlayerQualityOption[] {
   const failedIds = args.failedIds ?? new Set<string>();
+  const actualHeight = normalizePlayerQualityHeight(args.actualHeight ?? 0);
   const options: PlayerQualityOption[] = [
     {
       value: "auto",
@@ -112,11 +120,14 @@ export function buildPlayerQualityOptions(args: {
     const levelIndex = levelForHeight(args.activeLevels, height);
     const source = selectSourceForQuality(args.sources, height, failedIds);
     const available = levelIndex != null || source != null;
+    const preferred = args.selected === height;
+    const isEffectiveFallback =
+      args.selected !== "auto" && actualHeight === height;
     options.push({
       value: height,
       label: qualityLabel(height),
       status:
-        args.selected === height
+        (preferred && available && actualHeight == null) || isEffectiveFallback
           ? "active"
           : available
             ? "available"
@@ -125,6 +136,7 @@ export function buildPlayerQualityOptions(args: {
               : "unavailable",
       ...(levelIndex != null ? { levelIndex } : {}),
       ...(source ? { sourceId: source.id } : {}),
+      ...(preferred ? { preferred: true } : {}),
     });
   }
   return options;

@@ -70,8 +70,24 @@ describe("buildServerSlots — single source of truth for naming", () => {
       type: "mp4",
     });
     const slots = buildServerSlots([free, premium], [], false, undefined);
-    expect(slots.find((slot) => slot.id === "free")?.flag).toBe("🇺🇸");
+    expect(slots.find((slot) => slot.id === "free")?.flag).toBe("🌐");
     expect(slots.find((slot) => slot.id === premium.id)?.flag).toBe("🌐");
+  });
+
+  it("keeps an eligible unprobed server neutral and selectable-looking", () => {
+    const unprobed = source({ id: "neutral", probe: undefined });
+    expect(buildServerSlots([unprobed], [], true)[0]?.status).toBe("checking");
+    expect(buildServerSlots([unprobed], [], false)[0]?.status).toBe("checking");
+  });
+
+  it("returns an empty roster when every source is conclusively dead", () => {
+    const probeDead = source({
+      id: "probe-dead",
+      probe: { ok: false, ttfbMs: 0, bytesPerSec: 0, speedScore: 0 },
+    });
+    const rejected = source({ id: "rejected", verified: false });
+    const failed = source({ id: "failed" });
+    expect(buildServerSlots([probeDead, rejected, failed], ["failed"], false)).toEqual([]);
   });
 
   it("collapses duplicate logical servers to their best healthy representation", () => {

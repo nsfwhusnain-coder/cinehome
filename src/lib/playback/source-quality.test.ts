@@ -8,6 +8,7 @@ import {
   isSourcePlayableHere,
   parseMaxHeight,
   pickDefaultSource,
+  eligiblePlaybackSources,
   qualityBadge,
   resolvePreferredHeightTarget,
   sortSourcesForPicker,
@@ -380,7 +381,7 @@ describe("pickDefaultSource — poison gate", () => {
     expect(pickDefaultSource([php, solstice])?.id).toBe("solstice");
   });
 
-  it("only-poison roster still returns a pick (last resort)", () => {
+  it("only-poison roster returns no eligible pick", () => {
     const a = makeSource({
       id: "a",
       url: "https://cloudflare-terms-of-service-abuse.com/a.mp4",
@@ -388,7 +389,28 @@ describe("pickDefaultSource — poison gate", () => {
       maxHeight: 1080,
     });
     const picked = pickDefaultSource([a]);
-    expect(picked?.id).toBe("a");
+    expect(picked).toBeNull();
+  });
+
+  it("uses one empty roster for probe-dead, rejected, session-failed and poison sources", () => {
+    const probeDead = makeSource({
+      id: "probe-dead",
+      probe: { ok: false, ttfbMs: 0, bytesPerSec: 0, speedScore: 0 },
+    });
+    const rejected = makeSource({ id: "rejected", verified: false });
+    const failed = makeSource({ id: "failed" });
+    const poison = makeSource({
+      id: "poison",
+      url: "https://cloudflare-terms-of-service-abuse.com/a.mp4",
+    });
+    const roster = [probeDead, rejected, failed, poison];
+
+    expect(eligiblePlaybackSources(roster, new Set(["failed"]))).toEqual([]);
+    expect(
+      pickDefaultSource(
+        eligiblePlaybackSources(roster, new Set(["failed"]))
+      )
+    ).toBeNull();
   });
 });
 
