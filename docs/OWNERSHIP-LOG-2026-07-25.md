@@ -848,3 +848,136 @@ ranked 1080p source without an error.
 All profile mutation in these tests occurred against the isolated clone of
 the database and the test restored the profile default to Auto. Production
 data was not mutated.
+
+## Stable first frame and exhausted-roster recovery (2026-07-28)
+
+The Cineby-style candidate was not promoted unchanged. Real browser use found
+two lifecycle failures that compilation and the earlier happy-path pass did
+not expose:
+
+1. A progressive full response could arrive in the same render window as the
+   first decoded frame. The React `playing` event had not yet set its lock, so
+   the newly ranked source tore down media that was already visible.
+2. When every source failed and Real-Debrid returned the same still-valid
+   signed CDN URL on refresh, Chromium retained the deliberately failed media
+   response for that URL. The server had refreshed correctly but the browser
+   did not issue a clean media attempt.
+
+The player now takes its first-frame ownership lock synchronously from the
+actual media element (`readyState`, decoded width, and generation) as well as
+from events. Late provider enrichment remains visible as additional choices
+but never interrupts a decoded stream. The old post-play cross-server quality
+upgrade was removed; Auto still chooses the best initial source and adapts
+inside the active HLS ladder, while a user can explicitly switch server or
+quality without losing position, pause state, or profile intent. Actual
+decoded dimensions now normalize cropped cinema rasters such as 1920x816 to
+the honest 1080 delivery class.
+
+Recovery-only debrid rows are issued through the authenticated streaming proxy
+with a generation nonce. The upstream signed URL remains intact and Range
+streaming is preserved, but the browser receives a distinct media URL.
+Healthy debrid playback stays direct and pays no extra home-server hop.
+
+### Resolve-budget failure found during production gating
+
+The first production fault-injection run still failed: its one recovery call
+was HTTP 429. Progressive polling had consumed the normal per-title bucket
+before the last source died. A second title recovered successfully, proving
+that media recovery worked and the denial was title-scoped.
+
+Three changes closed the full failure rather than raising a timeout:
+
+- recovery bypasses the normal title polling bucket and remains independently
+  limited to three attempts per title in ten minutes;
+- HTTP 429 is typed and terminal for background polling, while one retry
+  remains for transient resolver/network failures;
+- the title bucket is consumed before the wider user bucket. Requests already
+  denied for one title no longer drain the cross-title allowance and cannot
+  starve the rest of the catalogue.
+
+Regression coverage models the exact sequence: a normal resolve consumes the
+last title slot, another normal resolve is denied, and the reserved recovery
+still has user capacity. The final commits are:
+
+- `121d723` — stable decoded-stream ownership and distinct recovery media URLs;
+- `7b685e1` — independently reserved exhausted-roster recovery;
+- `bf8f4eb` — stop polling a server-declared closed budget;
+- `567d604` — isolate a closed title from the user's wider resolve budget.
+
+### Production measurements
+
+The exact final source-built production image is
+`sha256:cb7dcd0c5615cccdb0595987ecbbe1496d4b3d961a5992fd0a630c54b00f8158`
+at commit `567d60413cc0a2df23872dfef2405377b37d510d`.
+
+The final six-title browser matrix on the immediately preceding image
+(`bf8f4eb`; the only later change is the unit-tested budget transaction order)
+covered Fight Club, Oppenheimer, Coherence, The Witcher S1E1, The Office S1E1,
+and Attack on Titan S1E1:
+
+- decoded first-frame success: 6/6;
+- advertised top-ranked source actually played: 6/6;
+- cross-server changes after first frame: 0/6;
+- click-to-first-frame p50/p95: 10,362 / 19,319 ms;
+- actual first frames: 1280x720, 1280x720, 1920x816, 1920x1080,
+  1920x1080, and 1280x720 respectively;
+- every run advanced throughout the eight-second observation and had zero
+  structured player failures;
+- four HLS runs emitted at least one post-frame waiting signal. This and the
+  variable startup tail are still the weakest measured product qualities.
+
+This startup distribution is slower than both the original 5,664 / 8,163 ms
+baseline and the prior 8,787 / 10,939 ms production reference. It is recorded
+as a regression/remaining weakness, not described as an improvement. The
+current stability policy deliberately avoids a disruptive late 720-to-1080
+server handoff; the next speed/quality pass must improve initial source
+evidence and HLS buffering without reintroducing that teardown race.
+
+Failure recovery did improve conclusively. Before the fix, the production
+forced-roster run timed out after 90 seconds with no frame; natural Attack on
+Titan initially played and was then torn down by late enrichment, ending at
+0:00. On the exact final image, the identical Attack on Titan release gate
+passed 5/5: ten forced media failures, exactly one recovery request, HTTP 200
+with a fresh nonce, and an advancing 1280x720 debrid frame. Evidence:
+
+- `.browser-qa/ownership-production-567d604/roster-refresh-attack/report.json`
+- `.browser-qa/ownership-production-bf8f4eb/final-matrix/`
+
+The exact final image also passed the production Cineby-style product contract
+24/24 on desktop 1440x900 and mobile 390x844:
+
+- one five-tab Quality / Sources / Subtitles / Audio / Speed sheet;
+- invariant Auto / 4K / 1440p / 1080p / 720p / 480p / 360p rail;
+- only three currently usable Coherence servers shown, with dead rows absent;
+- stable Kronos / Eos / Pan names and premium/region identity on every row;
+- playing switch 4294.9s to 4296.2s and paused switch held at 4296.2s;
+- fixed 720p profile persisted and initialized after reload;
+- the production profile was restored to Auto before the test exited;
+- real playback decoded at 1920x816.
+
+Evidence:
+`.browser-qa/ownership-production-567d604/cineby-coherence/report.json`.
+
+### Verification, rollback, and production integrity
+
+- Unit/integration suite: 551/551 tests, 1,226 expectations.
+- Repository-wide TypeScript: clean.
+- Fresh Next production build: passed.
+- Known build warnings remain: Next's middleware naming deprecation and an
+  unset `metadataBase`. Existing focused React lint debt is not claimed clean.
+- Final container: running, zero restarts, no OOM kill.
+- SQLite `PRAGMA quick_check`: `ok`.
+- User invariants after all production tests: 13 users, 25 watchlist rows,
+  90 progress rows, and 147 cached-stream rows.
+- Resolver configuration was restored byte-for-byte after every source build;
+  final SHA-256:
+  `dc8e42bf2ca4fba56253a055c007093712f65ccf9513a7f5dfe852864c04b091`.
+
+The last pre-cutover snapshot is
+`/home/hussy/cinehome-backups/20260728T152812Z-pre-final-player`.
+It contains the exact prior image tag, online SQLite backup, environment and
+rendered Compose configuration, container/image inspections, Git bundle, and
+checksums. Its copied restore database passed `PRAGMA quick_check` and matched
+13 / 25 / 90 / 147. Earlier same-day snapshots preserve each intermediate
+production cutover, including
+`/home/hussy/cinehome-backups/20260728T145752Z-pre-final-player`.
