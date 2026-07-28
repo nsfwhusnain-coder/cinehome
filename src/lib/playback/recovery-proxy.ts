@@ -17,18 +17,13 @@ function upstreamOrigin(url: string): string {
 }
 
 /**
- * Route every debrid object through CineHome's authenticated streaming proxy.
+ * Route a debrid object through CineHome's authenticated streaming proxy.
  *
- * Real-Debrid CDN nodes do not have one stable browser-CORS policy: a link can
- * pass the server-side Range/media validation and still be rejected by the
- * browser because that particular node omits Access-Control-Allow-Origin.
- * Keeping the normal URL same-origin makes the already-validated object
- * reliably playable while preserving streaming Range responses.
- *
- * The HLS session id is deterministic for user + upstream URL, so an ordinary
- * resolve gets a stable, generation-independent browser URL. A recovery resolve
- * appends its nonce solely as a browser cache-buster; it does not alter the
- * upstream URL or create a second proxy session.
+ * This is the recovery transport, not the primary transport. Native MP4
+ * debrid links start materially faster when attached directly without a
+ * crossOrigin attribute, while the proxy remains useful when a CDN/browser
+ * combination rejects that direct path. The session id is deterministic for
+ * user + upstream URL; a recovery nonce is only a browser cache-buster.
  */
 export function proxyDebridSources(
   userId: string,
@@ -51,6 +46,23 @@ export function proxyDebridSources(
         : `${stableProxyUrl}&recovery=${refreshNonce}`;
     return { ...source, url: proxyUrl };
   });
+}
+
+/**
+ * Browser transport policy for debrid:
+ * - ordinary resolve: keep the validated, token-free CDN URL for fast native
+ *   range playback;
+ * - explicit recovery: switch the refreshed object to the authenticated
+ *   same-origin proxy, giving a failed direct transport a genuinely different
+ *   path instead of retrying the same conditions.
+ */
+export function prepareDebridSourcesForBrowser(
+  userId: string,
+  sources: PlaybackSource[],
+  refreshNonce?: number
+): PlaybackSource[] {
+  if (refreshNonce == null) return sources.map((source) => ({ ...source }));
+  return proxyDebridSources(userId, sources, refreshNonce);
 }
 
 /** Backwards-compatible name for the explicit recovery call site/tests. */

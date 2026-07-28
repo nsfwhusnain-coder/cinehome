@@ -11,7 +11,7 @@ import {
   consumesTitleResolveBudget,
   playbackRefreshMode,
 } from "@/lib/playback/refresh-mode";
-import { proxyDebridSources } from "@/lib/playback/recovery-proxy";
+import { prepareDebridSourcesForBrowser } from "@/lib/playback/recovery-proxy";
 import { consumePlaybackResolveBudget } from "@/lib/playback/resolve-budget";
 import { shouldConsumePlaybackResolveBudget } from "@/lib/playback/resolve-budget-policy";
 
@@ -386,7 +386,10 @@ export async function GET(
 
   let result: PlaybackResponse;
   if (fast) {
-    const debridSources = proxyDebridSources(userId, await debridPromise);
+    const debridSources = prepareDebridSourcesForBrowser(
+      userId,
+      await debridPromise
+    );
     const debridOnly = buildFastDebridResponse(
       debridSources,
       qualityHint ?? "auto"
@@ -415,7 +418,7 @@ export async function GET(
       providerPromise,
       debridPromise,
     ]);
-    const debridSources = proxyDebridSources(
+    const debridSources = prepareDebridSourcesForBrowser(
       userId,
       resolvedDebridSources,
       refreshMode === "recovery" ? refreshNonce : undefined

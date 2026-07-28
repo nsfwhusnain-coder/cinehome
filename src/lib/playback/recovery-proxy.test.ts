@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { decodeUpstream } from "@/lib/hls-session";
 import type { PlaybackSource } from "./types";
 import {
+  prepareDebridSourcesForBrowser,
   proxyDebridSources,
   proxyRecoveryDebridSources,
 } from "./recovery-proxy";
@@ -18,7 +19,14 @@ const SOURCE: PlaybackSource = {
 };
 
 describe("proxyRecoveryDebridSources", () => {
-  it("uses one stable same-origin URL for ordinary playback", () => {
+  it("keeps ordinary native playback direct and token-free", () => {
+    const direct = prepareDebridSourcesForBrowser("user-1", [SOURCE])[0]!;
+
+    expect(direct).not.toBe(SOURCE);
+    expect(direct.url).toBe(SOURCE.url);
+  });
+
+  it("uses one stable same-origin URL when proxy transport is requested", () => {
     const first = proxyDebridSources("user-1", [SOURCE])[0]!;
     const second = proxyDebridSources("user-1", [SOURCE])[0]!;
 
