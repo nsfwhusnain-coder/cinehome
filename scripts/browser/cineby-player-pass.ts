@@ -29,7 +29,7 @@ import {
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-type ViewportName = "desktop" | "mobile";
+type ViewportName = "desktop" | "mobile" | "tv";
 type CheckState = "pass" | "fail" | "skip";
 
 interface Check {
@@ -140,6 +140,36 @@ function observeApiResponse(
     mode,
     cache: response.headers()["x-playback-cache"] || null,
   });
+}
+
+async function collectApiSources(
+  response: PlaywrightResponse,
+  apiSources: Map<string, SafeSource>
+): Promise<void> {
+  if (!response.url().includes("/api/playback/") || !response.ok()) return;
+  try {
+    const payload = (await response.json()) as { sources?: unknown[] };
+    for (const raw of payload.sources || []) {
+      if (!raw || typeof raw !== "object") continue;
+      const source = raw as Record<string, unknown>;
+      if (typeof source.id !== "string" || typeof source.provider !== "string") {
+        continue;
+      }
+      apiSources.set(source.id, {
+        id: source.id,
+        provider: source.provider,
+        verified: typeof source.verified === "boolean" ? source.verified : null,
+        probeOk:
+          source.probe &&
+          typeof source.probe === "object" &&
+          typeof (source.probe as Record<string, unknown>).ok === "boolean"
+            ? ((source.probe as Record<string, unknown>).ok as boolean)
+            : null,
+      });
+    }
+  } catch {
+    // The player itself surfaces malformed playback responses.
+  }
 }
 
 function auditApiContract(viewport: ViewportName): void {
@@ -422,6 +452,7 @@ async function runDesktop(
     viewport: { width: 1440, height: 900 },
     storageState: STORAGE_STATE,
     baseURL: BASE,
+    serviceWorkers: "block",
   });
   await ensureBaseCookieScope(context);
   const page = await context.newPage();
@@ -429,27 +460,7 @@ async function runDesktop(
 
   page.on("response", async (response) => {
     observeApiResponse(viewport, response);
-    if (!response.url().includes("/api/playback/") || !response.ok()) return;
-    try {
-      const payload = (await response.json()) as { sources?: unknown[] };
-      for (const raw of payload.sources || []) {
-        if (!raw || typeof raw !== "object") continue;
-        const source = raw as Record<string, unknown>;
-        if (typeof source.id !== "string" || typeof source.provider !== "string") continue;
-        apiSources.set(source.id, {
-          id: source.id,
-          provider: source.provider,
-          verified: typeof source.verified === "boolean" ? source.verified : null,
-          probeOk:
-            source.probe && typeof source.probe === "object" &&
-            typeof (source.probe as Record<string, unknown>).ok === "boolean"
-              ? ((source.probe as Record<string, unknown>).ok as boolean)
-              : null,
-        });
-      }
-    } catch {
-      // The player itself surfaces malformed playback responses.
-    }
+    await collectApiSources(response, apiSources);
   });
 
   let initialProfile: Preferences | null = null;
@@ -589,11 +600,15 @@ async function runMobile(
     baseURL: BASE,
     isMobile: true,
     hasTouch: true,
+    serviceWorkers: "block",
   });
   await ensureBaseCookieScope(context);
   const page = await context.newPage();
   page.setDefaultTimeout(20_000);
-  page.on("response", (response) => observeApiResponse(viewport, response));
+  page.on("response", async (response) => {
+    observeApiResponse(viewport, response);
+    await collectApiSources(response, apiSources);
+  });
   try {
     await page.goto(WATCH_PATH, { waitUntil: "domcontentloaded" });
     await waitForAdvancingVideo(page);
@@ -601,6 +616,37 @@ async function runMobile(
     await auditSheet(page, viewport, apiSources);
   } catch (error) {
     record(viewport, "mobile Cineby-style player pass completed", false, safeError(error));
+  } finally {
+    auditApiContract(viewport);
+    await context.close();
+  }
+}
+
+async function runTv(
+  browser: Browser,
+  apiSources: Map<string, SafeSource>
+): Promise<void> {
+  const viewport: ViewportName = "tv";
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    storageState: STORAGE_STATE,
+    baseURL: BASE,
+    serviceWorkers: "block",
+  });
+  await ensureBaseCookieScope(context);
+  const page = await context.newPage();
+  page.setDefaultTimeout(20_000);
+  page.on("response", async (response) => {
+    observeApiResponse(viewport, response);
+    await collectApiSources(response, apiSources);
+  });
+  try {
+    await page.goto(WATCH_PATH, { waitUntil: "domcontentloaded" });
+    await waitForAdvancingVideo(page);
+    await page.waitForTimeout(1_000);
+    await auditSheet(page, viewport, apiSources);
+  } catch (error) {
+    record(viewport, "TV Cineby-style player pass completed", false, safeError(error));
   } finally {
     auditApiContract(viewport);
     await context.close();
@@ -617,6 +663,7 @@ async function main(): Promise<void> {
   try {
     await runDesktop(browser, apiSources);
     await runMobile(browser, apiSources);
+    await runTv(browser, apiSources);
   } finally {
     await browser.close();
   }

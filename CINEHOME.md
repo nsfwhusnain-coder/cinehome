@@ -154,12 +154,16 @@ geography shows a globe, and debrid rows also carry the premium crown.
 `scripts/browser/cineby-player-pass.ts` is the release gate for this contract.
 It exercises real advancing playback, the stable rail, source-row provenance,
 dead-row removal, flags, profile persistence/reload, playing and paused source
-switches, and desktop/phone sheet bounds. The profile test verifies the decoded
-effective quality (or an explicit unavailable/fallback state), and restores the
-original profile from a `finally` block even when an intermediate assertion
-fails. Both player passes also fail on normal-user `/api/system-status` polling
-or playback/media-proxy `403`/`428`/`429`/`5xx` responses; their reports retain
-only safe path, mode, status, and cache metadata.
+switches, and desktop/phone/TV sheet bounds. The adaptive gate verifies that
+Auto reports the decoded rung, fixed rungs change the decoder without changing
+server identity, and a real 320p session switch leaves the profile default
+untouched when that rendition exists (otherwise it records an explicit skip).
+The profile test verifies the decoded effective quality (or an explicit
+unavailable/fallback state), and restores the original profile from a `finally`
+block even when an intermediate assertion fails. The browser gates also fail on
+normal-user `/api/system-status` polling or playback/media-proxy
+`403`/`428`/`429`/`5xx` responses; their reports retain only safe path, mode,
+status, and cache metadata.
 
 ```bash
 image_id=$(docker inspect --format '{{.Image}}' cinehome)

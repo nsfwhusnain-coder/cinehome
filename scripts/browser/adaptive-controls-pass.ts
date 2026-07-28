@@ -18,7 +18,12 @@
  *   ADAPTIVE_OUT_DIR=/app/.browser-qa/adaptive-controls-pass
  */
 
-import { chromium, type BrowserContext, type Page } from "playwright";
+import {
+  chromium,
+  type BrowserContext,
+  type Page,
+  type Response as PlaywrightResponse,
+} from "playwright";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -50,7 +55,19 @@ interface VideoState {
   provider: string | null;
 }
 
+interface Preferences {
+  playbackQuality: "auto" | number;
+  audioLanguage: string;
+}
+
+interface MediaObservation {
+  kind: "playback" | "hls" | "media";
+  path: string;
+  status: number;
+}
+
 const BASE = (process.env.CINEHOME_BASE_URL || "http://100.89.184.84:4445").replace(/\/$/, "");
+const BASE_ORIGIN = new URL(BASE).origin;
 const STORAGE_STATE =
   process.env.STORAGE_STATE || "/app/.browser-qa/storage-state.json";
 const OUT_DIR =
@@ -59,6 +76,7 @@ const WATCH_PATH = process.env.ADAPTIVE_WATCH_PATH || "/watch/movie/550";
 const TARGET_PROVIDER = (process.env.ADAPTIVE_SOURCE_PROVIDER || "Vixsrc").toLowerCase();
 const TARGET_ID = (process.env.ADAPTIVE_SOURCE_ID || "vixsrc-luna").toLowerCase();
 const checks: Check[] = [];
+const mediaObservations: MediaObservation[] = [];
 
 async function ensureBaseCookieScope(context: BrowserContext): Promise<void> {
   const baseHost = new URL(BASE).hostname;
@@ -82,6 +100,50 @@ function record(
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 400) : String(error).slice(0, 400);
+}
+
+function observeMediaResponse(response: PlaywrightResponse): void {
+  const url = new URL(response.url());
+  const sameOrigin = url.origin === BASE_ORIGIN;
+  const isPlayback = sameOrigin && url.pathname.startsWith("/api/playback/");
+  const isHls = sameOrigin && url.pathname.startsWith("/api/hls/");
+  const isMedia = response.request().resourceType() === "media";
+  if (!isPlayback && !isHls && !isMedia) return;
+  mediaObservations.push({
+    kind: isPlayback ? "playback" : isHls ? "hls" : "media",
+    path: sameOrigin ? url.pathname : "[external-media]",
+    status: response.status(),
+  });
+}
+
+function auditMediaContract(): void {
+  const observedMedia = mediaObservations.filter(
+    (observation) => observation.kind === "hls" || observation.kind === "media"
+  );
+  record(
+    "adaptive playback traverses observed media requests",
+    observedMedia.length > 0,
+    `${observedMedia.length} media response(s)`
+  );
+  const failures = mediaObservations.filter(
+    (observation) =>
+      observation.status === 403 ||
+      observation.status === 428 ||
+      observation.status === 429 ||
+      observation.status >= 500
+  );
+  record(
+    "adaptive playback avoids authorization, dead-source, rate-limit, and server errors",
+    failures.length === 0,
+    failures.length
+      ? failures
+          .map(
+            (observation) =>
+              `${observation.status} ${observation.kind} ${observation.path}`
+          )
+          .join(", ")
+      : undefined
+  );
 }
 
 function publicSource(value: unknown): PublicSource | null {
@@ -194,17 +256,22 @@ function qualityHeight(label: string): number {
   return match ? Number(match[1]) : 0;
 }
 
-function decodedQualityLabel(state: VideoState): string {
+function decodedQualityHeight(state: VideoState): number | null {
   const longEdge = Math.max(state.width, state.height);
   const shortEdge = Math.min(state.width, state.height);
-  if (longEdge >= 3_800 || shortEdge >= 1_800) return "4K";
-  if (longEdge >= 2_500 || shortEdge >= 1_400) return "1440p";
-  if (longEdge >= 1_900 || shortEdge >= 850) return "1080p";
-  if (longEdge >= 1_200 || shortEdge >= 600) return "720p";
-  if (longEdge >= 700 || shortEdge >= 400) return "480p";
-  if (longEdge >= 630 || shortEdge >= 340) return "360p";
-  if (longEdge >= 560 || shortEdge >= 280) return "320p";
-  return "";
+  if (longEdge >= 3_800 || shortEdge >= 1_800) return 2160;
+  if (longEdge >= 2_500 || shortEdge >= 1_400) return 1440;
+  if (longEdge >= 1_900 || shortEdge >= 850) return 1080;
+  if (longEdge >= 1_200 || shortEdge >= 600) return 720;
+  if (longEdge >= 700 || shortEdge >= 400) return 480;
+  if (longEdge >= 630 || shortEdge >= 340) return 360;
+  if (longEdge >= 560 || shortEdge >= 280) return 320;
+  return null;
+}
+
+function qualityLabel(height: number | null): string {
+  if (height == null) return "";
+  return height === 2160 ? "4K" : `${height}p`;
 }
 
 async function chooseQuality(page: Page, height: number): Promise<void> {
@@ -218,24 +285,48 @@ async function chooseQuality(page: Page, height: number): Promise<void> {
   await closeSettings(page);
 }
 
-async function waitForDecodedHeight(
+async function waitForDecodedRung(
   page: Page,
-  predicate: (height: number) => boolean,
+  expectedHeight: number,
+  expectedSourceId: string,
   timeout = 20_000
 ): Promise<VideoState> {
   const started = Date.now();
   let current = await state(page);
   while (Date.now() - started < timeout) {
-    if (predicate(current.height) && !current.paused && current.readyState >= 2) {
+    if (
+      current.sourceId === expectedSourceId &&
+      decodedQualityHeight(current) === expectedHeight &&
+      !current.paused &&
+      current.readyState >= 2
+    ) {
       const at = current.currentTime;
       await page.waitForTimeout(800);
       const advanced = await state(page);
-      if (advanced.currentTime > at + 0.3) return advanced;
+      if (
+        advanced.sourceId === expectedSourceId &&
+        decodedQualityHeight(advanced) === expectedHeight &&
+        advanced.currentTime > at + 0.3
+      ) {
+        return advanced;
+      }
     }
     await page.waitForTimeout(300);
     current = await state(page);
   }
-  throw new Error(`decoded height did not reach target; last=${current.height}`);
+  throw new Error(
+    `decoded rung did not reach ${qualityLabel(expectedHeight)} on ${expectedSourceId}; ` +
+      `last=${current.width}x${current.height}/${qualityLabel(decodedQualityHeight(current)) || "unknown"} ` +
+      `source=${current.sourceId || "none"}`
+  );
+}
+
+async function preferences(page: Page): Promise<Preferences> {
+  return page.evaluate(async () => {
+    const response = await fetch("/api/preferences", { cache: "no-store" });
+    if (!response.ok) throw new Error(`preferences GET ${response.status}`);
+    return response.json();
+  });
 }
 
 async function auditOptionalTracks(
@@ -296,6 +387,7 @@ async function main(): Promise<void> {
     viewport: { width: 1440, height: 900 },
     storageState: STORAGE_STATE,
     baseURL: BASE,
+    serviceWorkers: "block",
   });
   await ensureBaseCookieScope(context);
   const page = await context.newPage();
@@ -303,6 +395,7 @@ async function main(): Promise<void> {
   const sources = new Map<string, PublicSource>();
 
   page.on("response", async (response) => {
+    observeMediaResponse(response);
     if (!response.url().includes("/api/playback/") || !response.ok()) return;
     try {
       const payload = (await response.json()) as Record<string, unknown>;
@@ -373,11 +466,15 @@ async function main(): Promise<void> {
     )
       .replace(/\s+/g, " ")
       .trim();
-    const decodedLabel = decodedQualityLabel(autoSteady);
+    const decodedHeight = decodedQualityHeight(autoSteady);
+    const decodedLabel = qualityLabel(decodedHeight);
     record(
       "Auto reports actual decoded quality",
-      decodedLabel !== "" && autoText.includes(decodedLabel),
-      `advertised=${target.maxHeight || "unknown"}; actual=${autoSteady.width}x${autoSteady.height}; row=${autoText}`
+      autoSteady.sourceId === target.id &&
+        decodedLabel !== "" &&
+        autoText.includes(decodedLabel),
+      `advertised=${target.maxHeight || "unknown"}; actual=${autoSteady.width}x${autoSteady.height}; ` +
+        `source=${autoSteady.sourceId || "none"}; row=${autoText}`
     );
 
     const qualityRows = await qualityDialog.getByRole("button").evaluateAll((buttons) =>
@@ -404,27 +501,52 @@ async function main(): Promise<void> {
     const lowest = Math.min(...qualityHeights);
     if (Number.isFinite(highest) && highest > 0) {
       await chooseQuality(page, highest);
-      const highState = await waitForDecodedHeight(page, (height) => height >= highest * 0.9);
+      const highState = await waitForDecodedRung(page, highest, target.id);
       record(
         "fixed highest quality changes the real decoder",
         "pass",
-        `${highState.width}x${highState.height}`
+        `${highState.width}x${highState.height}; source=${highState.sourceId}`
       );
     }
     if (Number.isFinite(lowest) && lowest > 0 && lowest < highest) {
       await chooseQuality(page, lowest);
-      const lowState = await waitForDecodedHeight(page, (height) => height <= lowest * 1.1);
+      const lowState = await waitForDecodedRung(page, lowest, target.id);
       record(
         "fixed lower quality changes the real decoder",
         "pass",
-        `${lowState.width}x${lowState.height}`
+        `${lowState.width}x${lowState.height}; source=${lowState.sourceId}`
       );
       await chooseQuality(page, highest);
-      const restored = await waitForDecodedHeight(page, (height) => height >= highest * 0.9);
+      const restored = await waitForDecodedRung(page, highest, target.id);
       record(
         "quality can switch back up without source failover",
         restored.sourceId === target.id,
         `${restored.width}x${restored.height}; source=${restored.sourceId}`
+      );
+    }
+
+    const uiHas320Rung = qualityHeights.includes(320);
+    const metadataHas320Rung = target.ladder.includes(320);
+    if (!uiHas320Rung) {
+      record(
+        "real 320p rendition switch preserves the profile default",
+        metadataHas320Rung ? "fail" : "skip",
+        metadataHas320Rung
+          ? `source metadata advertises 320p but the enabled player ladder is ${qualityHeights.join("/") || "empty"}`
+          : `source has no enabled 320p rung; metadata=${target.ladder.join("/") || "unknown"}; ` +
+              `enabled=${qualityHeights.join("/") || "empty"}`
+      );
+    } else {
+      const profileBefore320 = await preferences(page);
+      await chooseQuality(page, 320);
+      const decoded320 = await waitForDecodedRung(page, 320, target.id);
+      const profileAfter320 = await preferences(page);
+      record(
+        "real 320p rendition switch preserves the profile default",
+        profileAfter320.playbackQuality === profileBefore320.playbackQuality &&
+          profileAfter320.audioLanguage === profileBefore320.audioLanguage,
+        `${decoded320.width}x${decoded320.height}; source=${decoded320.sourceId}; ` +
+          `profile=${String(profileBefore320.playbackQuality)}`
       );
     }
 
@@ -435,6 +557,7 @@ async function main(): Promise<void> {
   } catch (error) {
     record("adaptive control pass completed", "fail", safeError(error));
   } finally {
+    auditMediaContract();
     await context.close();
     await browser.close();
   }
@@ -445,6 +568,7 @@ async function main(): Promise<void> {
     watchPath: WATCH_PATH,
     targetProvider: TARGET_PROVIDER,
     targetId: TARGET_ID,
+    mediaObservations,
     summary: {
       pass: checks.filter((check) => check.state === "pass").length,
       fail: checks.filter((check) => check.state === "fail").length,

@@ -364,6 +364,100 @@ async function inViewport(page: Page, label: string): Promise<boolean> {
   });
 }
 
+async function sliderInViewport(page: Page, label: string): Promise<boolean> {
+  const locator = page.getByRole("slider", { name: label, exact: true }).last();
+  if (!(await locator.isVisible().catch(() => false))) return false;
+  return locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return (
+      rect.width >= 43.5 &&
+      rect.height >= 43.5 &&
+      rect.left >= 0 &&
+      rect.top >= 0 &&
+      rect.right <= window.innerWidth &&
+      rect.bottom <= window.innerHeight
+    );
+  });
+}
+
+async function auditTvEpisodePanel(page: Page): Promise<void> {
+  const viewport: ViewportName = "tv";
+  const trigger = page.getByRole("button", { name: "Episodes", exact: true });
+  if (!(await trigger.isVisible().catch(() => false))) {
+    skip(viewport, "episode picker D-pad contract", "current fixture is not episodic");
+    return;
+  }
+
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Episodes", exact: true });
+  await dialog.waitFor({ state: "visible" });
+  const seasonButtons = dialog.locator("button[data-episode-panel-season]");
+  const firstEpisode = dialog.locator("button[data-episode-panel-episode]").first();
+  await firstEpisode.waitFor({ state: "visible", timeout: 15_000 });
+
+  const initialFocus = await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"][aria-label="Episodes"]');
+    const active = document.activeElement;
+    return {
+      inside: !!dialog && !!active && dialog.contains(active),
+      season: active?.hasAttribute("data-episode-panel-season") ?? false,
+    };
+  });
+  check(
+    viewport,
+    "episode picker opens on the selected season",
+    initialFocus.inside && initialFocus.season
+  );
+
+  const seasonCount = await seasonButtons.count();
+  if (seasonCount > 1) {
+    const before = await page.evaluate(
+      () => (document.activeElement as HTMLElement | null)?.textContent?.trim() ?? ""
+    );
+    await page.keyboard.press("ArrowRight");
+    const after = await page.evaluate(
+      () => (document.activeElement as HTMLElement | null)?.textContent?.trim() ?? ""
+    );
+    check(
+      viewport,
+      "episode picker moves horizontally between seasons",
+      before !== after,
+      `${before || "none"} -> ${after || "none"}`
+    );
+  } else {
+    skip(viewport, "episode picker horizontal season navigation", "only one season");
+  }
+
+  await page.keyboard.press("ArrowDown");
+  const episodeFocused = await page.evaluate(
+    () => document.activeElement?.hasAttribute("data-episode-panel-episode") ?? false
+  );
+  check(viewport, "episode picker moves down into episodes", episodeFocused);
+
+  const targetsMeetMinimum = await dialog.evaluate((root) =>
+    Array.from(
+      root.querySelectorAll<HTMLElement>(
+        "button[data-episode-panel-season],button[data-episode-panel-episode]"
+      )
+    ).every((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.width >= 43.5 && rect.height >= 43.5;
+    })
+  );
+  check(
+    viewport,
+    "episode picker controls meet 44px target",
+    targetsMeetMinimum
+  );
+
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  const focusReturned = await page.evaluate(
+    () => document.activeElement?.getAttribute("aria-label") === "Episodes"
+  );
+  check(viewport, "episode picker Escape closes and restores focus", focusReturned);
+}
+
 async function runDesktop(page: Page): Promise<void> {
   const viewport: ViewportName = "desktop";
   await waitForFirstFrame(page);
@@ -603,6 +697,15 @@ async function runCompactViewport(
     hidden.length === 0,
     hidden.length ? `off-screen or too small: ${hidden.join(", ")}` : undefined
   );
+  check(
+    viewport,
+    "seek slider exposes a 44px touch target",
+    await sliderInViewport(page, "Seek")
+  );
+
+  if (viewport === "tv") {
+    await auditTvEpisodePanel(page);
+  }
 
   const videoRect = await page.locator("video").evaluate((video) => {
     const rect = video.getBoundingClientRect();
@@ -643,6 +746,7 @@ async function makeContext(
     viewport: dimensions,
     storageState: STORAGE_STATE,
     baseURL: BASE,
+    serviceWorkers: "block",
   });
   await ensureBaseCookieScope(context);
   return context;
