@@ -26,6 +26,7 @@ import {
 } from "playwright";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { decodedQualityHeight } from "../../src/lib/playback/source-quality";
 
 interface PublicSource {
   id: string;
@@ -256,17 +257,9 @@ function qualityHeight(label: string): number {
   return match ? Number(match[1]) : 0;
 }
 
-function decodedQualityHeight(state: VideoState): number | null {
-  const longEdge = Math.max(state.width, state.height);
-  const shortEdge = Math.min(state.width, state.height);
-  if (longEdge >= 3_800 || shortEdge >= 1_800) return 2160;
-  if (longEdge >= 2_500 || shortEdge >= 1_400) return 1440;
-  if (longEdge >= 1_900 || shortEdge >= 850) return 1080;
-  if (longEdge >= 1_200 || shortEdge >= 600) return 720;
-  if (longEdge >= 700 || shortEdge >= 400) return 480;
-  if (longEdge >= 630 || shortEdge >= 340) return 360;
-  if (longEdge >= 560 || shortEdge >= 280) return 320;
-  return null;
+function decodedQualityRung(state: VideoState): number | null {
+  const height = decodedQualityHeight(state.width, state.height);
+  return height > 0 ? height : null;
 }
 
 function qualityLabel(height: number | null): string {
@@ -296,7 +289,7 @@ async function waitForDecodedRung(
   while (Date.now() - started < timeout) {
     if (
       current.sourceId === expectedSourceId &&
-      decodedQualityHeight(current) === expectedHeight &&
+      decodedQualityRung(current) === expectedHeight &&
       !current.paused &&
       current.readyState >= 2
     ) {
@@ -305,7 +298,7 @@ async function waitForDecodedRung(
       const advanced = await state(page);
       if (
         advanced.sourceId === expectedSourceId &&
-        decodedQualityHeight(advanced) === expectedHeight &&
+        decodedQualityRung(advanced) === expectedHeight &&
         advanced.currentTime > at + 0.3
       ) {
         return advanced;
@@ -316,7 +309,7 @@ async function waitForDecodedRung(
   }
   throw new Error(
     `decoded rung did not reach ${qualityLabel(expectedHeight)} on ${expectedSourceId}; ` +
-      `last=${current.width}x${current.height}/${qualityLabel(decodedQualityHeight(current)) || "unknown"} ` +
+      `last=${current.width}x${current.height}/${qualityLabel(decodedQualityRung(current)) || "unknown"} ` +
       `source=${current.sourceId || "none"}`
   );
 }
@@ -466,7 +459,7 @@ async function main(): Promise<void> {
     )
       .replace(/\s+/g, " ")
       .trim();
-    const decodedHeight = decodedQualityHeight(autoSteady);
+    const decodedHeight = decodedQualityRung(autoSteady);
     const decodedLabel = qualityLabel(decodedHeight);
     record(
       "Auto reports actual decoded quality",
