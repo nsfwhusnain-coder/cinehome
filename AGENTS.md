@@ -5,8 +5,11 @@
 ## Identity
 - Product: household Netflix-style streamer (TMDB browse → multi-provider resolve → hls.js player)
 - Brand in UI: Absolute Cinema · Code name: CineHome
-- **Local SoT**: `/Users/husnainali/cinehome-sot` (this git repo)
-- **Server path**: `/home/hussy/cinehome` on `hussyserver` (`100.89.184.84:58222`, user `hussy`)
+- **Authoritative Git tree / deploy source**: `/home/hussy/cinehome` on
+  `hussyserver` (`100.89.184.84:58222`, user `hussy`), branch `main`
+- **Windows working mirror**: `C:\Users\husna\projects\cinehome-main`. Reconcile
+  changes into the clean server tree and commit there before any build/deploy.
+  Never rsync an unverified or stale developer copy over the server authority.
 - **Live URL**: `http://100.89.184.84:4445` (Docker `cinehome`, host 4445 → app 3000)
 - **Scraper**: container-internal only on `:3030` — never publish
 
@@ -28,13 +31,18 @@
 | Docs | `CINEHOME.md`, `docs/CINEHOME-OVERHAUL-DESIGN.md` |
 
 ## Agent workflow (this project)
-1. Work in **this repo** (`cinehome-sot`). Never invent a second tree without rsync intent.
+1. Treat `/home/hussy/cinehome` as the single authority. A developer-machine
+   checkout is a working mirror only; compare its baseline to server `main`,
+   transfer an explicit reviewed diff, then build and deploy from the server
+   tree. Never silently fork or replace the authority.
 2. Prefer **specialized subagents** with non-overlapping file scopes:
    - `cinehome-player` — player / dock / resume
    - `cinehome-scraper` — stream-scraper only
    - `cinehome-ui` — views / chrome / tokens
    - `cinehome-qa` — browser screenshots + smoke (read/execute)
-3. After code changes: `bunx tsc --noEmit` (or rely on Docker build) → `./scripts/deploy.sh` → browser QA.
+3. After code changes: focused tests + `bunx tsc --noEmit` (or the exact Docker
+   build) → commit the authoritative server tree →
+   `SKIP_RSYNC=1 ./scripts/deploy.sh` on the server → browser QA.
 4. Handoffs: `.claude/handoffs/*.md` for multi-step audits (optional).
 5. **Do not** launch Godot boss/coder agents here.
 
@@ -49,8 +57,8 @@
 
 ## Deploy & ops
 ```bash
-# From SoT
-./scripts/deploy.sh
+# From the authoritative server tree
+SKIP_RSYNC=1 ./scripts/deploy.sh
 
 # Smoke (scraper only, inside container)
 ssh hussyserver 'docker exec cinehome bun /app/scripts/smoke-playback.ts'
@@ -62,14 +70,15 @@ bun scripts/browser/qa.ts flow smoke
 bun scripts/browser/qa.ts open /watch/movie/550   # headed optional: HEADED=1
 ```
 
-Secrets file (local only): `~/.grok/secrets/cinehome.env`  
-→ `CINEHOME_BASE_URL`, `CINEHOME_TEST_USER`, `CINEHOME_TEST_PIN`, `CINEHOME_SSH`, `CINEHOME_SOT`
+Browser QA credentials belong only in an operator-local, ignored environment
+file or injected environment variables. Never add its path or values to Git.
 
 ## Visual / interactive testing (mandatory for UI work)
 1. Run `scripts/browser/qa.ts` against **live** `:4445` (or local `http://127.0.0.1:3000` if dev).
 2. Screenshots land in `.browser-qa/` — **read image files with the Read tool** to see the UI.
 3. Prefer interactive flows (`login`, `browse`, `watch`, `click`, `flow smoke`) over guessing CSS.
-4. HEADED=1 opens a visible Chromium window on the Mac when the human wants to watch.
+4. `HEADED=1` opens a visible Chromium window when the execution host has a
+   desktop session; production gates should run headless in the exact image.
 
 ## Quality bar before “done”
 - [ ] No secrets in git
