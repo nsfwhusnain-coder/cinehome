@@ -1,6 +1,9 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
-import { playbackRefreshMode } from "./refresh-mode";
+import {
+  consumesTitleResolveBudget,
+  playbackRefreshMode,
+} from "./refresh-mode";
 
 describe("playbackRefreshMode", () => {
   it("keeps the unrestricted nocache control admin-only", () => {
@@ -42,5 +45,11 @@ describe("playbackRefreshMode", () => {
         isAdmin: true,
       })
     ).toBe("none");
+  });
+
+  it("reserves the independently-limited recovery path from normal title polling", () => {
+    expect(consumesTitleResolveBudget("none")).toBe(true);
+    expect(consumesTitleResolveBudget("admin")).toBe(true);
+    expect(consumesTitleResolveBudget("recovery")).toBe(false);
   });
 });

@@ -7,7 +7,10 @@ import { pickDefaultSource } from "@/lib/playback/source-quality";
 import { buildFastDebridResponse } from "@/lib/playback/fast-debrid";
 import { RateLimiter } from "@/lib/rate-limit";
 import { getUserPlaybackPreferences } from "@/lib/profile-preferences.server";
-import { playbackRefreshMode } from "@/lib/playback/refresh-mode";
+import {
+  consumesTitleResolveBudget,
+  playbackRefreshMode,
+} from "@/lib/playback/refresh-mode";
 import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
 
 /**
@@ -19,7 +22,9 @@ import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
  *   wider per-user budget for rapid catalogue abuse. A thin roster normally
  *   uses one initial resolve plus five progressive polls and one recovery.
  *   Keeping those keys separate prevents one slow title from starving every
- *   other title the same user opens during the five-minute window.
+ *   other title the same user opens during the five-minute window. Recovery
+ *   bypasses this normal title bucket because its own stricter limiter below
+ *   reserves the emergency path after progressive polling is exhausted.
  * - `noCacheResolveLimiter` bounds `nocache=1` requests specifically (admin
  *   -only — see below), which skip even the raw-scrape cache and force a
  *   brand new scrape + debrid resolve every single call.
@@ -123,11 +128,13 @@ export async function GET(
     const titleResolveKey =
       `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
     const userCheck = fullResolvePerUserLimiter.consume(userId);
-    const titleCheck = fullResolvePerTitleLimiter.consume(titleResolveKey);
-    if (!userCheck.allowed || !titleCheck.allowed) {
+    const titleCheck = consumesTitleResolveBudget(refreshMode)
+      ? fullResolvePerTitleLimiter.consume(titleResolveKey)
+      : null;
+    if (!userCheck.allowed || titleCheck?.allowed === false) {
       const retryAfterMs = Math.max(
         userCheck.allowed ? 0 : userCheck.retryAfterMs,
-        titleCheck.allowed ? 0 : titleCheck.retryAfterMs
+        !titleCheck || titleCheck.allowed ? 0 : titleCheck.retryAfterMs
       );
       return tooManyRequests(
         retryAfterMs,
