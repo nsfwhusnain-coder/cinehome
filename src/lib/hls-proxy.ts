@@ -824,6 +824,10 @@ function maybeCacheRawManifest(
 export function inferHeightFromUrlToken(text: string): number {
   const lower = text.toLowerCase();
   if (/\b4k\b/.test(lower)) return 2160;
+  const indexedToken = lower.match(
+    /(?:^|[\/_.-])index-s(2160|1440|1080|720|480|360|320)p(?:[\/_.?&-]|$)/
+  );
+  if (indexedToken) return Number(indexedToken[1]);
   const pathToken = lower.match(/[\/_-](2160|1440|1080|720|480|360|320)p?(?:[\/_.?&-]|$)/);
   if (pathToken) return Number(pathToken[1]);
   const pToken = lower.match(/\b(2160|1440|1080|720|480|360|320)p\b/);
