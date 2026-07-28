@@ -17,6 +17,11 @@ import {
   getMemPlayback,
   playbackMemKey,
 } from "@/lib/playback-preresolve";
+import {
+  isPlaybackRateLimited,
+  PlaybackRequestError,
+  shouldRetryPlaybackRequest,
+} from "@/lib/playback/request-error";
 
 interface Args {
   tmdbId: number;
@@ -69,8 +74,16 @@ async function fetchPlayback(
     cache: "no-store",
     signal: AbortSignal.timeout(fast ? CLIENT_FAST_TIMEOUT_MS : CLIENT_FULL_TIMEOUT_MS),
   });
-  const json = (await res.json()) as PlaybackResponse;
-  if (!res.ok) throw new Error(json.message || "Failed to resolve playback");
+  const json = (await res.json()) as PlaybackResponse & {
+    error?: string;
+    message?: string;
+  };
+  if (!res.ok) {
+    throw new PlaybackRequestError(
+      json.error || json.message || "Failed to resolve playback",
+      res.status
+    );
+  }
   if (json.preferences) syncProfilePlaybackPreferences(json.preferences);
   return json;
 }
@@ -264,10 +277,14 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     // Fires in parallel with `fast` (not gated on it settling) — first usable
     // result wins; see mergePlaybackResponses / fullStillOpen below.
     enabled: canFetch,
-    retry: 1,
+    retry: shouldRetryPlaybackRequest,
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
+      // A closed server bucket is authoritative. Retrying every 1–2 seconds
+      // cannot enrich the roster and only adds load; manual exhausted-roster
+      // recovery remains independently available.
+      if (isPlaybackRateLimited(query.state.error)) return false;
       // Once full has measured the roster, its healthy count is authoritative.
       // A large fast roster of unprobed/dead URLs must not stop polling before
       // a late healthy provider arrives.
