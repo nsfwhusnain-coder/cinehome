@@ -60,16 +60,6 @@ export function PWARegister() {
     };
   }, [setInstallPrompt]);
 
-  // Keep-alive every 5 minutes so idle hosts don't cold-sleep the app process.
-  useEffect(() => {
-    const ping = () => {
-      void fetch("/api/system-status", { method: "GET", cache: "no-store" }).catch(() => {});
-    };
-    ping();
-    const id = window.setInterval(ping, 5 * 60 * 1000);
-    return () => window.clearInterval(id);
-  }, []);
-
   return null;
 }
 

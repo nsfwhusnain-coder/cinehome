@@ -22,6 +22,7 @@ import {
   PlaybackRequestError,
   shouldRetryPlaybackRequest,
 } from "@/lib/playback/request-error";
+import { progressivePollInterval } from "@/lib/playback/progressive-poll";
 
 interface Args {
   tmdbId: number;
@@ -88,18 +89,6 @@ async function fetchPlayback(
   return json;
 }
 
-/** Early polls while roster is thin. */
-const POLL_INTERVAL_BASE_MS = 2_000;
-/** Back off once we have a few playable sources. */
-const POLL_INTERVAL_LATER_MS = 5_000;
-/** Cap progressive re-fetches (was 12). */
-const MAX_SOURCE_POLL_REFETCHES = 5;
-/** Aggressive 2s polls only while below this count. */
-const SOURCE_POLL_AGGRESSIVE_UNTIL = 3;
-/** Stop hunting once roster is healthy (3–5 band). */
-const SOURCE_POLL_TARGET = 4;
-/** Wall-clock budget for progressive hunting / refetchInterval. */
-const POLL_WALL_MS = 30_000;
 /**
  * After this many ms with at least one source, stop advertising "searching for more"
  * even if the scraper still marks partial (Playwright bg). Overlay must not hang minutes.
@@ -281,36 +270,32 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
-      // A closed server bucket is authoritative. Retrying every 1–2 seconds
-      // cannot enrich the roster and only adds load; manual exhausted-roster
-      // recovery remains independently available.
-      if (isPlaybackRateLimited(query.state.error)) return false;
       // Once full has measured the roster, its healthy count is authoritative.
       // A large fast roster of unprobed/dead URLs must not stop polling before
       // a late healthy provider arrives.
       const mergedCount = query.state.data
         ? usableSourceCount(query.state.data)
         : usableSourceCount(fast.data);
-      const stillPartial =
-        Boolean(query.state.data?.partial) || Boolean(fast.data?.partial);
-      // Enough sources + complete → stop.
-      if (mergedCount >= SOURCE_POLL_TARGET && !stillPartial) return false;
-      // Healthy roster is enough even if scraper still marks partial (PW bg).
-      if (mergedCount >= SOURCE_POLL_TARGET) return false;
-      if (!query.state.data || query.state.fetchStatus === "fetching") return false;
-      const extraFetches = query.state.dataUpdateCount - 1;
-      if (extraFetches >= MAX_SOURCE_POLL_REFETCHES) return false;
-
-      if (pollStartedAtRef.current == null) {
+      const stillPartial = query.state.data
+        ? Boolean(query.state.data.partial)
+        : Boolean(fast.data?.partial);
+      const hasAuthoritativeData = Boolean(query.state.data);
+      const fetching = query.state.fetchStatus === "fetching";
+      if (hasAuthoritativeData && !fetching && pollStartedAtRef.current == null) {
         pollStartedAtRef.current = Date.now();
       }
-      if (Date.now() - pollStartedAtRef.current >= POLL_WALL_MS) return false;
-
-      // 2s while thin roster; 5s once we have ≥3 sources or after early cycles.
-      if (mergedCount < SOURCE_POLL_AGGRESSIVE_UNTIL && extraFetches < 3) {
-        return POLL_INTERVAL_BASE_MS;
-      }
-      return POLL_INTERVAL_LATER_MS;
+      return progressivePollInterval({
+        rateLimited: isPlaybackRateLimited(query.state.error),
+        hasAuthoritativeData,
+        fetching,
+        partial: stillPartial,
+        usableSourceCount: mergedCount,
+        extraFetches: Math.max(0, query.state.dataUpdateCount - 1),
+        elapsedMs:
+          pollStartedAtRef.current == null
+            ? 0
+            : Date.now() - pollStartedAtRef.current,
+      });
     },
   });
 

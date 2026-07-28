@@ -14,6 +14,7 @@ type Job = {
 const MAX = 3;
 const queue: Job[] = [];
 let active = 0;
+const activeJobs = new Set<Job>();
 const inFlight = new Map<string, Promise<unknown>>();
 const memory = new Map<string, { at: number; data: unknown }>();
 const MEM_TTL = 45 * 60 * 1000;
@@ -36,7 +37,11 @@ function pump(): void {
   while (active < MAX && queue.length > 0) {
     const job = queue.shift()!;
     active += 1;
-    fetch(job.url, { signal: job.abort.signal, priority: "low" } as RequestInit)
+    activeJobs.add(job);
+    globalThis.fetch(job.url, {
+      signal: job.abort.signal,
+      priority: "low",
+    } as RequestInit)
       .then(async (res) => {
         const json = await res.json();
         if (res.ok) {
@@ -44,9 +49,19 @@ function pump(): void {
         }
         job.resolve(json);
       })
-      .catch((e) => job.reject(e))
+      .catch((e: unknown) => {
+        if (
+          job.abort.signal.aborted ||
+          (e instanceof DOMException && e.name === "AbortError")
+        ) {
+          job.resolve(null);
+          return;
+        }
+        job.reject(e);
+      })
       .finally(() => {
         active -= 1;
+        activeJobs.delete(job);
         inFlight.delete(job.key);
         pump();
       });
@@ -108,7 +123,7 @@ export function getMemPlayback(key: string): unknown | null {
   return hit.data;
 }
 
-/** Queue a low-priority resolve. Returns promise (may reject on abort). */
+/** Queue a low-priority resolve. Cancellation resolves cleanly to `null`. */
 export function preresolvePlayback(opts: {
   mediaType: string;
   tmdbId: number;
@@ -135,13 +150,17 @@ export function preresolvePlayback(opts: {
   return p;
 }
 
-/** Abort all queued + in-flight jobs (call on navigation). */
+/** Abort all queued + active jobs (call on navigation). */
 export function abortAllPreresolve(): void {
   for (const job of queue) {
     job.abort.abort();
-    job.reject(new DOMException("aborted", "AbortError"));
+    job.resolve(null);
+    inFlight.delete(job.key);
   }
   queue.length = 0;
+  for (const job of activeJobs) {
+    job.abort.abort();
+  }
 }
 
 /** Preconnect to stream origin once a source URL is known. */
