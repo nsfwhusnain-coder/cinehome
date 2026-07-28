@@ -604,6 +604,41 @@ function isSegmentUrl(url: string): boolean {
   );
 }
 
+/**
+ * Some download CDNs label browser-playable media as
+ * `application/force-download` or generic octet-stream. That works when the
+ * direct URL still ends in `.mp4`, but not after it is hidden behind our
+ * extensionless `/api/hls/...` route: Chromium then refuses to attach a media
+ * decoder. Preserve specific upstream media MIME types and infer only from an
+ * unambiguous file extension for generic download responses.
+ */
+export function mediaContentTypeForProxy(
+  upstream: string,
+  upstreamContentType: string
+): string {
+  const baseType = upstreamContentType.split(";", 1)[0]!.trim().toLowerCase();
+  const generic =
+    baseType === "" ||
+    baseType === "application/octet-stream" ||
+    baseType === "application/force-download" ||
+    baseType === "application/download" ||
+    baseType === "binary/octet-stream";
+  if (!generic) return upstreamContentType;
+
+  let pathname = "";
+  try {
+    pathname = new URL(upstream).pathname.toLowerCase();
+  } catch {
+    pathname = upstream.split(/[?#]/, 1)[0]!.toLowerCase();
+  }
+  if (pathname.endsWith(".mp4") || pathname.endsWith(".m4v")) return "video/mp4";
+  if (pathname.endsWith(".m4s")) return "video/iso.segment";
+  if (pathname.endsWith(".ts")) return "video/mp2t";
+  if (pathname.endsWith(".aac")) return "audio/aac";
+  if (pathname.endsWith(".vtt")) return "text/vtt";
+  return upstreamContentType || "application/octet-stream";
+}
+
 /** AES-128 key / binary auth blobs — NEVER text-sniff or UTF-8 re-encode. */
 function isKeyUrl(url: string): boolean {
   const lower = url.toLowerCase();
@@ -1854,7 +1889,10 @@ export async function fetchProxied(
 
   clearNegativeFailStreak(upstream, rangeHeader);
 
-  const contentType = upstreamRes.headers.get("content-type") || "";
+  const contentType = mediaContentTypeForProxy(
+    upstream,
+    upstreamRes.headers.get("content-type") || ""
+  );
   const lowerUrl = upstream.toLowerCase();
   const lowerCt = contentType.toLowerCase();
 
