@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.14
+FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
 
 WORKDIR /app
 
@@ -22,9 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
-# Install scraper mini-service dependencies
-COPY mini-services/stream-scraper/package.json ./mini-services/stream-scraper/package.json
-RUN cd mini-services/stream-scraper && bun install
+# Install scraper mini-service dependencies from its committed lock. Letting
+# this nested install resolve independently can select a different Playwright
+# runtime than the root app and leave Chromium at the wrong browser revision.
+COPY mini-services/stream-scraper/package.json mini-services/stream-scraper/bun.lock ./mini-services/stream-scraper/
+RUN cd mini-services/stream-scraper && bun install --frozen-lockfile
 
 # Install headless Chromium + its OS-level deps for Playwright
 RUN bunx playwright install --with-deps chromium
