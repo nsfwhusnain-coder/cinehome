@@ -37,7 +37,9 @@ function visibleButtons(root: HTMLElement, selector: string): HTMLButtonElement[
   );
 }
 
-function focusButton(button: HTMLButtonElement | undefined): void {
+function focusButton(
+  button: HTMLButtonElement | null | undefined
+): void {
   button?.focus();
   button?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
