@@ -12,6 +12,7 @@ import {
   playbackRefreshMode,
 } from "@/lib/playback/refresh-mode";
 import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
+import { consumePlaybackResolveBudget } from "@/lib/playback/resolve-budget";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -127,17 +128,16 @@ export async function GET(
   if (!fast) {
     const titleResolveKey =
       `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
-    const userCheck = fullResolvePerUserLimiter.consume(userId);
-    const titleCheck = consumesTitleResolveBudget(refreshMode)
-      ? fullResolvePerTitleLimiter.consume(titleResolveKey)
-      : null;
-    if (!userCheck.allowed || titleCheck?.allowed === false) {
-      const retryAfterMs = Math.max(
-        userCheck.allowed ? 0 : userCheck.retryAfterMs,
-        !titleCheck || titleCheck.allowed ? 0 : titleCheck.retryAfterMs
-      );
+    const resolveBudget = consumePlaybackResolveBudget({
+      userLimiter: fullResolvePerUserLimiter,
+      titleLimiter: fullResolvePerTitleLimiter,
+      userKey: userId,
+      titleKey: titleResolveKey,
+      consumeTitle: consumesTitleResolveBudget(refreshMode),
+    });
+    if (!resolveBudget.allowed) {
       return tooManyRequests(
-        retryAfterMs,
+        resolveBudget.retryAfterMs,
         "Too many playback resolve requests. Please wait a moment and try again."
       );
     }
