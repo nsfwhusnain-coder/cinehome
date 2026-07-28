@@ -70,6 +70,9 @@ describe("shouldWrapPureMedia (R10)", () => {
     expect(shouldWrapPureMedia("https://cdn.example/a/480p/chunklist.m3u8", false)).toBe(
       false
     );
+    expect(shouldWrapPureMedia("https://cdn.example/a/320/index.m3u8", false)).toBe(
+      false
+    );
   });
 });
 
@@ -90,6 +93,7 @@ describe("normalizeLadderHeight", () => {
   it("snaps near-standard heights", () => {
     expect(normalizeLadderHeight(1072)).toBe(1080);
     expect(normalizeLadderHeight(720)).toBe(720);
+    expect(normalizeLadderHeight(320)).toBe(320);
     expect(normalizeLadderHeight(900)).toBe(900);
   });
 });

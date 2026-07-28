@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { Check, Loader2 } from "lucide-react";
@@ -20,6 +20,26 @@ interface Props {
   episode: number;
   onClose: () => void;
   onSelect: (season: number, episode: number) => void;
+}
+
+function visibleButtons(root: HTMLElement, selector: string): HTMLButtonElement[] {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>(selector)).filter(
+    (button) => {
+      const rect = button.getBoundingClientRect();
+      const style = window.getComputedStyle(button);
+      return (
+        !button.disabled &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden"
+      );
+    }
+  );
+}
+
+function focusButton(button: HTMLButtonElement | undefined): void {
+  button?.focus();
+  button?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 /**
@@ -43,10 +63,33 @@ export function EpisodesPanel({
   );
 
   const [panelSeason, setPanelSeason] = useState(season);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (open) setPanelSeason(season);
   }, [open, season]);
+
+  useEffect(() => {
+    if (!open) return;
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const selected =
+        panel.querySelector<HTMLButtonElement>("[data-episode-panel-season][aria-selected='true']") ??
+        panel.querySelector<HTMLButtonElement>("[data-episode-panel-season]");
+      focusButton(selected ?? undefined);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (previousFocusRef.current?.isConnected) {
+        previousFocusRef.current.focus();
+      }
+      previousFocusRef.current = null;
+    };
+  }, [open]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["tmdb", "tv", "season", tvId, panelSeason],
@@ -89,6 +132,90 @@ export function EpisodesPanel({
   const seriesPoster = seriesMeta?.poster_path ?? null;
   const seriesBackdrop = seriesMeta?.backdrop_path ?? null;
 
+  const onPanelKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+
+    const seasons = visibleButtons(panel, "[data-episode-panel-season]");
+    const episodes = visibleButtons(panel, "[data-episode-panel-episode]");
+    const all = [...seasons, ...episodes];
+    const current =
+      document.activeElement instanceof HTMLButtonElement
+        ? document.activeElement
+        : null;
+
+    if (event.key === "Tab") {
+      if (!all.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const index = current ? all.indexOf(current) : -1;
+      const delta = event.shiftKey ? -1 : 1;
+      focusButton(all[index < 0 ? 0 : (index + delta + all.length) % all.length]);
+      return;
+    }
+
+    const seasonIndex = current ? seasons.indexOf(current) : -1;
+    if (seasonIndex >= 0) {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        event.stopPropagation();
+        const delta = event.key === "ArrowLeft" ? -1 : 1;
+        focusButton(
+          seasons[(seasonIndex + delta + seasons.length) % seasons.length]
+        );
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        const currentEpisode = episodes.find(
+          (button) => button.dataset.episodeCurrent === "true"
+        );
+        focusButton(currentEpisode ?? episodes[0]);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        focusButton(current ?? seasons[seasonIndex]);
+        return;
+      }
+    }
+
+    const episodeIndex = current ? episodes.indexOf(current) : -1;
+    if (episodeIndex >= 0) {
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "ArrowUp" && episodeIndex === 0) {
+          focusButton(
+            seasons.find((button) => button.getAttribute("aria-selected") === "true") ??
+              seasons[0]
+          );
+          return;
+        }
+        const delta = event.key === "ArrowUp" ? -1 : 1;
+        const nextIndex = Math.max(
+          0,
+          Math.min(episodes.length - 1, episodeIndex + delta)
+        );
+        focusButton(episodes[nextIndex]);
+        return;
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        event.stopPropagation();
+        focusButton(current);
+      }
+    }
+  };
+
   return (
     <>
       <button
@@ -98,14 +225,21 @@ export function EpisodesPanel({
         aria-label="Close episodes"
       />
       <div
+        ref={panelRef}
         className="absolute bottom-[60px] left-3 right-3 z-[60] max-h-[min(55vh,420px)] overflow-hidden rounded-xl border border-white/10 bg-[rgba(15,15,15,0.96)] shadow-2xl backdrop-blur-xl sm:left-auto sm:right-4 sm:w-[360px]"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={onPanelKeyDown}
         role="dialog"
+        aria-modal="true"
         aria-label="Episodes"
       >
         <div className="border-b border-white/10 px-3 py-2.5">
           <div className="text-sm font-semibold text-white">Episodes</div>
-          <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+          <div
+            className="mt-2 flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide"
+            role="tablist"
+            aria-label="Seasons"
+          >
             {validSeasons.map((s) => {
               const active = s.season_number === panelSeason;
               return (
@@ -113,8 +247,11 @@ export function EpisodesPanel({
                   key={s.season_number}
                   type="button"
                   onClick={() => setPanelSeason(s.season_number)}
+                  data-episode-panel-season
+                  role="tab"
+                  aria-selected={active}
                   className={cn(
-                    "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                    "min-h-11 shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
                     active
                       ? "bg-white text-black"
                       : "bg-white/10 text-white/80 hover:bg-white/15"
@@ -144,12 +281,14 @@ export function EpisodesPanel({
                   <li key={ep.id}>
                     <button
                       type="button"
+                      data-episode-panel-episode
+                      data-episode-current={active ? "true" : undefined}
                       onClick={() => {
                         onSelect(panelSeason, ep.episode_number);
                         onClose();
                       }}
                       className={cn(
-                        "flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-white/[0.06]",
+                        "flex min-h-11 w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
                         active && "bg-white/[0.1]"
                       )}
                     >

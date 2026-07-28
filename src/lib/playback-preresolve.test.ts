@@ -2,11 +2,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   abortAllPreresolve,
+  buildPlaybackUrl,
   preresolvePlayback,
 } from "./playback-preresolve";
 
 const originalFetch = globalThis.fetch;
 const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+const originalLocalStorage = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "localStorage"
+);
 
 beforeEach(() => {
   Object.defineProperty(globalThis, "window", {
@@ -23,6 +28,11 @@ afterEach(async () => {
     Object.defineProperty(globalThis, "window", originalWindow);
   } else {
     Reflect.deleteProperty(globalThis, "window");
+  }
+  if (originalLocalStorage) {
+    Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
+  } else {
+    Reflect.deleteProperty(globalThis, "localStorage");
   }
 });
 
@@ -46,6 +56,22 @@ function abortablePendingFetch(
 }
 
 describe("playback pre-resolution queue", () => {
+  it("forwards a saved 320p preference as the pre-resolve ranking hint", () => {
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: (key: string) =>
+          key === "cinehome:preferred-quality" ? "320" : null,
+      },
+      configurable: true,
+    });
+
+    const url = new URL(
+      buildPlaybackUrl("movie", 910_000),
+      "https://cinehome.test"
+    );
+    expect(url.searchParams.get("qualityHint")).toBe("320");
+  });
+
   it("deduplicates concurrent work for the same title", async () => {
     let calls = 0;
     let finish = (_response: Response): void => {

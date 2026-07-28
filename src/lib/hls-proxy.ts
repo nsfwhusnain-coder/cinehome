@@ -821,12 +821,12 @@ function maybeCacheRawManifest(
  * Unambiguous URL path/name token → height. Never invents beyond exact tokens
  * (/1080/, 1080p, 4k, …). Mirrors scraper quality-probe convention.
  */
-function inferHeightFromUrlToken(text: string): number {
+export function inferHeightFromUrlToken(text: string): number {
   const lower = text.toLowerCase();
   if (/\b4k\b/.test(lower)) return 2160;
-  const pathToken = lower.match(/[\/_-](2160|1440|1080|720|480|360)p?(?:[\/_.?&-]|$)/);
+  const pathToken = lower.match(/[\/_-](2160|1440|1080|720|480|360|320)p?(?:[\/_.?&-]|$)/);
   if (pathToken) return Number(pathToken[1]);
-  const pToken = lower.match(/\b(2160|1440|1080|720|480|360)p\b/);
+  const pToken = lower.match(/\b(2160|1440|1080|720|480|360|320)p\b/);
   if (pToken) return Number(pToken[1]);
   return 0;
 }

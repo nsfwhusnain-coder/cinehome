@@ -14,7 +14,10 @@ import {
   resolvePlaylistUri,
   extractHeightFromSegmentPrefix,
 } from "./segment-height-probe";
-import { parseStreamInfRenditions } from "@/lib/hls-proxy";
+import {
+  inferHeightFromUrlToken,
+  parseStreamInfRenditions,
+} from "@/lib/hls-proxy";
 
 /** Vixsrc/Luna-style pure media playlist (no STREAM-INF). */
 const VIXSRC_STYLE_MEDIA = [
@@ -58,6 +61,18 @@ const VIXSRC_VARIANT_CHILD_URL =
   "https://sc-u12-01.vix-content.net/playlist?type=video&rendition=1080p&token=abc";
 
 describe("manifest rewriter — real provider shapes", () => {
+  it("recognizes 320p rendition tokens without inflating unrelated numbers", () => {
+    expect(inferHeightFromUrlToken("https://cdn.example/vod/320/index.m3u8")).toBe(
+      320
+    );
+    expect(
+      inferHeightFromUrlToken("https://cdn.example/vod/index-s320p.m3u8")
+    ).toBe(320);
+    expect(
+      inferHeightFromUrlToken("https://cdn.example/vod/320744abc/index.m3u8")
+    ).toBe(0);
+  });
+
   it("detects Vixsrc-style pure media playlist", () => {
     expect(isPureHlsMediaPlaylist(VIXSRC_STYLE_MEDIA)).toBe(true);
     expect(parseStreamInfRenditions(VIXSRC_STYLE_MEDIA)).toEqual([]);

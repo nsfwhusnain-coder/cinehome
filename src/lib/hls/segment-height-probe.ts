@@ -452,7 +452,7 @@ function readU64(buf: Uint8Array, off: number): bigint {
 
 /** Snap near-standard heights to ladder values (cropping / SAR noise). */
 export function normalizeLadderHeight(height: number): number {
-  const ladder = [2160, 1440, 1080, 720, 480, 360, 240];
+  const ladder = [2160, 1440, 1080, 720, 480, 360, 320, 240];
   for (const step of ladder) {
     if (Math.abs(height - step) <= 8) return step;
   }
@@ -507,7 +507,7 @@ export function looksLikeMultiVariantChildUrl(upstreamUrl: string): boolean {
   if (/\/index-s\d+p(?:[./?]|$)/i.test(pathLower)) return true;
 
   // Quality folder under a playlist tree: .../720/index.m3u8, .../1080p/playlist.m3u8
-  if (/\/(?:2160|1440|1080|720|480|360)p?\//i.test(pathLower)) return true;
+  if (/\/(?:2160|1440|1080|720|480|360|320)p?\//i.test(pathLower)) return true;
 
   return false;
 }

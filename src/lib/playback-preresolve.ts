@@ -92,7 +92,7 @@ export function buildPlaybackUrl(
         const n = Number(raw);
         params.set(
           "qualityHint",
-          Number.isFinite(n) && [2160, 1440, 1080, 720, 480, 360].includes(n)
+          Number.isFinite(n) && [2160, 1440, 1080, 720, 480, 360, 320].includes(n)
             ? String(n)
             : "auto"
         );

@@ -111,87 +111,89 @@ export function ProgressBar({
   const thumbSize = 12;
 
   return (
-    <div
-      ref={trackRef}
-      className="group/progress relative flex w-full cursor-pointer items-center py-2.5"
-      role="slider"
-      aria-label="Seek"
-      aria-valuemin={0}
-      aria-valuemax={safeDuration || 0}
-      aria-valuenow={Number.isFinite(currentTime) ? currentTime : 0}
-      aria-valuetext={formatTime(currentTime)}
-      tabIndex={0}
-      onPointerEnter={() => setHovering(true)}
-      onPointerLeave={() => {
-        if (!dragging) setHovering(false);
-      }}
-      onPointerMove={onPointerMove}
-      onPointerDown={onPointerDown}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      onClick={onClick}
-      onKeyDown={(e) => {
-        if (safeDuration <= 0) return;
-        if (e.key === "ArrowRight") {
-          e.preventDefault();
-          onSeek(Math.min(safeDuration, currentTime + 5));
-        } else if (e.key === "ArrowLeft") {
-          e.preventDefault();
-          onSeek(Math.max(0, currentTime - 5));
-        }
-      }}
-    >
-      {/* Hover timestamp tooltip */}
-      {showChrome && safeDuration > 0 && (
-        <div
-          className="pointer-events-none absolute bottom-full z-20 mb-2 -translate-x-1/2 rounded bg-black/90 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white shadow-md"
-          style={{ left: `${tooltipRatio * 100}%` }}
-        >
-          {formatTime(tooltipTime)}
-        </div>
-      )}
-
-      {/* Track */}
+    <div className="relative h-[23px] w-full">
       <div
-        className="relative w-full overflow-hidden rounded-full transition-[height] duration-150"
-        style={{
-          height: barHeight,
-          backgroundColor: "rgba(255, 255, 255, 0.25)",
+        ref={trackRef}
+        className="group/progress absolute inset-x-0 top-1/2 flex h-11 -translate-y-1/2 cursor-pointer items-center"
+        role="slider"
+        aria-label="Seek"
+        aria-valuemin={0}
+        aria-valuemax={safeDuration || 0}
+        aria-valuenow={Number.isFinite(currentTime) ? currentTime : 0}
+        aria-valuetext={formatTime(currentTime)}
+        tabIndex={0}
+        onPointerEnter={() => setHovering(true)}
+        onPointerLeave={() => {
+          if (!dragging) setHovering(false);
+        }}
+        onPointerMove={onPointerMove}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          if (safeDuration <= 0) return;
+          if (e.key === "ArrowRight") {
+            e.preventDefault();
+            onSeek(Math.min(safeDuration, currentTime + 5));
+          } else if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            onSeek(Math.max(0, currentTime - 5));
+          }
         }}
       >
-        {/* Buffered */}
+        {/* Hover timestamp tooltip */}
+        {showChrome && safeDuration > 0 && (
+          <div
+            className="pointer-events-none absolute bottom-full z-20 mb-2 -translate-x-1/2 rounded bg-black/90 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white shadow-md"
+            style={{ left: `${tooltipRatio * 100}%` }}
+          >
+            {formatTime(tooltipTime)}
+          </div>
+        )}
+
+        {/* Track */}
         <div
-          className="absolute inset-y-0 left-0 rounded-full"
+          className="relative w-full overflow-hidden rounded-full transition-[height] duration-150"
           style={{
-            width: `${bufferedRatio * 100}%`,
-            backgroundColor: "rgba(255, 255, 255, 0.4)",
+            height: barHeight,
+            backgroundColor: "rgba(255, 255, 255, 0.25)",
           }}
-        />
-        {/* Played — pure white */}
+        >
+          {/* Buffered */}
+          <div
+            className="absolute inset-y-0 left-0 rounded-full"
+            style={{
+              width: `${bufferedRatio * 100}%`,
+              backgroundColor: "rgba(255, 255, 255, 0.4)",
+            }}
+          />
+          {/* Played — pure white */}
+          <div
+            className="absolute inset-y-0 left-0 rounded-full"
+            style={{
+              width: `${playedRatio * 100}%`,
+              backgroundColor: "#ffffff",
+            }}
+          />
+        </div>
+
+        {/* Thumb — white, hidden unless hover/drag (never a teal accent) */}
         <div
-          className="absolute inset-y-0 left-0 rounded-full"
+          className={cn(
+            "pointer-events-none absolute top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-md transition-opacity duration-150",
+            showChrome ? "opacity-100" : "opacity-0"
+          )}
           style={{
-            width: `${playedRatio * 100}%`,
+            left: `${playedRatio * 100}%`,
+            width: thumbSize,
+            height: thumbSize,
             backgroundColor: "#ffffff",
+            border: "none",
+            boxShadow: "none",
           }}
         />
       </div>
-
-      {/* Thumb — white, hidden unless hover/drag (never a teal accent) */}
-      <div
-        className={cn(
-          "pointer-events-none absolute top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-md transition-opacity duration-150",
-          showChrome ? "opacity-100" : "opacity-0"
-        )}
-        style={{
-          left: `${playedRatio * 100}%`,
-          width: thumbSize,
-          height: thumbSize,
-          backgroundColor: "#ffffff",
-          border: "none",
-          boxShadow: "none",
-        }}
-      />
     </div>
   );
 }
