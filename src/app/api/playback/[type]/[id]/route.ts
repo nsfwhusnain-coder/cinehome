@@ -8,18 +8,18 @@ import { buildFastDebridResponse } from "@/lib/playback/fast-debrid";
 import { RateLimiter } from "@/lib/rate-limit";
 import { getUserPlaybackPreferences } from "@/lib/profile-preferences.server";
 import { playbackRefreshMode } from "@/lib/playback/refresh-mode";
+import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
  * (hover-prefetch, the fast cache-only check that fires on every card/detail
  * view) never gets throttled while the genuinely expensive paths do:
  *
- * - `fullResolveLimiter` bounds `fast=false` requests, which trigger a live
- *   Playwright scrape (`/scrape`, not the cheap `/prefetch`) plus a full
- *   Real-Debrid/TorBox roster resolve. A single normal watch session
- *   (see `useWatchPlayback` in src/hooks/use-playback.ts) fires one initial
- *   full request plus up to `MAX_SOURCE_POLL_REFETCHES` (5) progressive
- *   polls over ~30s — comfortably inside this budget.
+ * - Full resolves have a per-title budget for broken client loops and a
+ *   wider per-user budget for rapid catalogue abuse. A thin roster normally
+ *   uses one initial resolve plus five progressive polls and one recovery.
+ *   Keeping those keys separate prevents one slow title from starving every
+ *   other title the same user opens during the five-minute window.
  * - `noCacheResolveLimiter` bounds `nocache=1` requests specifically (admin
  *   -only — see below), which skip even the raw-scrape cache and force a
  *   brand new scrape + debrid resolve every single call.
@@ -27,10 +27,15 @@ import { playbackRefreshMode } from "@/lib/playback/refresh-mode";
  *   cache-bypassing recovery attempts per title in ten minutes after the
  *   player exhausts a roster. The global full-resolve limiter still applies.
  */
-const FULL_RESOLVE_LIMIT = 30;
+const FULL_RESOLVE_PER_TITLE_LIMIT = 12;
+const FULL_RESOLVE_PER_USER_LIMIT = 90;
 const FULL_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
-const fullResolveLimiter = new RateLimiter({
-  limit: FULL_RESOLVE_LIMIT,
+const fullResolvePerTitleLimiter = new RateLimiter({
+  limit: FULL_RESOLVE_PER_TITLE_LIMIT,
+  windowMs: FULL_RESOLVE_WINDOW_MS,
+});
+const fullResolvePerUserLimiter = new RateLimiter({
+  limit: FULL_RESOLVE_PER_USER_LIMIT,
   windowMs: FULL_RESOLVE_WINDOW_MS,
 });
 
@@ -112,12 +117,20 @@ export async function GET(
     isAdmin: user.isAdmin,
   });
   const noCache = refreshMode !== "none";
+  const refreshNonce = noCache ? Date.now() : undefined;
 
   if (!fast) {
-    const fullCheck = fullResolveLimiter.consume(userId);
-    if (!fullCheck.allowed) {
+    const titleResolveKey =
+      `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
+    const userCheck = fullResolvePerUserLimiter.consume(userId);
+    const titleCheck = fullResolvePerTitleLimiter.consume(titleResolveKey);
+    if (!userCheck.allowed || !titleCheck.allowed) {
+      const retryAfterMs = Math.max(
+        userCheck.allowed ? 0 : userCheck.retryAfterMs,
+        titleCheck.allowed ? 0 : titleCheck.retryAfterMs
+      );
       return tooManyRequests(
-        fullCheck.retryAfterMs,
+        retryAfterMs,
         "Too many playback resolve requests. Please wait a moment and try again."
       );
     }
@@ -245,10 +258,18 @@ export async function GET(
       mergeDebridSources(result, debridSources, qualityHint);
     }
   } else {
-    const [providerResult, debridSources] = await Promise.all([
+    const [providerResult, resolvedDebridSources] = await Promise.all([
       providerPromise,
       debridPromise,
     ]);
+    const debridSources =
+      refreshMode === "recovery" && refreshNonce != null
+        ? proxyRecoveryDebridSources(
+            userId,
+            resolvedDebridSources,
+            refreshNonce
+          )
+        : resolvedDebridSources;
     result = providerResult;
     mergeDebridSources(result, debridSources, qualityHint);
   }
@@ -262,7 +283,7 @@ export async function GET(
   return NextResponse.json({
     ...result,
     preferences: profilePreferences,
-    ...(noCache ? { refreshNonce: Date.now() } : {}),
+    ...(refreshNonce != null ? { refreshNonce } : {}),
   }, {
     headers: {
       "Cache-Control": "private, no-store",

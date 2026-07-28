@@ -12,7 +12,6 @@ import {
   formatResolutionLabel,
   decodedQualityHeight,
   findNewSourceIds,
-  findQualityUpgradeSource,
   withDetectedSourceHeight,
   withClientHealthProbe,
   speedScoreFromLatencyMs,
@@ -219,9 +218,6 @@ const SLEEP_TIMER_PAUSED_MSG = "Sleep timer — paused";
 const FAILOVER_NOTICE_MS = 4_500;
 /** Non-blocking "New source available" chip — auto-dismiss (still dismissible). */
 const NEW_SOURCE_NOTICE_MS = 8_000;
-/** One-shot chip after silent post-play quality auto-upgrade (Change 12). */
-const QUALITY_UPGRADE_NOTICE_MS = 4_500;
-const QUALITY_UPGRADE_NOTICE_MSG = "Upgraded to higher quality source";
 const NEW_SOURCE_NOTICE_MSG = "New source available";
 /** "Resuming from mm:ss" one-shot toast shown when a continue-watching seek lands. */
 const RESUME_NOTICE_MS = 4_000;
@@ -1003,8 +999,6 @@ export function VideoPlayer({
   const pendingUrlRefreshRef = useRef(false);
   /** One automatic cache-bypassing roster refresh per title session. */
   const automaticRosterRefreshRef = useRef(false);
-  /** At most one post-play quality auto-upgrade (Change 12) per title session. */
-  const qualityAutoUpgradeDoneRef = useRef(false);
   /**
    * First healthy decode landed — full-screen hunting overlay never returns.
    * Pre-play CDN auto-upgrade is also frozen after this.
@@ -1326,7 +1320,6 @@ export function VideoPlayer({
     userSelectedSourceRef.current = false;
     userSelectedQualityRef.current = false;
     autoUpgradedRef.current = false;
-    qualityAutoUpgradeDoneRef.current = false;
     everPlayedRef.current = false;
     firstProgressSavedRef.current = false;
     userPausedRef.current = false;
@@ -1391,6 +1384,20 @@ export function VideoPlayer({
       invalidateSourceAttempt();
       setActiveSource(null);
       setBuffering(false);
+      return;
+    }
+    const decodedVideo = videoRef.current;
+    if (
+      !everPlayedRef.current &&
+      decodedVideo &&
+      decodedVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      decodedVideo.videoWidth > 0
+    ) {
+      // Progressive enrichment can resolve in the same render window as the
+      // first decoded frame. The `playing` listener normally owns this lock,
+      // but this synchronous guard closes the race before a higher-labelled
+      // late source can tear down video the user is already watching.
+      markEverPlayed();
       return;
     }
     const stillValid = activeSource && orderedSources.some((s) => s.id === activeSource.id);
@@ -1478,6 +1485,7 @@ export function VideoPlayer({
     setBuffering,
     setError,
     invalidateSourceAttempt,
+    markEverPlayed,
   ]);
 
   /**
@@ -1803,6 +1811,14 @@ export function VideoPlayer({
 
     const video = videoRef.current;
     const pos = video?.currentTime ?? 0;
+    if (
+      video &&
+      video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      video.videoWidth > 0
+    ) {
+      markEverPlayed();
+      return;
+    }
     if (pos >= AUTO_UPGRADE_MAX_POSITION_S) return;
     // Any real decode past lock threshold freezes CDN upgrades permanently.
     if (
@@ -1915,36 +1931,6 @@ export function VideoPlayer({
     // this effect and cycle indefinitely.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderedSources, activeSource?.id]);
-
-  /**
-   * Change 12 — post-play quality validation. Once per title session, if the
-   * auto-selected source is confirmed sub-1080 and a known-HD source exists,
-   * switch once (preserve resumeAt). Never on user manual pick; never on
-   * unknown (0) height; never just because a new source arrived.
-   */
-  useEffect(() => {
-    if (!activeSource || !orderedSources.length) return;
-    if (userSelectedSourceRef.current || qualityAutoUpgradeDoneRef.current) return;
-    if (!everPlayedRef.current) return;
-    if (playingHeight <= 0 || playingHeight >= HLS_MIN_HEIGHT) return;
-
-    const upgrade = findQualityUpgradeSource(
-      activeSource,
-      orderedSources,
-      playingHeight,
-      failedSourceIdsRef.current,
-      {
-        preferredProvider: getPreferredProvider(),
-        preferredHeight: qualityTargetRef.current,
-        hdFloor: HLS_MIN_HEIGHT,
-      }
-    );
-    if (!upgrade || upgrade.id === activeSource.id) return;
-
-    qualityAutoUpgradeDoneRef.current = true;
-    handleSourceChange(upgrade);
-    showStatusNotice(QUALITY_UPGRADE_NOTICE_MSG, QUALITY_UPGRADE_NOTICE_MS);
-  }, [playingHeight, activeSource, orderedSources, handleSourceChange, showStatusNotice]);
 
   tryNextSourceRef.current = tryNextSource;
 
@@ -3113,6 +3099,18 @@ export function VideoPlayer({
       networkRecoveriesRef.current = 0;
       const attempt = sourceAttemptControllerRef.current.currentToken();
       if (attempt) sourceAttemptControllerRef.current.noteProgress(attempt);
+      const decodedTier = decodedQualityHeight(
+        video.videoWidth || 0,
+        video.videoHeight || 0
+      );
+      if (decodedTier > 0) {
+        // Manifest levels sometimes expose a cropped raster such as 1920x816.
+        // Decoded dimensions are authoritative and normalize that to its
+        // commercial 1080p delivery class.
+        setPlayingHeight(decodedTier);
+        const sid = activeSourceRef.current?.id;
+        if (sid) recordDetectedHeight(sid, decodedTier);
+      }
       setBuffering(false);
       setIsSwitchingServer(false);
       if (video.readyState >= 2 && (video.currentTime > 0.25 || video.duration > 0)) {
@@ -3266,12 +3264,14 @@ export function VideoPlayer({
     setCurrentTime,
     setDuration,
     setBuffering,
+    setPlayingHeight,
     setIsMuted,
     setVolume,
     setIsPip,
     setError,
     markSourceFailed,
     markEverPlayed,
+    recordDetectedHeight,
     failActiveSource,
     mediaType,
     tvId,
