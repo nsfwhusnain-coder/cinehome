@@ -1,7 +1,16 @@
 import type { PlaybackSource } from "./types";
-import { pickDefaultSource, scoreSource } from "./source-quality";
-import { getServerDisplayName, resolutionBadge } from "./server-names";
+import {
+  isSourcePlayableHere,
+  pickDefaultSource,
+  scoreSource,
+} from "./source-quality";
+import {
+  baseServerToken,
+  getServerDisplayName,
+  resolutionBadge,
+} from "./server-names";
 import { SERVER_NAME_THEME } from "./server-theme";
+import { flagForServerName } from "@/config/servers";
 
 export interface ExpectedServer {
   id: string;
@@ -27,6 +36,8 @@ export interface ServerSlot {
   qualityLabel?: string;
   /** origin === "debrid" — Real-Debrid/TorBox premium tier, marked with a gold crown in the UI. */
   premium?: boolean;
+  /** Curated provider/language flag, or a globe when geography is unknown. */
+  flag?: string;
 }
 
 /**
@@ -169,24 +180,39 @@ export function buildServerSlots(
   const playable = filterPlayableSources(sources, {
     allowUnprobed: true,
     stickyId: activeSourceId,
-  });
+  }).filter(
+    (source) =>
+      !failedSet.has(source.id) &&
+      source.probe?.ok !== false &&
+      source.verified !== false &&
+      isSourcePlayableHere(source)
+  );
 
-  // Keep failed in the list as "failed" so users can see the full roster;
-  // only auto-play skips them.
+  // Session-failed and conclusively dead rows are removed above. Keep the
+  // surviving roster ranked by measured source score without placeholders.
   const ranked = [...playable].sort((a, b) => {
-    const aFail = failedSet.has(a.id) ? 0 : 1;
-    const bFail = failedSet.has(b.id) ? 0 : 1;
-    if (aFail !== bFail) return bFail - aFail;
     return scoreSource(b) - scoreSource(a);
   });
+  // A provider can publish the same logical server as separate fixed-quality
+  // URLs (CinemaOS commonly returns RU 1080 + RU 720). Quality belongs in
+  // the quality rail, not as duplicate server rows. Since ranking happens
+  // first, keep the best healthy representation for each stable server name.
+  const seenNames = new Set<string>();
+  const uniqueServers = ranked.filter((source) => {
+    const name = displayName(source);
+    if (seenNames.has(name)) return false;
+    seenNames.add(name);
+    return true;
+  });
 
-  return ranked.map((source) => ({
+  return uniqueServers.map((source) => ({
     id: source.id,
     name: displayName(source),
     status: slotStatus(source, failedSet, activeSourceId),
     source,
     qualityLabel: resolutionBadge(source),
     premium: source.origin === "debrid",
+    flag: flagForServerName(baseServerToken(source.provider, source.label)),
   }));
 }
 

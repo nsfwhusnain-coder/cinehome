@@ -738,3 +738,113 @@ same ordering mistake cannot silently recur.
 After production deployment: container health is healthy, restart count is
 zero, OOM is false, SQLite `quick_check` is `ok`, and the four data invariants
 remain 13 / 17 / 82 / 122.
+
+## Cineby-inspired quality and server pass (2026-07-27)
+
+This pass copied the useful product behaviours, not Cineby's branding or
+implementation: one predictable playback sheet, an invariant quality rail,
+an honest full server roster, and profile-backed defaults. The pre-change
+player split the same jobs across legacy settings, source, subtitle, and
+quality panels. Some controls opened overlapping menus, the quality choices
+depended on whichever manifest was active, and the browser's local storage
+could disagree with a user's setting on another device.
+
+### Architecture and product changes
+
+- The player now has one responsive five-tab sheet: Quality, Sources,
+  Subtitles, Audio, and Speed. Every desktop settings/servers/subtitles entry
+  opens that same state owner. The legacy duplicate panels and fake download
+  action are gone.
+- The quality rail is always Auto, 4K, 1440p, 1080p, 720p, 480p, and 360p.
+  Missing rungs remain visible but disabled; the UI never invents a playable
+  quality. 360p is used instead of a fictional 320p source because it is the
+  real low-resolution rung exposed by this stack.
+- Auto is the default. A fixed default is stored per authenticated user in
+  the existing `UserSetting` table through a private, no-store
+  `/api/preferences` route. The playback API reads that server-side profile
+  value as authoritative, so stale browser state cannot override it. A
+  one-off quality selection remains scoped to the current watch.
+- Same-manifest quality changes use the HLS level switch. Cross-source quality
+  and server changes use the generation-owned player transition, preserving
+  position, play/pause state, speed, volume, and subtitle intent. A late
+  profile response cannot override a user's newer in-session selection.
+- Sources are rendered only from real playback API rows. Session-failed,
+  probe-dead, verification-failed, and browser-unplayable sources are removed;
+  stable duplicate server identities collapse to the best-ranked healthy
+  representation. Every surviving row has a stable name, a separate quality
+  badge, a known locale flag or honest globe, and a premium crown for debrid.
+- Cropped cinema frames are classified by effective width as well as height,
+  so 3840x1600 reports 4K and 1920x800 reports 1080p instead of being
+  mislabeled as lower-quality video.
+- Fixed-quality and Auto ranking now share a deterministic source-ID
+  tiebreaker. Progressive fast and full responses can arrive in either order
+  without the API and player choosing different equal-ranked sources.
+- Direct play remains the preferred path and the transcoder remains disabled
+  in this resource envelope. 4K is offered only when a native/manifest source
+  really carries it; no GPU transcode is required for the measured 4K path.
+
+The profile route rejects unauthenticated GET and PATCH requests with 401.
+The settings screen also fails closed if the profile read fails, rather than
+enabling Save with guessed fallback values.
+
+### Provider decision
+
+CinePro was re-evaluated against eight real fixtures before being considered
+for the roster. It failed 8/8 at about 5.0 seconds with HTTP 500, so
+`PROVIDER_CINEPRO=0` remains explicit. Adding it would only create a dead
+choice and consume the response budget.
+
+The final candidate health sample kept Vixsrc, VidLink, NoTorrent, CinemaOS,
+and the bounded Playwright collector independently enabled with closed circuit
+breakers. Their latest completed attempts were 1,387 ms, 426 ms, 4,014 ms,
+3,249 ms, and no Playwright wait respectively. The player roster then filters
+individual failed URLs instead of presenting a provider name that cannot play.
+
+### Candidate measurements
+
+The broad source-resolution matrix covered 21 current, old, obscure,
+international, long-running, and anime movie/episode fixtures:
+
+- availability: 21/21;
+- at least one debrid option: 20/21;
+- full response source range: 2–14;
+- fast API p50/p95: 1,444 / 4,243 ms, with 0/21 per-user cache hits;
+- full API p50/p95: 6,561 / 14,132 ms, with 5/21 per-user cache hits.
+
+The authenticated browser playback matrix completed 8/8 and the advertised
+top-ranked source played 8/8. Candidate click-to-first-frame was 5,094 ms p50
+and 10,685 ms p95, compared with the current production reference of
+8,787 / 10,939 ms. That is a 42.0% candidate p50 reduction and a 2.3% p95
+reduction; the live post-deploy run remains the authoritative comparison.
+Actual delivery was:
+
+- Fight Club cold/warm: 3840x2160 at 2,755 / 2,580 ms;
+- Oppenheimer: 1920x1080, 4.17 Mbps, 8,162 ms;
+- Coherence: 1920x816, 2.73 Mbps, 10,685 ms;
+- The Witcher cold/warm: 1920x960, 3.75 Mbps,
+  9,402 / 8,878 ms;
+- The Office: final 1920x1080, 2.78 Mbps, 5,094 ms;
+- Attack on Titan: 1920x1080, 2.38 Mbps, 1,192 ms.
+
+Seven runs showed no waiting/stalled signal. The Office emitted one brief
+signal during its progressive automatic quality handoff and recovered to the
+ranked 1080p source without an error.
+
+### Release gates before promotion
+
+- TypeScript: clean.
+- Unit/integration suite: 533/533 tests, 1,185 expectations.
+- Fresh Next production build: passed.
+- Existing desktop/phone/TV product pass: 25/25.
+- New Cineby-style player pass: 24/24, repeated with the unmodified production
+  QA session. It proved real advancing playback, stable qualities, 7–8 real
+  usable server rows depending on provider completion timing, unique names,
+  flags/premium identity on every row, playing and paused source-switch
+  continuity, profile persistence/reload/restoration, and desktop/mobile
+  viewport bounds.
+- Focused ESLint found only the pre-existing synchronous state reset in
+  `use-playback.ts`; no changed line introduced a new lint violation.
+
+All profile mutation in these tests occurred against the isolated clone of
+the database and the test restored the profile default to Auto. Production
+data was not mutated.

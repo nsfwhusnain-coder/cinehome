@@ -53,12 +53,46 @@ describe("buildServerSlots — single source of truth for naming", () => {
     expect(slot!.premium).toBeFalsy();
   });
 
-  it("a failed source stays in the roster (never removed) and is marked failed, not dropped", () => {
+  it("removes a source that failed this playback session from the user roster", () => {
     const a = source({ id: "a", provider: "vidking", label: "Solstice" });
     const b = source({ id: "b", provider: "vidlink", label: "Phoenix" });
     const slots = buildServerSlots([a, b], ["a"], false, undefined);
-    expect(slots.map((s) => s.id).sort()).toEqual(["a", "b"]);
-    expect(slots.find((s) => s.id === "a")?.status).toBe("failed");
+    expect(slots.map((s) => s.id)).toEqual(["b"]);
+  });
+
+  it("shows a curated flag when known and an honest globe when geography is unknown", () => {
+    const free = source({ id: "free", provider: "vidking", label: "Solstice" });
+    const premium = source({
+      id: "debrid-tt1-movie-0-0-native-1080-1",
+      provider: "Debrid",
+      label: "1080p • Debrid",
+      origin: "debrid",
+      type: "mp4",
+    });
+    const slots = buildServerSlots([free, premium], [], false, undefined);
+    expect(slots.find((slot) => slot.id === "free")?.flag).toBe("🇺🇸");
+    expect(slots.find((slot) => slot.id === premium.id)?.flag).toBe("🌐");
+  });
+
+  it("collapses duplicate logical servers to their best healthy representation", () => {
+    const ru1080 = source({
+      id: "cinemaos-cinema-ru-1080",
+      provider: "CinemaOS",
+      label: "Cinema RU 1080",
+      type: "mp4",
+      maxHeight: 1080,
+    });
+    const ru720 = source({
+      id: "cinemaos-cinema-ru-720",
+      provider: "CinemaOS",
+      label: "Cinema RU 720",
+      type: "mp4",
+      maxHeight: 720,
+    });
+    const slots = buildServerSlots([ru720, ru1080], [], false, undefined);
+    expect(slots).toHaveLength(1);
+    expect(slots[0]?.id).toBe(ru1080.id);
+    expect(slots[0]?.flag).toBe("🇷🇺");
   });
 
   it("EXPECTED_SERVERS identity table names are all Greek — no cosmic string leaks through", () => {

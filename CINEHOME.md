@@ -135,6 +135,37 @@ docker run --rm --network host \
   "$image_id" bun scripts/browser/player-product-pass.ts
 ```
 
+### Cineby-style quality/source acceptance pass
+
+The player has one responsive playback sheet with five stable tabs: **Quality,
+Sources, Subtitles, Audio, Speed**. Quality always shows `Auto`, `4K`, `1440p`,
+`1080p`, `720p`, `480p`, and `360p`; unavailable rungs remain visible but
+disabled. `Auto` is the profile default. A fixed default is stored per user in
+`UserSetting` through `/api/preferences`; a one-off in-player switch applies
+only to the current watch.
+
+The Sources tab contains the complete currently usable roster, not fake
+placeholders. Session-failed, probe-dead, verification-failed, and
+browser-unplayable rows are removed. Separate fixed-quality URLs for one
+logical server collapse to the best healthy representation. Names are stable,
+resolution is a separate badge, known locale/region rows show a flag, unknown
+geography shows a globe, and debrid rows also carry the premium crown.
+
+`scripts/browser/cineby-player-pass.ts` is the release gate for this contract.
+It exercises real advancing playback, the stable rail, source-row provenance,
+dead-row removal, flags, profile persistence/reload, playing and paused source
+switches, and desktop/phone sheet bounds.
+
+```bash
+image_id=$(docker inspect --format '{{.Image}}' cinehome)
+docker run --rm --network embedin_default \
+  --dns 192.168.1.1 --dns 1.1.1.1 \
+  -e CINEHOME_BASE_URL=http://cinehome:3000 \
+  -e STORAGE_STATE=/app/.browser-qa/storage-state.json \
+  -v /home/hussy/cinehome/.browser-qa:/app/.browser-qa \
+  "$image_id" bun scripts/browser/cineby-player-pass.ts
+```
+
 ### Runtime memory envelope
 
 The single container deliberately uses two JavaScript runtimes. `start.sh`
@@ -186,7 +217,7 @@ BOSS implements directly when subagents fail.
 | Area | Path |
 |------|------|
 | App Router (canonical) | `src/app/**` |
-| Player UI | `src/components/video-player.tsx`, `player-settings-dock.tsx` |
+| Player UI | `src/components/video-player.tsx`, `src/components/player-controls.tsx`, `src/components/player-dock.tsx` |
 | Playback API | `src/lib/playback/scraper.ts` |
 | HLS proxy | `src/lib/hls-proxy.ts`, `src/lib/hls-session.ts` |
 | Stream resolver | `mini-services/stream-scraper/index.ts`, `providers/` |

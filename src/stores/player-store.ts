@@ -29,6 +29,7 @@ function writeStoredMuted(v: boolean): void {
 
 export interface QualityLevel {
   height: number;
+  width?: number;
   index: number;
   bitrate?: number;
 }

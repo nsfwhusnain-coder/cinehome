@@ -100,6 +100,11 @@ export interface PlaybackResponse {
   providerId?: string; // which provider resolved this
   /** True when background enrich may still add sources (soft-miss / progressive). */
   partial?: boolean;
+  /** Authenticated account defaults; attached outside the playback cache. */
+  preferences?: {
+    playbackQuality: import("@/lib/profile-preferences").PlaybackQualityPreference;
+    audioLanguage: string;
+  };
 }
 
 export interface PlaybackProvider {

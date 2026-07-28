@@ -9,8 +9,6 @@ import {
   preferenceKey,
   isFasterSource,
   sourceMaxHeight,
-  sourceRosterMaxHeight,
-  sourceRosterMeetsHdFloor,
   formatResolutionLabel,
   decodedQualityHeight,
   findNewSourceIds,
@@ -33,7 +31,6 @@ import {
 import { preresolvePlayback } from "@/lib/playback-preresolve";
 import {
   annotateLevelHeights,
-  buildQualityOptions,
   effectiveLevelHeight,
   findBestLevelForTarget,
   findMinLevelIndexForHeight,
@@ -47,7 +44,6 @@ import {
   getPreferredAudioLanguage,
   getSavedPlaybackSpeed,
   setPreferredProvider,
-  setPreferredQualityHeight,
   setPreferredAudioLanguage,
   setSavedPlaybackSpeed,
   getQualityFloorPolicy,
@@ -55,14 +51,18 @@ import {
 } from "@/lib/player-preferences";
 import Hls from "hls.js";
 import type { MediaPlayerClass } from "dashjs";
-import { Play, Loader2, AlertCircle, RefreshCw, X, ArrowLeft, ArrowLeftRight, ArrowUpDown } from "lucide-react";
+import { Play, Loader2, RefreshCw, X, ArrowLeft, ArrowLeftRight, ArrowUpDown } from "lucide-react";
 import { usePlayerStore, type MediaTrack, type QualityLevel } from "@/stores/player-store";
 import { PlayerControls } from "@/components/player-controls";
 import { LoadingScreen } from "@/components/player/LoadingScreen";
 import { PlayerErrorCard, type PlayerErrorAction } from "@/components/player/PlayerErrorCard";
 import { SkipIntroButton } from "@/components/player/SkipIntroButton";
 import type { DockSection } from "@/components/player-dock";
-import type { QualityOption } from "@/lib/playback/hls-quality";
+import {
+  buildPlayerQualityOptions,
+  qualityLabel as playerQualityLabel,
+  type PlayerQualityTarget,
+} from "@/lib/playback/quality-router";
 
 const CONTROLS_HIDE_MS = 3000;
 const SWIPE_SEEK_SECONDS = 10;
@@ -331,6 +331,8 @@ interface Props {
   sourcesError?: string | null;
   onRetrySources?: () => void;
   isDiscoveringSources?: boolean;
+  /** Authenticated profile default from the playback response. */
+  profileQuality?: PlayerQualityTarget;
   /** Progressive source count for loading status. */
   sourceCount?: number;
   poster?: string | null;
@@ -534,6 +536,7 @@ function mapHlsLevels(
 ): QualityLevel[] {
   const raw: QualityLevel[] = hls.levels.map((l, i) => ({
     height: l.height || 0,
+    width: l.width || 0,
     index: i,
     bitrate: l.bitrate,
   }));
@@ -607,17 +610,36 @@ function pickAdaptiveDownshiftTarget(
   return findMinLevelIndexForHeight(levelList, 0);
 }
 
-function recoverHlsAdaptive(hls: Hls, ctx: AdaptiveRecoverContext): void {
+function recoverHlsAdaptive(
+  hls: Hls,
+  ctx: AdaptiveRecoverContext,
+  preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
+): void {
   const levelList = mapHlsLevels(hls);
   const floorIdx = findMinLevelIndexForHeight(levelList, HLS_MIN_HEIGHT);
   const ladderMax = maxLevelHeight(levelList);
   const cur = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
   const curLevel = levelList.find((l) => l.index === cur);
   const curH = curLevel ? effectiveLevelHeight(curLevel) : 0;
+  if (preferredHeight !== "auto") {
+    const fixedIdx = findBestLevelForTarget(levelList, preferredHeight);
+    if (fixedIdx >= 0 && fixedIdx !== cur) {
+      hls.capLevelToPlayerSize = false;
+      hls.autoLevelCapping = -1;
+      hls.nextLevel = fixedIdx;
+      hls.loadLevel = fixedIdx;
+      hls.nextLoadLevel = fixedIdx;
+    }
+    try {
+      hls.startLoad();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
   // A fixed menu choice is contractual: recovery may reload it, but must not
   // silently turn it back into Auto or move to another rung.
-  const adaptive =
-    ctx.policy === "adaptive" && getPreferredQualityHeight() === "auto";
+  const adaptive = ctx.policy === "adaptive" && preferredHeight === "auto";
   const starving =
     ctx.bufferAheadS >= 0 && ctx.bufferAheadS < ADAPTIVE_STARVATION_BUFFER_S;
 
@@ -700,11 +722,14 @@ function recoverHlsAdaptive(hls: Hls, ctx: AdaptiveRecoverContext): void {
  * to FLOOR-AFFIRM (the original absolute-floor behavior) unless the saved
  * policy is adaptive AND the caller later upgrades to the context-aware path.
  */
-function recoverHlsWithoutDownshift(hls: Hls): void {
+function recoverHlsWithoutDownshift(
+  hls: Hls,
+  preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
+): void {
   recoverHlsAdaptive(hls, {
     bufferAheadS: -1,
     policy: getQualityFloorPolicySafe(),
-  });
+  }, preferredHeight);
 }
 
 /** SSR-safe read of the floor policy (defaults to adaptive on the server). */
@@ -747,13 +772,29 @@ function forceHlsLevel(hls: Hls, levelIndex: number): number {
 }
 
 /**
+ * Manual mid-play switch without `currentLevel`: keep the decoded buffer and
+ * move on the next fragment boundary. This avoids the time reset/black flash
+ * seen on Cineby's cross-rung switches while still locking future loads.
+ */
+function switchHlsLevelSmooth(hls: Hls, levelIndex: number): number {
+  if (levelIndex < 0) return -1;
+  hls.capLevelToPlayerSize = false;
+  hls.autoLevelCapping = -1;
+  hls.loadLevel = levelIndex;
+  hls.nextLoadLevel = levelIndex;
+  return levelIndex;
+}
+
+/**
  * Always force ≥1080 immediately. "Auto" = ABR only among 1080/1440/4K, never below.
  */
-function applyPreferredHlsQuality(hls: Hls, levels: QualityLevel[]): number {
+function applyPreferredHlsQuality(
+  hls: Hls,
+  levels: QualityLevel[],
+  prefRaw: PlayerQualityTarget = getPreferredQualityHeight()
+): number {
   if (!levels.length) return -1;
-  const prefRaw = getPreferredQualityHeight();
-  // Product rule: never start below 1080. "auto" still floors at 1080.
-  const prefHeight = prefRaw === "auto" ? HLS_TARGET_HEIGHT : Math.max(prefRaw, HLS_TARGET_HEIGHT);
+  const prefHeight = prefRaw === "auto" ? HLS_TARGET_HEIGHT : prefRaw;
 
   hls.capLevelToPlayerSize = false;
 
@@ -798,12 +839,13 @@ function maybePromoteHlsQuality(
   hls: Hls,
   levels: QualityLevel[],
   video: HTMLVideoElement,
-  ctx?: AdaptiveRecoverContext
+  ctx?: AdaptiveRecoverContext,
+  preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
 ): number | null {
   if (!levels.length) return null;
   const targetH = hlsPromotionTargetHeight(
     levels,
-    getPreferredQualityHeight(),
+    preferredHeight,
     HLS_MIN_HEIGHT
   );
   // Auto on a sub-HD-only ladder has no 1080 floor to enforce. Let ABR own it.
@@ -852,6 +894,7 @@ function mapDashLevels(player: MediaPlayerClass): QualityLevel[] {
   const bitrateList = player.getBitrateInfoListFor("video") ?? [];
   return bitrateList.map((info) => ({
     height: info.height,
+    width: info.width,
     index: info.qualityIndex,
     bitrate: info.bitrate,
   }));
@@ -904,6 +947,7 @@ export function VideoPlayer({
   sourcesError,
   onRetrySources,
   isDiscoveringSources,
+  profileQuality,
   sourceCount = 0,
   poster,
   title,
@@ -937,6 +981,8 @@ export function VideoPlayer({
   const prevSourceCount = useRef(0);
   /** User picked a server in the dock/settings — never auto-upgrade over that. */
   const userSelectedSourceRef = useRef(false);
+  /** A per-watch quality click wins over a later progressive profile response. */
+  const userSelectedQualityRef = useRef(false);
   /** At most one Luna→fast CDN auto-upgrade per watch session (pre-first-frame). */
   const autoUpgradedRef = useRef(false);
   /**
@@ -1009,27 +1055,17 @@ export function VideoPlayer({
   const [levelsPending, setLevelsPending] = useState(false);
   const [dockOpen, setDockOpen] = useState(false);
   const [dockSection, setDockSection] = useState<DockSection | null>(null);
+  /** Per-watch selection, initialized from (but never written back to) the profile default. */
+  const [qualityTarget, setQualityTarget] = useState<PlayerQualityTarget>(
+    () => profileQuality ?? getPreferredQualityHeight()
+  );
+  const qualityTargetRef = useRef<PlayerQualityTarget>(qualityTarget);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [swipeHint, setSwipeHint] = useState<"hidden" | "visible" | "fading">("hidden");
   const swipeHintShownRef = useRef(false);
   /** Sleep timer minutes; null = off. Implemented here so pause actually fires. */
   const [sleepMinutes, setSleepMinutes] = useState<number | null>(null);
   const sleepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /**
-   * Task 6 (honest no-1080 state): explicit user opt-in to play a title whose
-   * ENTIRE roster tops out below 1080p. Reset per title/episode (mediaKey
-   * effect below) — never carries over and never defaults to true.
-   */
-  const [noHdOptIn, setNoHdOptIn] = useState(false);
-  /** Best confirmed resolution anywhere in the roster (0 = nothing known yet). */
-  const rosterMaxHeight = useMemo(
-    () => sourceRosterMaxHeight(orderedSources),
-    [orderedSources]
-  );
-  const rosterMeetsHdFloor = useMemo(
-    () => sourceRosterMeetsHdFloor(orderedSources),
-    [orderedSources]
-  );
   /**
    * Honest "N sources" count for the hunting overlay — excludes hard-failed
    * (this session) and soft-kept/probe-failed rows. A dead/soft-failed
@@ -1046,20 +1082,6 @@ export function VideoPlayer({
       ).length,
     [orderedSources, failedSourceIds]
   );
-  // Block ONLY when every source has a *known* height and all are <1080.
-  // Unknown (0) heights must NEVER block — most embeds omit resolution metadata
-  // and still play 1080. Old logic treated unknown as "no HD" → hasStream=false
-  // while the Servers panel still listed sources (stuck hunting overlay).
-  const anyUnknownHeight = orderedSources.some((s) => sourceMaxHeight(s) <= 0);
-  const noHdBlocked =
-    orderedSources.length > 0 &&
-    !anyUnknownHeight &&
-    !rosterMeetsHdFloor &&
-    rosterMaxHeight > 0 &&
-    rosterMaxHeight < HD_FLOOR_HEIGHT &&
-    !sourcesLoading &&
-    !isDiscoveringSources &&
-    !noHdOptIn;
   const src = activeSource?.url ?? "";
   const streamType = activeSource?.type ?? "hls";
   // Transcode routing: if the active source can't play natively in THIS
@@ -1093,7 +1115,7 @@ export function VideoPlayer({
   const effectiveSrc = needsTranscode && transcodeUrl ? transcodeUrl : src;
   const effectiveStreamType = needsTranscode && transcodeUrl ? "hls" : streamType;
   // Play as soon as we have a source URL — never wait for scrape enrichment.
-  const hasStream = !!src && !noHdBlocked;
+  const hasStream = !!src;
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1136,7 +1158,6 @@ export function VideoPlayer({
     !error &&
     !sourcesError &&
     !everPlayed &&
-    !noHdBlocked &&
     (needsSourceHunt || (hasStream && buffering));
   /**
    * Staged, honest status text for the overlay above. `undefined` while
@@ -1282,6 +1303,7 @@ export function VideoPlayer({
     failedSourceIdsRef.current.clear();
     setFailedSourceIds([]);
     userSelectedSourceRef.current = false;
+    userSelectedQualityRef.current = false;
     autoUpgradedRef.current = false;
     qualityAutoUpgradeDoneRef.current = false;
     everPlayedRef.current = false;
@@ -1299,7 +1321,9 @@ export function VideoPlayer({
     setError(null);
     setSleepMinutes(null);
     setAutoplayHint(null);
-    setNoHdOptIn(false);
+    const initialQuality = profileQuality ?? getPreferredQualityHeight();
+    qualityTargetRef.current = initialQuality;
+    setQualityTarget(initialQuality);
     setFailoverNotice(null);
     setNewSourceNotice(false);
     setResumeNotice(null);
@@ -1356,7 +1380,7 @@ export function VideoPlayer({
     // Before first frame: allow re-pick when enrich surfaces a better multi-rung
     // (or higher) source. After first healthy play, sticky unless active failed.
     const preferred = getPreferredProvider();
-    const preferredHeight = getPreferredQualityHeight();
+    const preferredHeight = qualityTargetRef.current;
     let remaining = orderedSources.filter((s) => !failedSourceIdsRef.current.has(s.id));
     if (!remaining.length && isDiscoveringRef.current) {
       remaining = orderedSources;
@@ -1700,7 +1724,7 @@ export function VideoPlayer({
     const next = pickDefaultSource(
       available,
       getPreferredProvider(),
-      getPreferredQualityHeight()
+      qualityTargetRef.current
     );
     if (next) {
       handleSourceChange(next);
@@ -1737,7 +1761,7 @@ export function VideoPlayer({
     const pick = pickDefaultSource(
       orderedSources,
       getPreferredProvider(),
-      getPreferredQualityHeight()
+      qualityTargetRef.current
     );
     if (!pick || pick.id === activeSource.id) return;
 
@@ -1854,7 +1878,7 @@ export function VideoPlayer({
       failedSourceIdsRef.current,
       {
         preferredProvider: getPreferredProvider(),
-        preferredHeight: getPreferredQualityHeight(),
+        preferredHeight: qualityTargetRef.current,
         hdFloor: HLS_MIN_HEIGHT,
       }
     );
@@ -1948,7 +1972,7 @@ export function VideoPlayer({
   // Re-keys on activeSource?.id so pre-play CDN auto-upgrade resets the timer once.
   // Intentionally NOT dependent on orderedSources — enrich arrivals must not reset the wall.
   useEffect(() => {
-    if (everPlayed || !hasStream || noHdBlocked) return;
+    if (everPlayed || !hasStream) return;
     const remainingSources = orderedSources.filter(
       (s) => !failedSourceIdsRef.current.has(s.id) && s.id !== activeSource?.id
     ).length;
@@ -1965,7 +1989,7 @@ export function VideoPlayer({
     return () => window.clearTimeout(timer);
     // orderedSources read at arm time only — do not re-arm when enrich appends.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- R8: stable wall per active source
-  }, [everPlayed, hasStream, noHdBlocked, activeSource?.id, initialTime, failActiveSource]);
+  }, [everPlayed, hasStream, activeSource?.id, initialTime, failActiveSource]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -2138,7 +2162,7 @@ export function VideoPlayer({
       const now = Date.now();
       if (now - lastStallRecoverAtRef.current < HLS_STALL_RECOVER_DEBOUNCE_MS) return;
       lastStallRecoverAtRef.current = now;
-      recoverHlsWithoutDownshift(hls);
+      recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
     };
 
     if (useDash) {
@@ -2213,6 +2237,12 @@ export function VideoPlayer({
            */
           player.on(dashjs.MediaPlayer.events.QUALITY_CHANGE_REQUESTED, (data) => {
             if (data.mediaType !== "video") return;
+            if (
+              qualityTargetRef.current !== "auto" ||
+              getQualityFloorPolicySafe() !== "absolute"
+            ) {
+              return;
+            }
             const list = mapDashLevels(player);
             const floorIdx = findMinLevelIndexForHeight(list, HLS_MIN_HEIGHT);
             if (floorIdx < 0) return; // ladder has no >=1080 rung — nothing to floor to.
@@ -2237,7 +2267,7 @@ export function VideoPlayer({
             setBuffering(false);
             const levelList = mapDashLevels(player);
             setLevels(levelList);
-            const prefHeight = getPreferredQualityHeight();
+            const prefHeight = qualityTargetRef.current;
             if (prefHeight === "auto") {
               // Parity with the hls.js floor: give dash.js's own ABR a 1080
               // preference so Auto doesn't settle at the bottom of the ladder
@@ -2252,7 +2282,6 @@ export function VideoPlayer({
                     autoSwitchBitrate: { video: true },
                     ...(floorKbps > 0
                       ? {
-                          minBitrate: { video: floorKbps },
                           initialBitrate: { video: floorKbps },
                         }
                       : {}),
@@ -2263,7 +2292,7 @@ export function VideoPlayer({
             } else {
               // Prefer lowest >= preferred height (same as hls path) — never
               // land on a sub-target rung when a matching/higher one exists.
-              const idx = findBestLevelForTarget(levelList, Math.max(prefHeight, HLS_TARGET_HEIGHT));
+              const idx = findBestLevelForTarget(levelList, prefHeight);
               if (idx >= 0) {
                 player.updateSettings({
                   streaming: { abr: { autoSwitchBitrate: { video: false } } },
@@ -2280,7 +2309,9 @@ export function VideoPlayer({
             const savedSpeed = getSavedPlaybackSpeed();
             if (savedSpeed !== 1) video.playbackRate = savedSpeed;
             applyResumeSeekAndRearm(video);
-            attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+            if (!userPausedRef.current) {
+              attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+            }
           });
           // dash.js's ERROR event only fires for genuine hard failures (manifest/
           // fragment/segment download or parse failures, MSE append errors, DRM
@@ -2374,16 +2405,22 @@ export function VideoPlayer({
         const refreshHlsLevels = () => {
           const levelList = levelsFromHls(hls);
           setLevels(levelList);
-          const pref = getPreferredQualityHeight();
+          const pref = qualityTargetRef.current;
           const storeQ = usePlayerStore.getState().quality;
           // Fixed 1080: if stall dipped us below target, re-promote when buffer is healthy.
           if (pref !== "auto" && storeQ !== -1 && videoRef.current) {
             const curIdx = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
             const cur = levelList.find((l) => l.index === curIdx);
             const curH = cur ? effectiveLevelHeight(cur) : 0;
-            const want = Math.max(pref, HLS_TARGET_HEIGHT);
+            const want = pref;
             if (curH > 0 && curH < want * 0.9) {
-              const promoted = maybePromoteHlsQuality(hls, levelList, videoRef.current);
+              const promoted = maybePromoteHlsQuality(
+                hls,
+                levelList,
+                videoRef.current,
+                undefined,
+                qualityTargetRef.current
+              );
               if (promoted != null && promoted >= 0) setQuality(promoted);
             }
             return;
@@ -2416,7 +2453,11 @@ export function VideoPlayer({
           } catch {
             /* ignore track pin failures */
           }
-          const qualityIdx = applyPreferredHlsQuality(hls, levelList);
+          const qualityIdx = applyPreferredHlsQuality(
+            hls,
+            levelList,
+            qualityTargetRef.current
+          );
           setQuality(qualityIdx);
           // Seed playing height from forced/start level so UI is honest before first switch event.
           // Use effectiveLevelHeight so bitrate-only masters aren't reported as 0p.
@@ -2433,7 +2474,9 @@ export function VideoPlayer({
           const savedSpeed = getSavedPlaybackSpeed();
           if (savedSpeed !== 1) video.playbackRate = savedSpeed;
           applyResumeSeekAndRearm(video);
-          attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+          if (!userPausedRef.current) {
+            attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+          }
         });
 
         /**
@@ -2460,7 +2503,15 @@ export function VideoPlayer({
         hls.on(Hls.Events.FRAG_BUFFERED, () => {
           const levelList = levelsFromHls(hls);
           if (videoRef.current && levelList.length) {
-            applyPromotionResult(maybePromoteHlsQuality(hls, levelList, videoRef.current));
+            applyPromotionResult(
+              maybePromoteHlsQuality(
+                hls,
+                levelList,
+                videoRef.current,
+                undefined,
+                qualityTargetRef.current
+              )
+            );
           }
         });
 
@@ -2499,6 +2550,12 @@ export function VideoPlayer({
          * terminates in one hop (no loop).
          */
         hls.on(Hls.Events.LEVEL_SWITCHING, (_e, data) => {
+          if (
+            qualityTargetRef.current !== "auto" ||
+            getQualityFloorPolicySafe() !== "absolute"
+          ) {
+            return;
+          }
           const levelList = levelsFromHls(hls);
           const requested = levelList.find((l) => l.index === data.level);
           const h = requested ? effectiveLevelHeight(requested) : 0;
@@ -2523,7 +2580,15 @@ export function VideoPlayer({
           const h = level ? effectiveLevelHeight(level) : 0;
           setPlayingHeight(h);
           if (h > 0 && h < HLS_MIN_HEIGHT * 0.95 && videoRef.current) {
-            applyPromotionResult(maybePromoteHlsQuality(hls, list, videoRef.current));
+            applyPromotionResult(
+              maybePromoteHlsQuality(
+                hls,
+                list,
+                videoRef.current,
+                undefined,
+                qualityTargetRef.current
+              )
+            );
           }
         });
 
@@ -2687,7 +2752,9 @@ export function VideoPlayer({
             video.removeEventListener("timeupdate", onNativeTranscodeProgress);
           }
         };
-        attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+        if (!userPausedRef.current) {
+          attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+        }
       } else {
         setLevelsPending(false);
         setBuffering(false);
@@ -2735,7 +2802,9 @@ export function VideoPlayer({
         video.removeEventListener("loadedmetadata", onMp4Loaded!);
       };
       video.addEventListener("loadedmetadata", onMp4Loaded);
-      attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+      if (!userPausedRef.current) {
+        attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+      }
     }
 
     return () => {
@@ -2970,7 +3039,7 @@ export function VideoPlayer({
         const now = Date.now();
         if (now - lastStallRecoverAtRef.current < HLS_STALL_RECOVER_DEBOUNCE_MS) return;
         lastStallRecoverAtRef.current = now;
-        recoverHlsWithoutDownshift(hls);
+        recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
       }, HLS_STALL_RECOVER_DEBOUNCE_MS);
     };
     const onPlaying = () => {
@@ -3075,7 +3144,7 @@ export function VideoPlayer({
       // First full no-progress window: one engine-specific recovery nudge.
       const hls = hlsRef.current;
       if (hls) {
-        recoverHlsWithoutDownshift(hls);
+        recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
       } else if (dashRef.current) {
         try {
           dashRef.current.play();
@@ -3275,65 +3344,99 @@ export function VideoPlayer({
 
   const dismissError = useCallback(() => setError(null), [setError]);
 
-  const handleSetQuality = useCallback(
-    (level: number) => {
+  const handleQualityTargetChange = useCallback(
+    (target: PlayerQualityTarget, announce = true) => {
+      qualityTargetRef.current = target;
+      setQualityTarget(target);
+
       const hls = hlsRef.current;
       const dash = dashRef.current;
-      if (hls) {
-        const list = levelsFromHls(hls);
-        // Auto still means ≥1080 only — never unlock sub-1080 ABR.
-        if (level === -1) {
-          const idx = applyPreferredHlsQuality(hls, list);
-          setQuality(idx >= 0 ? idx : -1);
-          setPreferredQualityHeight("auto");
-          return;
-        }
-        const match = list.find((l) => l.index === level);
-        const h = match ? effectiveLevelHeight(match) : 0;
-        const ladderMax = maxLevelHeight(list);
-        // Only refuse when a real ≥1080 rung exists but this index is stale/
-        // sub-1080 (e.g. a leftover index from a previous manifest) — never
-        // override an explicit pick among the honest sub-1080 rungs a
-        // 720p-max ladder exposes (task 1's picker now lists those instead
-        // of hiding them, so this must honor the exact rung the user chose).
-        if (h > 0 && h < HLS_MIN_HEIGHT && ladderMax >= HLS_MIN_HEIGHT) {
-          const floor = findBestLevelForTarget(list, HLS_MIN_HEIGHT);
-          forceHlsLevel(hls, floor);
-          setQuality(floor);
-          setPreferredQualityHeight(HLS_MIN_HEIGHT);
-          return;
-        }
-        forceHlsLevel(hls, level);
-      } else if (dash) {
-        if (level === -1) {
+      const activeLevels = usePlayerStore.getState().levels;
+
+      if (target === "auto") {
+        if (hls) {
+          applyPreferredHlsQuality(hls, levelsFromHls(hls), "auto");
+        } else if (dash) {
           dash.updateSettings({
             streaming: { abr: { autoSwitchBitrate: { video: true } } },
           } as Parameters<typeof dash.updateSettings>[0]);
-        } else {
-          dash.updateSettings({
-            streaming: { abr: { autoSwitchBitrate: { video: false } } },
-          } as Parameters<typeof dash.updateSettings>[0]);
-          dash.setQualityFor("video", level);
         }
-      }
-      setQuality(level);
-      if (level === -1) {
-        setPreferredQualityHeight("auto");
+        setQuality(-1);
+        if (announce) showStatusNotice("Quality set to Auto", 1_800);
         return;
       }
-      const levels = usePlayerStore.getState().levels;
-      const match = levels.find((l) => l.index === level);
-      const height = match ? effectiveLevelHeight(match) : 0;
-      if (!height) return;
-      // Only raise the stored pref toward the 1080 floor when the ladder
-      // actually has HD — never claim a preferred 1080 after an honest
-      // 720p-only pick on a sub-HD stream.
-      const ladderMax = maxLevelHeight(levels);
-      setPreferredQualityHeight(
-        ladderMax >= HLS_MIN_HEIGHT ? Math.max(height, HLS_MIN_HEIGHT) : height
-      );
+
+      const option = buildPlayerQualityOptions({
+        sources: displaySources,
+        activeSourceId: activeSourceRef.current?.id,
+        activeLevels,
+        selected: target,
+        failedIds: failedSourceIdsRef.current,
+        discovering: Boolean(isDiscoveringRef.current),
+      }).find((candidate) => candidate.value === target);
+
+      if (option?.levelIndex != null && hls) {
+        const switched = switchHlsLevelSmooth(hls, option.levelIndex);
+        setQuality(switched);
+        if (announce) {
+          showStatusNotice(`Switching to ${playerQualityLabel(target)}`, 1_800);
+        }
+        return;
+      }
+
+      if (option?.levelIndex != null && dash) {
+        dash.updateSettings({
+          streaming: { abr: { autoSwitchBitrate: { video: false } } },
+        } as Parameters<typeof dash.updateSettings>[0]);
+        dash.setQualityFor("video", option.levelIndex);
+        setQuality(option.levelIndex);
+        if (announce) {
+          showStatusNotice(`Switching to ${playerQualityLabel(target)}`, 1_800);
+        }
+        return;
+      }
+
+      const replacement = option?.sourceId
+        ? orderedSourcesRef.current.find((source) => source.id === option.sourceId)
+        : undefined;
+      if (!replacement) return;
+
+      userSelectedSourceRef.current = true;
+      setQuality(-1);
+      handleSourceChange(replacement);
+      if (announce) {
+        showStatusNotice(
+          `Switching source for ${playerQualityLabel(target)}`,
+          2_400
+        );
+      }
     },
-    [setQuality]
+    [
+      displaySources,
+      handleSourceChange,
+      levelsFromHls,
+      setQuality,
+      showStatusNotice,
+    ]
+  );
+
+  useEffect(() => {
+    if (
+      profileQuality == null ||
+      userSelectedQualityRef.current ||
+      qualityTargetRef.current === profileQuality
+    ) {
+      return;
+    }
+    handleQualityTargetChange(profileQuality, false);
+  }, [profileQuality, handleQualityTargetChange]);
+
+  const handleUserQualityTargetChange = useCallback(
+    (target: PlayerQualityTarget) => {
+      userSelectedQualityRef.current = true;
+      handleQualityTargetChange(target);
+    },
+    [handleQualityTargetChange]
   );
 
   const setSpeedValue = useCallback(
@@ -3561,14 +3664,31 @@ export function VideoPlayer({
     resetControlsTimer();
   };
 
-  const quality = usePlayerStore((s) => s.quality);
   const levels = usePlayerStore((s) => s.levels);
 
   const waitingForSource = !hasStream && (sourcesLoading || !sourcesError);
   const controlsPinned = !hasStream || !!error || waitingForSource || showHunting;
   const controlsVisible = showControls || controlsPinned || !!error;
 
-  const qualities: QualityOption[] = buildQualityOptions(levels);
+  const qualityTargets = useMemo(
+    () =>
+      buildPlayerQualityOptions({
+        sources: displaySources,
+        activeSourceId: activeSource?.id,
+        activeLevels: levels,
+        selected: qualityTarget,
+        failedIds: new Set(failedSourceIds),
+        discovering: Boolean(isDiscoveringSources),
+      }),
+    [
+      displaySources,
+      activeSource?.id,
+      levels,
+      qualityTarget,
+      failedSourceIds,
+      isDiscoveringSources,
+    ]
+  );
 
   const hasAlternateSource = orderedSources.some(
     (s) => !failedSourceIdsRef.current.has(s.id) && s.id !== activeSource?.id
@@ -3785,40 +3905,6 @@ export function VideoPlayer({
         />
       )}
 
-      {/* Task 6 — honest no-1080 state: every source in the roster confirms a
-          ceiling below 1080p. Never silently auto-play the lower rung — require
-          an explicit opt-in, or point the user at the manual server switcher. */}
-      {noHdBlocked && !sourcesError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/50 px-4 text-center">
-          <AlertCircle className="h-8 w-8 text-amber-400" />
-          <span className="text-sm text-white/80">
-            1080p isn&apos;t available for this title
-            {rosterMaxHeight > 0 ? ` (best is ${formatResolutionLabel(rosterMaxHeight)})` : ""}.
-          </span>
-          <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={() => setNoHdOptIn(true)}
-              className="inline-flex items-center gap-1 rounded-full bg-primary/90 px-4 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary"
-            >
-              <Play className="h-3 w-3" /> Play {formatResolutionLabel(rosterMaxHeight)} anyway
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setDockOpen(true);
-                setDockSection("server");
-                setShowControls(true);
-                resetControlsTimer();
-              }}
-              className="inline-flex items-center gap-1 rounded-full bg-white/10 px-4 py-1.5 text-xs font-medium text-white hover:bg-white/20"
-            >
-              <ArrowLeftRight className="h-3 w-3" /> Try another server
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Exhaustion (all sources failed) gets no dismiss — the card IS the
           only path forward. Other terminal errors (browser can't decode this
           stream type) keep a dismiss since the poster/video underneath is at
@@ -3889,11 +3975,6 @@ export function VideoPlayer({
         mediaType={mediaType}
         sources={displaySources}
         activeSourceId={activeSource?.id ?? ""}
-        activeSource={
-          activeSource
-            ? displaySources.find((s) => s.id === activeSource.id) ?? activeSource
-            : null
-        }
         onSourceChange={handleUserSourceChange}
         alwaysShowControls={controlsPinned}
         onTogglePlay={togglePlay}
@@ -3903,14 +3984,12 @@ export function VideoPlayer({
         onSetVolume={setVideoVolume}
         onToggleFullscreen={toggleFullscreen}
         onTogglePip={togglePip}
-        onToggleSubtitles={toggleSubtitles}
-        onToggleSettings={() => {
-          if (dockOpen) {
+        onToggleSettings={(section = "quality") => {
+          if (dockOpen && dockSection === section) {
             closeDock();
           } else {
             setDockOpen(true);
-            // Gear opens root settings (Quality / Server / Audio / …).
-            setDockSection(null);
+            setDockSection(section);
             setShowControls(true);
             resetControlsTimer();
           }
@@ -3928,9 +4007,9 @@ export function VideoPlayer({
         dockSection={dockSection}
         onDockSectionChange={setDockSection}
         onCloseDock={closeDock}
-        qualities={qualities}
-        activeQuality={quality}
-        onQualityChange={handleSetQuality}
+        qualityTargets={qualityTargets}
+        activeQualityTarget={qualityTarget}
+        onQualityTargetChange={handleUserQualityTargetChange}
         onSubtitleChange={handleSubtitleChange}
         onAudioChange={handleAudioChange}
         onSetSpeed={setSpeedValue}
@@ -3938,7 +4017,6 @@ export function VideoPlayer({
         onNextEpisode={onNextEpisode}
         isDiscoveringSources={isDiscoveringSources}
         failedSourceIds={failedSourceIds}
-        levelsLoading={levelsPending}
         onBack={onBack}
         tvId={tvId}
         tvSeasons={tvSeasons}

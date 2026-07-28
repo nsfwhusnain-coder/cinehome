@@ -593,6 +593,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
             sourcesError={sourcesError}
             onRetrySources={() => void retryFull()}
             isDiscoveringSources={isDiscoveringSources}
+            profileQuality={playback?.preferences?.playbackQuality}
             sourceCount={
               playableSourceCount > 0
                 ? playableSourceCount

@@ -94,9 +94,10 @@ export function playbackCacheKey(
   season: number | undefined,
   episode: number | undefined,
   fast: boolean | undefined,
-  userId: string
+  userId: string,
+  qualityPreference: "auto" | number = "auto"
 ): string {
-  return `pb:${userId}:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}`;
+  return `pb:${userId}:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}:q${qualityPreference}`;
 }
 
 /**

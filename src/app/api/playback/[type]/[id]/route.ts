@@ -6,6 +6,7 @@ import { isPlaybackFastPathEnabled } from "@/lib/feature-flags";
 import { pickDefaultSource } from "@/lib/playback/source-quality";
 import { buildFastDebridResponse } from "@/lib/playback/fast-debrid";
 import { RateLimiter } from "@/lib/rate-limit";
+import { getUserPlaybackPreferences } from "@/lib/profile-preferences.server";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -115,14 +116,10 @@ export async function GET(
       );
     }
   }
-  // Client Settings preferred quality (1080 / 2160 / auto). Optional.
-  const qualityRaw = url.searchParams.get("qualityHint") ?? url.searchParams.get("quality");
-  let qualityHint: "auto" | number | undefined;
-  if (qualityRaw === "auto") qualityHint = "auto";
-  else if (qualityRaw) {
-    const n = Number(qualityRaw);
-    if (Number.isFinite(n) && n >= 1080) qualityHint = n;
-  }
+  // The profile is authoritative on every device. Client hints are deliberately
+  // ignored so a stale browser cache cannot override a newly selected default.
+  const profilePreferences = await getUserPlaybackPreferences(userId);
+  const qualityHint = profilePreferences.playbackQuality;
 
   const {
     getCachedPlayback,
@@ -132,12 +129,20 @@ export async function GET(
     PLAYBACK_PARTIAL_TTL_MS,
   } = await import("@/lib/server-cache");
   // Per-user key: proxy URLs embed HLS session ids. Cross-user warm is raw scrape.
-  const cacheKey = playbackCacheKey(type, tmdbId, season, episode, fast, userId);
+  const cacheKey = playbackCacheKey(
+    type,
+    tmdbId,
+    season,
+    episode,
+    fast,
+    userId,
+    qualityHint
+  );
 
   if (!noCache) {
-    const cached = getCachedPlayback<unknown>(cacheKey);
+    const cached = getCachedPlayback<PlaybackResponse>(cacheKey);
     if (cached) {
-      return NextResponse.json(cached, {
+      return NextResponse.json({ ...cached, preferences: profilePreferences }, {
         headers: {
           "Cache-Control": "private, no-store",
           "X-Playback-Cache": "HIT",
@@ -231,7 +236,7 @@ export async function GET(
     setCachedPlayback(cacheKey, result, ttl);
   }
 
-  return NextResponse.json(result, {
+  return NextResponse.json({ ...result, preferences: profilePreferences }, {
     headers: {
       "Cache-Control": "private, no-store",
       "X-Playback-Cache": "MISS",

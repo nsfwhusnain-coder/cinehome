@@ -81,6 +81,29 @@ describe("sourceRosterMeetsHdFloor / sourceRosterMaxHeight", () => {
 });
 
 describe("pickDefaultSource — HD-floor-first ranking", () => {
+  it("uses a stable source-id tie-break independent of resolver arrival order", () => {
+    const alpha = makeSource({
+      id: "cinema-alpha",
+      provider: "CinemaOS",
+      label: "Cinema XX 1080",
+      type: "mp4",
+      maxHeight: 1080,
+    });
+    const beta = makeSource({
+      id: "cinema-beta",
+      provider: "CinemaOS",
+      label: "Cinema XX 1080",
+      type: "mp4",
+      maxHeight: 1080,
+    });
+    expect(pickDefaultSource([beta, alpha])?.id).toBe(alpha.id);
+    expect(pickDefaultSource([alpha, beta])?.id).toBe(alpha.id);
+    expect(sortSourcesForPicker([beta, alpha]).map((source) => source.id)).toEqual([
+      alpha.id,
+      beta.id,
+    ]);
+  });
+
   it("picks the 1080p source over a 720p one", () => {
     const sourceLuna = makeSource({ id: "luna", label: "Luna", provider: "Vixsrc", maxHeight: 720 });
     const sourceAether = makeSource({ id: "aether", label: "Aether", provider: "CinePro", maxHeight: 1080 });
@@ -376,8 +399,8 @@ describe("resolvePreferredHeightTarget / preferred-height scoring (Change 11)", 
     expect(resolvePreferredHeightTarget(undefined)).toBe(1080);
   });
 
-  it("never returns below 1080 even if a lower number is passed", () => {
-    expect(resolvePreferredHeightTarget(720)).toBe(1080);
+  it("honours a lower explicit profile target without changing Auto's HD start", () => {
+    expect(resolvePreferredHeightTarget(720)).toBe(720);
   });
 
   it("honours explicit 2160 preference", () => {

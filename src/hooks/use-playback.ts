@@ -5,7 +5,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import type { MediaType, PlaybackResponse, PlaybackSource } from "@/lib/playback/types";
 import { pickDefaultSource } from "@/lib/playback/source-quality";
-import { getPreferredQualityHeight } from "@/lib/player-preferences";
+import {
+  getPreferredQualityHeight,
+  syncProfilePlaybackPreferences,
+} from "@/lib/player-preferences";
 import {
   getMemPlayback,
   playbackMemKey,
@@ -53,9 +56,9 @@ async function fetchPlayback(
   // Settings preferred quality → scraper ranking (Change 3).
   try {
     const qh = getPreferredQualityHeight();
-    params.set("qualityHint", qh === "auto" ? "1080" : String(qh));
+    params.set("qualityHint", String(qh));
   } catch {
-    params.set("qualityHint", "1080");
+    params.set("qualityHint", "auto");
   }
 
   const res = await fetch(`/api/playback/${mediaType}/${tmdbId}?${params.toString()}`, {
@@ -64,6 +67,7 @@ async function fetchPlayback(
   });
   const json = (await res.json()) as PlaybackResponse;
   if (!res.ok) throw new Error(json.message || "Failed to resolve playback");
+  if (json.preferences) syncProfilePlaybackPreferences(json.preferences);
   return json;
 }
 
@@ -152,11 +156,16 @@ function mergePlaybackResponses(
   const streamUrlStillValid =
     !!base.streamUrl && mergedSources.some((s) => s.url === base.streamUrl);
   // Prefer multi-rung HD when re-defaulting streamUrl (same policy as player).
-  let heightPref: "auto" | number = 1080;
-  try {
-    heightPref = getPreferredQualityHeight();
-  } catch {
-    heightPref = 1080;
+  const profilePreferences =
+    full?.preferences ?? fast?.preferences ?? base.preferences;
+  let heightPref: "auto" | number =
+    profilePreferences?.playbackQuality ?? "auto";
+  if (!profilePreferences) {
+    try {
+      heightPref = getPreferredQualityHeight();
+    } catch {
+      heightPref = "auto";
+    }
   }
   const defaultSource = pickDefaultSource(mergedSources, null, heightPref);
 
@@ -171,6 +180,7 @@ function mergePlaybackResponses(
     sources: mergedSources,
     streamUrl: streamUrlStillValid ? base.streamUrl : (defaultSource?.url ?? base.streamUrl),
     partial: partial || undefined,
+    preferences: profilePreferences,
   };
 }
 

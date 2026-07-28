@@ -682,26 +682,32 @@ function findAttachedSource(
 
 async function readActiveServerName(page: Page): Promise<string | null> {
   await page.mouse.move(100, 100);
-  const open = page.locator('button[title="Servers"]').first();
+  const activeSourceId = await page
+    .locator("video")
+    .getAttribute("data-playback-source-id")
+    .catch(() => null);
+  if (!activeSourceId) return null;
+  const open = page.getByRole("button", { name: "Sources", exact: true }).first();
   if ((await open.count()) === 0) return null;
   const opened = await open
     .click({ timeout: 1_500 })
     .then(() => true)
     .catch(() => false);
   if (!opened) return null;
-  const dialog = page.locator('[role="dialog"][aria-label="Servers"]');
+  const dialog = page.locator('[role="dialog"][aria-label="Player settings"]');
   const visible = await dialog
     .waitFor({ state: "visible", timeout: 1_000 })
     .then(() => true)
     .catch(() => false);
   if (!visible) return null;
-  const live = dialog.locator("button").filter({ hasText: "Live" }).first();
-  const name = (await live.getAttribute("aria-label", { timeout: 1_000 }).catch(() => null))?.replace(
-    /\s+—.*$/,
-    ""
-  ) ?? null;
+  const active = dialog.locator(`button[data-source-id="${activeSourceId}"]`);
+  const name =
+    (await active.getAttribute("aria-label", { timeout: 1_000 }).catch(() => null))?.replace(
+      /\s+—.*$/,
+      ""
+    ) ?? null;
   await dialog
-    .locator('button[aria-label="Close servers"]')
+    .locator('button[aria-label="Close"]')
     .click({ timeout: 1_000 })
     .catch(() => {});
   return name;
@@ -934,7 +940,7 @@ async function selectRosterSource(
     source.id
   );
   await page.mouse.move(100, 100);
-  const open = page.locator('button[title="Servers"]').first();
+  const open = page.getByRole("button", { name: "Sources", exact: true }).first();
   if ((await open.count()) === 0) {
     return {
       requestedType: desiredSourceType,
@@ -943,24 +949,17 @@ async function selectRosterSource(
       selected: false,
       source: publicSource(source),
       serverName,
-      reason: "Servers control unavailable",
+      reason: "Sources control unavailable",
     };
   }
   await open.click({ timeout: 3_000 }).catch(async () => {
     await open.evaluate((button: HTMLButtonElement) => button.click()).catch(() => {});
   });
-  const dialog = page.locator('[role="dialog"][aria-label="Servers"]');
+  const dialog = page.locator('[role="dialog"][aria-label="Player settings"]');
   await dialog.waitFor({ state: "visible", timeout: 3_000 }).catch(() => {});
-  let target = dialog.locator(`button[data-source-id="${source.id}"]`);
+  const target = dialog.locator(`button[data-source-id="${source.id}"]`);
   if ((await target.count()) === 0) {
-    await dialog
-      .getByRole("button", { name: /Show \d+ more servers?/i })
-      .click()
-      .catch(() => {});
-    target = dialog.locator(`button[data-source-id="${source.id}"]`);
-  }
-  if ((await target.count()) === 0) {
-    await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
+    await dialog.locator('button[aria-label="Close"]').click().catch(() => {});
     return {
       requestedType: desiredSourceType,
       requestedProvider: desiredProvider || null,
@@ -972,7 +971,11 @@ async function selectRosterSource(
     };
   }
 
-  if (!reselectActive && (await target.textContent())?.includes("Live")) {
+  const activeSourceId = await page
+    .locator("video")
+    .getAttribute("data-playback-source-id")
+    .catch(() => null);
+  if (!reselectActive && activeSourceId === source.id) {
     const first = await readBrowserState(page, started);
     await page.waitForTimeout(500);
     const second = await readBrowserState(page, started);
@@ -983,7 +986,7 @@ async function selectRosterSource(
       !second.paused &&
       second.currentTime > first.currentTime + 0.2
     ) {
-      await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
+      await dialog.locator('button[aria-label="Close"]').click().catch(() => {});
       return {
         requestedType: desiredSourceType,
         requestedProvider: desiredProvider || null,
@@ -998,7 +1001,7 @@ async function selectRosterSource(
   }
 
   if (await target.isDisabled()) {
-    await dialog.locator('button[aria-label="Close servers"]').click().catch(() => {});
+    await dialog.locator('button[aria-label="Close"]').click().catch(() => {});
     return {
       requestedType: desiredSourceType,
       requestedProvider: desiredProvider || null,
@@ -1015,10 +1018,9 @@ async function selectRosterSource(
   let firstHealthy: BrowserState | null = null;
   while (Date.now() - wallStart < 30_000) {
     const state = await readBrowserState(page, started);
-    const activeName = await readActiveServerName(page).catch(() => null);
     if (
       state &&
-      activeName === serverName &&
+      state.activeSourceId === source.id &&
       state.readyState >= 2 &&
       !state.paused &&
       state.videoWidth > 0

@@ -45,7 +45,7 @@ export function resolvePreferredHeightTarget(
   pref: "auto" | number | null | undefined
 ): number {
   if (pref == null || pref === "auto") return HD_FLOOR_HEIGHT;
-  return Math.max(HD_FLOOR_HEIGHT, pref);
+  return pref;
 }
 
 /** True when source metadata (maxHeight / ladder / label) claims ≥ target. */
@@ -593,7 +593,8 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
 
     const nameA = `${a.provider} ${a.label}`.toLowerCase();
     const nameB = `${b.provider} ${b.label}`.toLowerCase();
-    return nameA.localeCompare(nameB);
+    const nameOrder = nameA.localeCompare(nameB);
+    return nameOrder !== 0 ? nameOrder : a.id.localeCompare(b.id);
   });
 }
 
@@ -836,7 +837,7 @@ export function pickDefaultSource(
         const aHevc = isHevcSource(a) && !browserSupportsHevc() ? 1 : 0;
         const bHevc = isHevcSource(b) && !browserSupportsHevc() ? 1 : 0;
         if (aHevc !== bHevc) return aHevc - bHevc;
-        return 0;
+        return a.id.localeCompare(b.id);
       });
       const nonHevc = sortedPref.find((s) => !isHevcSource(s) || browserSupportsHevc());
       return nonHevc || sortedPref[0] || null;
@@ -852,6 +853,19 @@ export function pickDefaultSource(
 
     const aH = sourceMaxHeight(a) || 0;
     const bH = sourceMaxHeight(b) || 0;
+    if (typeof preferredHeight === "number") {
+      const offersTarget = (source: PlaybackSource, maxHeight: number) => {
+        const heights = source.ladder?.length ? source.ladder : [maxHeight];
+        return heights.some(
+          (height) =>
+            Math.abs(height - preferredHeight) <=
+            Math.max(40, preferredHeight * 0.12)
+        );
+      };
+      const aTarget = offersTarget(a, aH) ? 1 : 0;
+      const bTarget = offersTarget(b, bH) ? 1 : 0;
+      if (aTarget !== bTarget) return bTarget - aTarget;
+    }
     const heightTier = (h: number): number => {
       if (h >= HD_FLOOR_HEIGHT) return 2;
       if (h <= 0) return 1; // unknown — not treated as sub-HD
@@ -896,7 +910,8 @@ export function pickDefaultSource(
     const aHevc = isHevcSource(a) && !browserSupportsHevc() ? 1 : 0;
     const bHevc = isHevcSource(b) && !browserSupportsHevc() ? 1 : 0;
     if (aHevc !== bHevc) return aHevc - bHevc;
-    return scoreSource(b) - scoreSource(a);
+    const scoreOrder = scoreSource(b) - scoreSource(a);
+    return scoreOrder !== 0 ? scoreOrder : a.id.localeCompare(b.id);
   });
   return sorted[0] ?? null;
 }

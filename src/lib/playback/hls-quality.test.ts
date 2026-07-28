@@ -18,6 +18,13 @@ import type { QualityLevel } from "@/stores/player-store";
  * pickDefaultQualityIndex (≥1080 when present).
  */
 describe("buildQualityOptions", () => {
+  it("classifies cropped 1920-wide cinema levels as 1080p", () => {
+    expect(
+      buildQualityOptions([{ index: 0, width: 1920, height: 800, bitrate: 4_000_000 }])
+    ).toEqual([
+      { index: 0, height: 1080, label: "1080p" },
+    ]);
+  });
   it("HD ladder [1080,720,480] -> shows all rungs (not HD-only)", () => {
     const levels: QualityLevel[] = [
       { index: 0, height: 480 },

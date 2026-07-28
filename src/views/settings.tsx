@@ -9,10 +9,9 @@ import { useNavigate } from "@/hooks/use-navigate";
 import { transitionView } from "@/lib/motion";
 import {
   getPreferredAudioLanguage,
-  getPreferredQualityHeight,
-  setPreferredAudioLanguage,
-  setPreferredQualityHeight,
+  syncProfilePlaybackPreferences,
 } from "@/lib/player-preferences";
+import type { ProfilePlaybackPreferences } from "@/lib/profile-preferences";
 import {
   clearWatchedHistory,
   loadWatchedHistory,
@@ -420,50 +419,87 @@ function StatusRow({ label, ok, okLabel, badLabel }: { label: string; ok: boolea
 
 /** Per-device playback defaults — used by video-player on next play. */
 function PlaybackPreferencesSection() {
-  const [quality, setQuality] = useState<string>(() => {
-    if (typeof window === "undefined") return "1080";
-    const h = getPreferredQualityHeight();
-    return h === "auto" ? "auto" : String(h);
-  });
-  const [audioLang, setAudioLang] = useState(() =>
-    typeof window !== "undefined" ? getPreferredAudioLanguage() : "en"
-  );
+  const [qualityOverride, setQualityOverride] = useState<string | null>(null);
+  const [audioLanguageOverride, setAudioLanguageOverride] = useState<string | null>(null);
 
-  const save = () => {
-    if (quality === "auto") setPreferredQualityHeight("auto");
-    else setPreferredQualityHeight(Number(quality));
-    setPreferredAudioLanguage(audioLang.trim() || "en");
-    toast.success("Playback preferences saved");
-  };
+  const preferencesQuery = useQuery<ProfilePlaybackPreferences>({
+    queryKey: ["profile-playback-preferences"],
+    queryFn: async () => {
+      const response = await fetch("/api/preferences", { cache: "no-store" });
+      const json = (await response.json()) as ProfilePlaybackPreferences & {
+        error?: string;
+      };
+      if (!response.ok) throw new Error(json.error || "Could not load preferences");
+      syncProfilePlaybackPreferences(json);
+      return json;
+    },
+  });
+
+  const quality =
+    qualityOverride ?? String(preferencesQuery.data?.playbackQuality ?? "auto");
+  const audioLang =
+    audioLanguageOverride ??
+    preferencesQuery.data?.audioLanguage ??
+    getPreferredAudioLanguage();
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playbackQuality: quality === "auto" ? "auto" : Number(quality),
+          audioLanguage: audioLang.trim() || "en",
+        }),
+      });
+      const json = (await response.json()) as ProfilePlaybackPreferences & {
+        error?: string;
+      };
+      if (!response.ok) throw new Error(json.error || "Could not save preferences");
+      return json;
+    },
+    onSuccess: (preferences) => {
+      syncProfilePlaybackPreferences(preferences);
+      setQualityOverride(String(preferences.playbackQuality));
+      setAudioLanguageOverride(preferences.audioLanguage);
+      toast.success("Playback preferences saved to your profile");
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Could not save preferences");
+    },
+  });
 
   return (
     <Card className="rounded-2xl">
       <CardHeader>
         <CardTitle className="font-display text-base">Playback preferences</CardTitle>
         <CardDescription>
-          Like Netflix data settings: Auto adapts on your network (starts at HD). High locks
-          1080p. Ultra prefers 4K when the server has it. Mid-play you can still pick a
-          rung in the player Quality menu.
+          Auto is the default and adapts to your connection. Choose a fixed default only
+          when you want every title to start at that quality. You can still change quality
+          for the current video without changing this profile setting.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
           <Label htmlFor="pref-quality">Playback quality</Label>
-          <Select value={quality} onValueChange={setQuality}>
+          <Select value={quality} onValueChange={setQualityOverride}>
             <SelectTrigger id="pref-quality" className="w-full max-w-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="auto">Auto — best for your connection</SelectItem>
-              <SelectItem value="1080">High — 1080p</SelectItem>
-              <SelectItem value="1440">Higher — 1440p when available</SelectItem>
               <SelectItem value="2160">Ultra — 4K when available</SelectItem>
+              <SelectItem value="1440">Higher — 1440p when available</SelectItem>
+              <SelectItem value="1080">High — 1080p</SelectItem>
+              <SelectItem value="720">Balanced — 720p</SelectItem>
+              <SelectItem value="480">Data saver — 480p</SelectItem>
+              <SelectItem value="360">Minimum data — 360p</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-2">
           <Label htmlFor="pref-audio">Preferred audio language</Label>
-          <Select value={audioLang} onValueChange={setAudioLang}>
+          <Select value={audioLang} onValueChange={setAudioLanguageOverride}>
             <SelectTrigger id="pref-audio" className="w-full max-w-xs">
               <SelectValue />
             </SelectTrigger>
@@ -479,9 +515,25 @@ function PlaybackPreferencesSection() {
             </SelectContent>
           </Select>
         </div>
-        <Button type="button" size="sm" className="rounded-full" onClick={save}>
-          <Save className="mr-1.5 h-4 w-4" /> Save preferences
+        <Button
+          type="button"
+          size="sm"
+          className="rounded-full"
+          disabled={!preferencesQuery.isSuccess || saveMutation.isPending}
+          onClick={() => saveMutation.mutate()}
+        >
+          {saveMutation.isPending ? (
+            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="mr-1.5 h-4 w-4" />
+          )}
+          Save preferences
         </Button>
+        {preferencesQuery.isError ? (
+          <p className="text-sm text-destructive" role="alert">
+            Could not load your profile preferences. Reload this page before saving.
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );

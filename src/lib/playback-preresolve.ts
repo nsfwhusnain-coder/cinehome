@@ -72,10 +72,15 @@ export function buildPlaybackUrl(
     if (typeof window !== "undefined") {
       const raw = localStorage.getItem("cinehome:preferred-quality");
       if (raw === "auto" || raw === null || raw === "") {
-        params.set("qualityHint", "1080");
+        params.set("qualityHint", "auto");
       } else {
         const n = Number(raw);
-        params.set("qualityHint", Number.isFinite(n) && n >= 1080 ? String(n) : "1080");
+        params.set(
+          "qualityHint",
+          Number.isFinite(n) && [2160, 1440, 1080, 720, 480, 360].includes(n)
+            ? String(n)
+            : "auto"
+        );
       }
     }
   } catch {

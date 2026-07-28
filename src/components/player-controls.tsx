@@ -24,20 +24,15 @@ import { usePlayerStore } from "@/stores/player-store";
 import type { PlaybackSource } from "@/lib/playback/types";
 import { PlayerDock, type DockSection } from "@/components/player-dock";
 import { ProgressBar } from "@/components/player/ProgressBar";
-import { ServersPanel, type ServerItem } from "@/components/player/ServersPanel";
 import {
   EpisodesPanel,
   type SeasonOption,
 } from "@/components/player/EpisodesPanel";
-import { flagForServerName } from "@/config/servers";
-import { baseServerToken, getServerDisplayName, resolutionBadge } from "@/lib/playback/server-names";
-import {
-  isSourcePlayableHere,
-  sourceHealthState,
-  sourceMaxHeight,
-} from "@/lib/playback/source-quality";
-import type { QualityOption } from "@/lib/playback/hls-quality";
-import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  PlayerQualityOption,
+  PlayerQualityTarget,
+} from "@/lib/playback/quality-router";
+import { useEffect, useRef, useState } from "react";
 
 function formatTime(seconds: number): string {
   if (!seconds || !isFinite(seconds)) return "0:00";
@@ -65,7 +60,6 @@ interface Props {
   mediaType?: "movie" | "tv";
   sources: PlaybackSource[];
   activeSourceId: string;
-  activeSource?: PlaybackSource | null;
   onSourceChange: (source: PlaybackSource) => void;
   onTogglePlay: () => void;
   onSeekRelative: (seconds: number) => void;
@@ -74,17 +68,16 @@ interface Props {
   onSetVolume: (v: number) => void;
   onToggleFullscreen: () => void;
   onTogglePip: () => void;
-  onToggleSettings?: () => void;
-  onToggleSubtitles?: () => void;
+  onToggleSettings?: (section?: DockSection) => void;
   settingsOpen?: boolean;
   onToggleShortcuts?: () => void;
   shortcutsOpen?: boolean;
   dockSection: DockSection | null;
   onDockSectionChange: (section: DockSection | null) => void;
   onCloseDock: () => void;
-  qualities: QualityOption[];
-  activeQuality: number;
-  onQualityChange: (level: number) => void;
+  qualityTargets: PlayerQualityOption[];
+  activeQualityTarget: PlayerQualityTarget;
+  onQualityTargetChange: (target: PlayerQualityTarget) => void;
   onSubtitleChange: (trackId: number | null) => void;
   onAudioChange: (trackId: number) => void;
   onSetSpeed: (speed: number) => void;
@@ -93,7 +86,6 @@ interface Props {
   alwaysShowControls?: boolean;
   isDiscoveringSources?: boolean;
   failedSourceIds?: string[];
-  levelsLoading?: boolean;
   onBack?: () => void;
   /** TV episode picker */
   tvId?: number;
@@ -110,7 +102,6 @@ export function PlayerControls({
   mediaType,
   sources,
   activeSourceId,
-  activeSource,
   onSourceChange,
   onTogglePlay,
   onSeekRelative,
@@ -120,16 +111,15 @@ export function PlayerControls({
   onToggleFullscreen,
   onTogglePip,
   onToggleSettings,
-  onToggleSubtitles,
   settingsOpen,
   onToggleShortcuts,
   shortcutsOpen,
   dockSection,
   onDockSectionChange,
   onCloseDock,
-  qualities,
-  activeQuality,
-  onQualityChange,
+  qualityTargets,
+  activeQualityTarget,
+  onQualityTargetChange,
   onSubtitleChange,
   onAudioChange,
   onSetSpeed,
@@ -138,7 +128,6 @@ export function PlayerControls({
   alwaysShowControls,
   isDiscoveringSources,
   failedSourceIds = [],
-  levelsLoading,
   onBack,
   tvId,
   tvSeasons = [],
@@ -155,14 +144,10 @@ export function PlayerControls({
   const isMuted = usePlayerStore((s) => s.isMuted);
   const isFullscreen = usePlayerStore((s) => s.isFullscreen);
   const showControls = usePlayerStore((s) => s.showControls);
-  const subtitlesOn = usePlayerStore((s) => s.subtitlesOn);
-  const subtitleTracks = usePlayerStore((s) => s.subtitleTracks);
   // Buffered edge lives in the store (not a VideoPlayer-level re-render prop) —
   // isolates the ~4x/sec update to this subtree instead of the 2,360-line parent.
   const buffered = usePlayerStore((s) => s.bufferedEnd);
 
-  const [showServers, setShowServers] = useState(false);
-  const [showSubsPanel, setShowSubsPanel] = useState(false);
   const [showEpisodes, setShowEpisodes] = useState(false);
   const shortcutsDialogRef = useRef<HTMLDivElement>(null);
   const shortcutsPreviousFocusRef = useRef<HTMLElement | null>(null);
@@ -175,7 +160,7 @@ export function PlayerControls({
     !!onSelectEpisode;
 
   const controlsVisible =
-    showControls || alwaysShowControls || !!settingsOpen || showServers || showEpisodes;
+    showControls || alwaysShowControls || !!settingsOpen || showEpisodes;
 
   useEffect(() => {
     if (!shortcutsOpen) return;
@@ -194,76 +179,6 @@ export function PlayerControls({
   }, [shortcutsOpen]);
 
   const showNextEpisode = mediaType === "tv" && !!hasNextEpisode;
-  const hasCaptions = subtitleTracks.length > 0;
-  const failedSet = useMemo(() => new Set(failedSourceIds), [failedSourceIds]);
-
-  // Freezes each source's row position the first time it's seen — background
-  // probe updates and any upstream re-sort of `sources` must never reshuffle
-  // or drop a row the owner has already looked at (owner req: switching
-  // servers/reopening the panel must not make sources disappear or churn).
-  // Adjusted DURING render (React's documented pattern for deriving state
-  // from a prop change — see ServersPanel's own prior art for the same
-  // idiom) rather than in an effect, so it never causes an extra committed
-  // render; ids that genuinely leave the roster are pruned so the list
-  // stays honest rather than accumulating stale entries forever.
-  const [stableOrder, setStableOrder] = useState<string[]>([]);
-  const [prevSources, setPrevSources] = useState(sources);
-  if (sources !== prevSources) {
-    setPrevSources(sources);
-    const ids = sources.map((s) => s.id);
-    const idSet = new Set(ids);
-    const kept = stableOrder.filter((id) => idSet.has(id));
-    const additions = ids.filter((id) => !kept.includes(id));
-    if (additions.length > 0 || kept.length !== stableOrder.length) {
-      setStableOrder([...kept, ...additions]);
-    }
-  }
-
-  const serverRows: ServerItem[] = useMemo(() => {
-    const byId = new Map(sources.map((s) => [s.id, s]));
-    const known = stableOrder.filter((id) => byId.has(id));
-    const pending = sources.map((s) => s.id).filter((id) => !known.includes(id));
-    const orderedIds = [...known, ...pending];
-
-    // Greek server name (never quality — that's `qualityLabel` below + the
-    // separate Quality control) plus an honest per-row resolution badge.
-    // `s.id` is passed so RD's identically-labeled native-1080p slots get a
-    // stable Roman-numeral suffix from their OWN id, never from each other.
-    const rows = orderedIds.map((id) => {
-      const s = byId.get(id)!;
-      const name = getServerDisplayName(s.provider, s.label, s.id);
-      const failed = failedSet.has(s.id);
-      const premium = s.origin === "debrid";
-      return {
-        id: s.id,
-        name,
-        // Premium sources carry the gold crown instead — a CDN-geography
-        // flag has no meaning for a Real-Debrid/TorBox slot.
-        flag: premium ? "" : flagForServerName(baseServerToken(s.provider, s.label)),
-        active: s.id === activeSourceId,
-        failed,
-        health: sourceHealthState(s, failed),
-        premium,
-        playableHere: isSourcePlayableHere(s),
-        height: sourceMaxHeight(s),
-        qualityLabel: resolutionBadge(s),
-      };
-    });
-    // Frozen order above already reflects upstream's playable-here +
-    // healthiest + highest-resolution-first ordering from the first time
-    // each row was seen; a hard runtime failure THIS session is the one
-    // thing only this component knows about, so it alone still needs to
-    // sink to the very bottom. Array#sort is stable — every other row's
-    // relative (frozen) order is preserved.
-    return [...rows].sort((a, b) => (a.failed ? 1 : 0) - (b.failed ? 1 : 0));
-  }, [sources, stableOrder, activeSourceId, failedSet]);
-
-  const closePanels = () => {
-    setShowServers(false);
-    setShowSubsPanel(false);
-    onCloseDock();
-  };
-
   return (
     <>
       {/* Top bar — LordFlix */}
@@ -303,34 +218,20 @@ export function PlayerControls({
         onExpandedSectionChange={onDockSectionChange}
         sources={sources}
         activeSourceId={activeSourceId}
-        activeSource={activeSource}
         onSourceChange={onSourceChange}
-        qualities={qualities}
-        activeQuality={activeQuality}
-        onQualityChange={onQualityChange}
+        qualityTargets={qualityTargets}
+        activeQualityTarget={activeQualityTarget}
+        onQualityTargetChange={onQualityTargetChange}
         onSubtitleChange={onSubtitleChange}
         onAudioChange={onAudioChange}
-        onToggleSubtitles={onToggleSubtitles ?? (() => {})}
         onSetSpeed={onSetSpeed}
         isDiscoveringSources={isDiscoveringSources}
         failedSourceIds={failedSourceIds}
-        levelsLoading={levelsLoading}
         sleepMinutes={sleepMinutes}
         onSleepMinutesChange={onSleepMinutesChange}
         onOpenShortcuts={() => {
           onCloseDock();
           onToggleShortcuts?.();
-        }}
-      />
-
-      <ServersPanel
-        open={showServers}
-        servers={serverRows}
-        onClose={() => setShowServers(false)}
-        onSelect={(id) => {
-          const src = sources.find((s) => s.id === id);
-          if (src && isSourcePlayableHere(src)) onSourceChange(src);
-          setShowServers(false);
         }}
       />
 
@@ -345,59 +246,6 @@ export function PlayerControls({
           onSelect={onSelectEpisode}
         />
       ) : null}
-
-      {/* Subtitles quick panel */}
-      {showSubsPanel && (
-        <>
-          <button
-            type="button"
-            className="absolute inset-0 z-[55] bg-transparent"
-            onClick={() => setShowSubsPanel(false)}
-            aria-label="Close subtitles"
-          />
-          <div
-            className="absolute bottom-[60px] right-4 z-[60] w-[210px] overflow-hidden rounded-xl border border-white/10 bg-[rgba(15,15,15,0.95)] shadow-2xl backdrop-blur-[20px]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="border-b border-white/10 px-3 py-2.5 text-sm font-semibold text-white">
-              Subtitles
-            </div>
-            <div className="p-1.5">
-              <button
-                type="button"
-                className="flex h-11 w-full items-center rounded-lg px-3 text-left text-sm text-white/90 hover:bg-white/[0.05]"
-                onClick={() => {
-                  onSubtitleChange(null);
-                  setShowSubsPanel(false);
-                }}
-              >
-                Off
-              </button>
-              {subtitleTracks.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={cn(
-                    "flex h-11 w-full items-center rounded-lg px-3 text-left text-sm hover:bg-white/[0.05]",
-                    subtitlesOn && t.id === usePlayerStore.getState().activeSubtitleId
-                      ? "bg-white/[0.08] text-white"
-                      : "text-white/90"
-                  )}
-                  onClick={() => {
-                    onSubtitleChange(t.id);
-                    setShowSubsPanel(false);
-                  }}
-                >
-                  {t.name || t.lang?.toUpperCase() || `Track ${t.id + 1}`}
-                </button>
-              ))}
-              {subtitleTracks.length === 0 && (
-                <div className="px-3 py-3 text-xs text-white/45">No tracks</div>
-              )}
-            </div>
-          </div>
-        </>
-      )}
 
       {/* Bottom strip: full-bleed progress flush above icon row (LordFlix) */}
       <div
@@ -472,8 +320,6 @@ export function PlayerControls({
             {showTvEpisodes ? (
               <IconBtn
                 onClick={() => {
-                  setShowServers(false);
-                  setShowSubsPanel(false);
                   onCloseDock();
                   setShowEpisodes((v) => !v);
                 }}
@@ -491,37 +337,29 @@ export function PlayerControls({
             <div className="hidden items-center gap-2 sm:flex">
               <IconBtn
                 onClick={() => {
-                  setShowSubsPanel(false);
                   setShowEpisodes(false);
-                  onCloseDock();
-                  setShowServers((v) => !v);
+                  onToggleSettings?.("server");
                 }}
-                label="Servers"
-                active={showServers}
+                label="Sources"
+                active={settingsOpen && dockSection === "server"}
               >
                 <Cloud className="h-5 w-5" />
               </IconBtn>
               <IconBtn
                 onClick={() => {
-                  setShowServers(false);
-                  if (hasCaptions) {
-                    setShowSubsPanel((v) => !v);
-                  } else {
-                    onToggleSubtitles?.();
-                  }
+                  setShowEpisodes(false);
+                  onToggleSettings?.("subtitles");
                 }}
                 label="Subtitles"
-                active={showSubsPanel || subtitlesOn}
+                active={settingsOpen && dockSection === "subtitles"}
               >
                 <Captions className="h-5 w-5" />
               </IconBtn>
             </div>
             <IconBtn
               onClick={() => {
-                setShowServers(false);
-                setShowSubsPanel(false);
                 setShowEpisodes(false);
-                onToggleSettings?.();
+                onToggleSettings?.("quality");
               }}
               label="Settings"
               active={settingsOpen}

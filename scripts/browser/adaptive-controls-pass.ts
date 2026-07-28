@@ -170,26 +170,13 @@ async function openSettings(page: Page) {
 
 async function openSection(page: Page, section: "Quality" | "Audio" | "Subtitles") {
   const dialog = await openSettings(page);
-  const tile = dialog
-    .getByRole("button")
-    .filter({ hasText: new RegExp(`^${section}`, "i") })
-    .first();
-  await tile.click();
-  const heading =
-    section === "Subtitles"
-      ? dialog.getByText(/^Subtitles(?: Settings)?$/).first()
-      : dialog.getByText(section, { exact: true });
-  await heading.waitFor({ state: "visible" });
+  await dialog.getByRole("tab", { name: section, exact: true }).click();
   return dialog;
 }
 
 async function closeSettings(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
   const dialog = page.getByRole("dialog", { name: "Player settings" });
-  if (await dialog.isVisible().catch(() => false)) {
-    // Escape from an expanded section returns to root; the second closes it.
-    await page.keyboard.press("Escape");
-  }
   await dialog.waitFor({ state: "hidden" });
 }
 
@@ -200,9 +187,10 @@ function qualityHeight(label: string): number {
 
 async function chooseQuality(page: Page, height: number): Promise<void> {
   const dialog = await openSection(page, "Quality");
+  const label = height === 2160 ? "4K" : `${height}p`;
   const option = dialog
     .getByRole("button")
-    .filter({ hasText: new RegExp(`^${height}p(?:\\b|\\s)`, "i") })
+    .filter({ hasText: new RegExp(`^${label}(?:\\b|\\s)`, "i") })
     .first();
   await option.click();
   await closeSettings(page);
@@ -337,15 +325,12 @@ async function main(): Promise<void> {
     );
 
     await showControls(page);
-    await page.getByRole("button", { name: "Servers", exact: true }).click();
-    const servers = page.getByRole("dialog", { name: "Servers" });
+    await page.getByRole("button", { name: "Sources", exact: true }).click();
+    const servers = page.getByRole("dialog", { name: "Player settings" });
     await servers.waitFor({ state: "visible" });
-    let sourceButton = servers.locator(`button[data-source-id="${target.id}"]`);
-    if ((await sourceButton.count()) === 0) {
-      await servers.getByRole("button", { name: /Show \d+ more servers?/i }).click();
-      sourceButton = servers.locator(`button[data-source-id="${target.id}"]`);
-    }
+    const sourceButton = servers.locator(`button[data-source-id="${target.id}"]`);
     await sourceButton.click();
+    await closeSettings(page);
     const selected = await waitForAdvancingVideo(page, target.id);
     record(
       "adaptive source selection becomes healthy",
@@ -362,12 +347,19 @@ async function main(): Promise<void> {
     );
 
     const qualityDialog = await openSection(page, "Quality");
-    const qualityTexts = await qualityDialog.getByRole("button").evaluateAll((buttons) =>
+    const qualityRows = await qualityDialog.getByRole("button").evaluateAll((buttons) =>
       buttons
-        .map((button) => button.textContent?.replace(/\s+/g, " ").trim() || "")
-        .filter((text) => /^Auto\b|^\d{3,4}p\b/i.test(text))
+        .map((button) => ({
+          text: button.textContent?.replace(/\s+/g, " ").trim() || "",
+          disabled: (button as HTMLButtonElement).disabled,
+        }))
+        .filter((row) => /^Auto\b|^4K\b|^\d{3,4}p\b/i.test(row.text))
     );
-    const qualityHeights = qualityTexts.map(qualityHeight).filter((height) => height > 0);
+    const qualityTexts = qualityRows.map((row) => row.text);
+    const qualityHeights = qualityRows
+      .filter((row) => !row.disabled)
+      .map((row) => (row.text.startsWith("4K") ? 2160 : qualityHeight(row.text)))
+      .filter((height) => height > 0);
     record(
       "quality menu exposes the adaptive ladder",
       qualityHeights.length >= 2,
