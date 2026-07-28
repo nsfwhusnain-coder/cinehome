@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { decodeUpstream } from "@/lib/hls-session";
 import type { PlaybackSource } from "./types";
-import { proxyRecoveryDebridSources } from "./recovery-proxy";
+import {
+  proxyDebridSources,
+  proxyRecoveryDebridSources,
+} from "./recovery-proxy";
 
 const SOURCE: PlaybackSource = {
   id: "debrid-example-native-1080-1",
@@ -15,6 +18,21 @@ const SOURCE: PlaybackSource = {
 };
 
 describe("proxyRecoveryDebridSources", () => {
+  it("uses one stable same-origin URL for ordinary playback", () => {
+    const first = proxyDebridSources("user-1", [SOURCE])[0]!;
+    const second = proxyDebridSources("user-1", [SOURCE])[0]!;
+
+    expect(first.id).toBe(SOURCE.id);
+    expect(first.url).toBe(second.url);
+    expect(first.url).not.toBe(SOURCE.url);
+
+    const firstUrl = new URL(first.url, "http://cinehome");
+    expect(firstUrl.origin).toBe("http://cinehome");
+    expect(firstUrl.pathname).toMatch(/^\/api\/hls\/[a-f0-9]{32}$/);
+    expect(firstUrl.searchParams.has("recovery")).toBe(false);
+    expect(decodeUpstream(firstUrl.searchParams.get("u")!)).toBe(SOURCE.url);
+  });
+
   it("keeps the upstream intact while making each recovery generation browser-distinct", () => {
     const first = proxyRecoveryDebridSources("user-1", [SOURCE], 101)[0]!;
     const second = proxyRecoveryDebridSources("user-1", [SOURCE], 102)[0]!;

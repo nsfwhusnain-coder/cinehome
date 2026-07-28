@@ -17,20 +17,23 @@ function upstreamOrigin(url: string): string {
 }
 
 /**
- * A roster refresh must produce a browser-distinct media URL even when
- * Real-Debrid legitimately returns the same still-valid signed CDN link.
+ * Route every debrid object through CineHome's authenticated streaming proxy.
  *
- * Browsers may retain a failed media response for a direct URL. Reattaching
- * that exact URL can therefore fail locally without issuing a new request.
- * Route recovery-only debrid traffic through the authenticated streaming
- * proxy and add the roster generation to its ignored query parameters. The
- * upstream URL stays unchanged, Range requests remain streaming, and normal
- * healthy playback remains direct (zero extra home-server hop).
+ * Real-Debrid CDN nodes do not have one stable browser-CORS policy: a link can
+ * pass the server-side Range/media validation and still be rejected by the
+ * browser because that particular node omits Access-Control-Allow-Origin.
+ * Keeping the normal URL same-origin makes the already-validated object
+ * reliably playable while preserving streaming Range responses.
+ *
+ * The HLS session id is deterministic for user + upstream URL, so an ordinary
+ * resolve gets a stable, generation-independent browser URL. A recovery resolve
+ * appends its nonce solely as a browser cache-buster; it does not alter the
+ * upstream URL or create a second proxy session.
  */
-export function proxyRecoveryDebridSources(
+export function proxyDebridSources(
   userId: string,
   sources: PlaybackSource[],
-  refreshNonce: number
+  refreshNonce?: number
 ): PlaybackSource[] {
   return sources.map((source) => {
     const origin = upstreamOrigin(source.url);
@@ -40,9 +43,21 @@ export function proxyRecoveryDebridSources(
       userAgent: RECOVERY_PROXY_USER_AGENT,
       cookies: "",
     });
+    const stableProxyUrl =
+      `/api/hls/${session.id}?u=${encodeUpstream(source.url)}`;
     const proxyUrl =
-      `/api/hls/${session.id}?u=${encodeUpstream(source.url)}` +
-      `&recovery=${refreshNonce}`;
+      refreshNonce == null
+        ? stableProxyUrl
+        : `${stableProxyUrl}&recovery=${refreshNonce}`;
     return { ...source, url: proxyUrl };
   });
+}
+
+/** Backwards-compatible name for the explicit recovery call site/tests. */
+export function proxyRecoveryDebridSources(
+  userId: string,
+  sources: PlaybackSource[],
+  refreshNonce: number
+): PlaybackSource[] {
+  return proxyDebridSources(userId, sources, refreshNonce);
 }

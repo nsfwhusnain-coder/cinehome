@@ -11,8 +11,9 @@ import {
   consumesTitleResolveBudget,
   playbackRefreshMode,
 } from "@/lib/playback/refresh-mode";
-import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
+import { proxyDebridSources } from "@/lib/playback/recovery-proxy";
 import { consumePlaybackResolveBudget } from "@/lib/playback/resolve-budget";
+import { shouldConsumePlaybackResolveBudget } from "@/lib/playback/resolve-budget-policy";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -59,13 +60,64 @@ const recoveryRefreshLimiter = new RateLimiter({
   windowMs: RECOVERY_REFRESH_WINDOW_MS,
 });
 
-function tooManyRequests(retryAfterMs: number, message: string): NextResponse {
+function tooManyRequests(
+  retryAfterMs: number,
+  message: string,
+  requestId: string
+): NextResponse {
   return NextResponse.json(
     { error: message },
     {
       status: 429,
-      headers: { "Retry-After": String(Math.max(1, Math.ceil(retryAfterMs / 1000))) },
+      headers: {
+        "Retry-After": String(Math.max(1, Math.ceil(retryAfterMs / 1000))),
+        "X-Playback-Request-Id": requestId,
+      },
     }
+  );
+}
+
+interface PlaybackOutcomeLog {
+  requestId: string;
+  mediaType: MediaType;
+  tmdbId: number;
+  season?: number;
+  episode?: number;
+  fast: boolean;
+  refreshMode: "none" | "admin" | "recovery";
+  cache: "HIT" | "MISS" | "BYPASS";
+  outcome: string;
+  status: number;
+  startedAt: number;
+  sourceCount?: number;
+  partial?: boolean;
+  deniedScope?: "title" | "user" | "refresh";
+}
+
+/**
+ * One sanitized completion record per playback API request. Never include
+ * upstream URLs, provider tokens, cookies, user ids, or error messages: the
+ * opaque request id is sufficient to join this route with browser telemetry.
+ */
+function logPlaybackOutcome(input: PlaybackOutcomeLog): void {
+  console.info(
+    JSON.stringify({
+      event: "playback_resolve_outcome",
+      requestId: input.requestId,
+      mediaType: input.mediaType,
+      tmdbId: input.tmdbId,
+      season: input.season ?? 0,
+      episode: input.episode ?? 0,
+      fast: input.fast,
+      refreshMode: input.refreshMode,
+      cache: input.cache,
+      outcome: input.outcome,
+      status: input.status,
+      elapsedMs: Date.now() - input.startedAt,
+      ...(input.sourceCount != null ? { sourceCount: input.sourceCount } : {}),
+      ...(input.partial != null ? { partial: input.partial } : {}),
+      ...(input.deniedScope ? { deniedScope: input.deniedScope } : {}),
+    })
   );
 }
 
@@ -124,37 +176,81 @@ export async function GET(
   });
   const noCache = refreshMode !== "none";
   const refreshNonce = noCache ? Date.now() : undefined;
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const titleResolveKey =
+    `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
 
-  if (!fast) {
-    const titleResolveKey =
-      `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
-    const resolveBudget = consumePlaybackResolveBudget({
+  const consumeFullResolveBudget = () =>
+    consumePlaybackResolveBudget({
       userLimiter: fullResolvePerUserLimiter,
       titleLimiter: fullResolvePerTitleLimiter,
       userKey: userId,
       titleKey: titleResolveKey,
       consumeTitle: consumesTitleResolveBudget(refreshMode),
     });
+
+  // A forced refresh deliberately bypasses cache, so it remains budgeted
+  // before any cache/profile work. Ordinary full requests are budgeted only
+  // after a cache miss below: replaying a warm result is not a live resolve.
+  if (
+    shouldConsumePlaybackResolveBudget({
+      fast,
+      refreshMode,
+      cache: "BYPASS",
+    })
+  ) {
+    const resolveBudget = consumeFullResolveBudget();
     if (!resolveBudget.allowed) {
+      logPlaybackOutcome({
+        requestId,
+        mediaType: type,
+        tmdbId,
+        season,
+        episode,
+        fast,
+        refreshMode,
+        cache: "BYPASS",
+        outcome: "rate_limited",
+        status: 429,
+        startedAt,
+        deniedScope: resolveBudget.deniedScope ?? undefined,
+      });
       return tooManyRequests(
         resolveBudget.retryAfterMs,
-        "Too many playback resolve requests. Please wait a moment and try again."
+        "Too many playback resolve requests. Please wait a moment and try again.",
+        requestId
       );
     }
   }
   if (noCache) {
     const refreshKey =
       refreshMode === "recovery"
-        ? `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`
+        ? titleResolveKey
         : userId;
     const refreshCheck =
       refreshMode === "recovery"
         ? recoveryRefreshLimiter.consume(refreshKey)
         : noCacheResolveLimiter.consume(refreshKey);
     if (!refreshCheck.allowed) {
+      logPlaybackOutcome({
+        requestId,
+        mediaType: type,
+        tmdbId,
+        season,
+        episode,
+        fast,
+        refreshMode,
+        cache: "BYPASS",
+        outcome: "rate_limited",
+        status: 429,
+        startedAt,
+        deniedScope: "refresh",
+      });
       return tooManyRequests(
         refreshCheck.retryAfterMs,
-        "Too many forced refreshes. Please wait a few minutes and try again."
+        "Too many forced refreshes. Please wait a few minutes and try again.",
+        requestId
       );
     }
   }
@@ -184,16 +280,64 @@ export async function GET(
   if (!noCache) {
     const cached = getCachedPlayback<PlaybackResponse>(cacheKey);
     if (cached) {
+      logPlaybackOutcome({
+        requestId,
+        mediaType: type,
+        tmdbId,
+        season,
+        episode,
+        fast,
+        refreshMode,
+        cache: "HIT",
+        outcome: cached.status,
+        status: 200,
+        startedAt,
+        sourceCount: cached.sources?.length ?? 0,
+        partial: cached.partial,
+      });
       return NextResponse.json({ ...cached, preferences: profilePreferences }, {
         headers: {
           "Cache-Control": "private, no-store",
           "X-Playback-Cache": "HIT",
+          "X-Playback-Request-Id": requestId,
         },
       });
     }
   }
 
-  const provider = await getProvider();
+  if (
+    shouldConsumePlaybackResolveBudget({
+      fast,
+      refreshMode,
+      cache: "MISS",
+    })
+  ) {
+    const resolveBudget = consumeFullResolveBudget();
+    if (!resolveBudget.allowed) {
+      logPlaybackOutcome({
+        requestId,
+        mediaType: type,
+        tmdbId,
+        season,
+        episode,
+        fast,
+        refreshMode,
+        cache: "MISS",
+        outcome: "rate_limited",
+        status: 429,
+        startedAt,
+        deniedScope: resolveBudget.deniedScope ?? undefined,
+      });
+      return tooManyRequests(
+        resolveBudget.retryAfterMs,
+        "Too many playback resolve requests. Please wait a moment and try again.",
+        requestId
+      );
+    }
+  }
+
+  try {
+    const provider = await getProvider();
 
   // PREMIUM debrid tier (owner's Real-Debrid + Torrentio, primary/fast/
   // high-volume source) — kicked off in PARALLEL with the base embed resolve
@@ -242,7 +386,7 @@ export async function GET(
 
   let result: PlaybackResponse;
   if (fast) {
-    const debridSources = await debridPromise;
+    const debridSources = proxyDebridSources(userId, await debridPromise);
     const debridOnly = buildFastDebridResponse(
       debridSources,
       qualityHint ?? "auto"
@@ -255,9 +399,11 @@ export async function GET(
       console.info(
         JSON.stringify({
           event: "playback_fast_debrid_hit",
+          requestId,
           mediaType: type,
           tmdbId,
           sourceCount: debridSources.length,
+          elapsedMs: Date.now() - startedAt,
         })
       );
     } else {
@@ -269,14 +415,11 @@ export async function GET(
       providerPromise,
       debridPromise,
     ]);
-    const debridSources =
-      refreshMode === "recovery" && refreshNonce != null
-        ? proxyRecoveryDebridSources(
-            userId,
-            resolvedDebridSources,
-            refreshNonce
-          )
-        : resolvedDebridSources;
+    const debridSources = proxyDebridSources(
+      userId,
+      resolvedDebridSources,
+      refreshMode === "recovery" ? refreshNonce : undefined
+    );
     result = providerResult;
     mergeDebridSources(result, debridSources, qualityHint);
   }
@@ -287,6 +430,22 @@ export async function GET(
     setCachedPlayback(cacheKey, result, ttl);
   }
 
+  logPlaybackOutcome({
+    requestId,
+    mediaType: type,
+    tmdbId,
+    season,
+    episode,
+    fast,
+    refreshMode,
+    cache: noCache ? "BYPASS" : "MISS",
+    outcome: result.status,
+    status: 200,
+    startedAt,
+    sourceCount: result.sources?.length ?? 0,
+    partial: result.partial,
+  });
+
   return NextResponse.json({
     ...result,
     preferences: profilePreferences,
@@ -294,9 +453,52 @@ export async function GET(
   }, {
     headers: {
       "Cache-Control": "private, no-store",
-      "X-Playback-Cache": "MISS",
+      "X-Playback-Cache": noCache ? "BYPASS" : "MISS",
+      "X-Playback-Request-Id": requestId,
     },
   });
+  } catch (error) {
+    // Keep failure telemetry useful but sanitized: exception messages can
+    // contain provider URLs or signed query strings, so record only its class.
+    console.error(
+      JSON.stringify({
+        event: "playback_resolve_error",
+        requestId,
+        mediaType: type,
+        tmdbId,
+        season: season ?? 0,
+        episode: episode ?? 0,
+        fast,
+        refreshMode,
+        elapsedMs: Date.now() - startedAt,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      })
+    );
+    logPlaybackOutcome({
+      requestId,
+      mediaType: type,
+      tmdbId,
+      season,
+      episode,
+      fast,
+      refreshMode,
+      cache: noCache ? "BYPASS" : "MISS",
+      outcome: "resolve_error",
+      status: 500,
+      startedAt,
+    });
+    return NextResponse.json(
+      { error: "Playback resolution failed." },
+      {
+        status: 500,
+        headers: {
+          "Cache-Control": "private, no-store",
+          "X-Playback-Cache": noCache ? "BYPASS" : "MISS",
+          "X-Playback-Request-Id": requestId,
+        },
+      }
+    );
+  }
 }
 
 /**

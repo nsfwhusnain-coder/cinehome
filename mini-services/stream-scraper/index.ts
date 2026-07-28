@@ -65,6 +65,7 @@ import {
   isPoisonStreamUrl,
   POISON_SCORE_PENALTY,
 } from "./poison-url";
+import { verifiedInventoryIsHealthy } from "./provider-inventory";
 import {
   type EmbedSourceSpec,
   buildPrimarySourceUrls,
@@ -987,6 +988,10 @@ async function pickAllVerifiedCaptures(
 
 /** Probe API-sourced entries so dead CDN URLs never fill a server slot. */
 async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
+  // Reject conclusively poisoned hosts before any same-origin proxy layer can
+  // obscure the upstream identity or waste the provider's verification budget.
+  if (isPoisonStreamUrl(entry.url)) return false;
+
   const referer = entry.session.referer || "";
   const origin = entry.session.origin || referer;
   const ua = entry.session.userAgent || DEFAULT_UA;
@@ -1838,7 +1843,7 @@ async function resolveNotorrentEntries(
   season?: number,
   episode?: number
 ): Promise<SourceEntry[]> {
-  const notorrent = await withCircuit(
+  const inventory = await withCircuit(
     "notorrent",
     async () => {
       const r = await withTimeout(
@@ -1846,13 +1851,25 @@ async function resolveNotorrentEntries(
         BACKGROUND_API_TIMEOUT_MS
       );
       if (r == null) throw new Error("notorrent_timeout");
-      return r;
+      if (!r.length) return { rawCount: 0, playable: [] as SourceEntry[] };
+
+      const verified = await filterVerifiedEntries(r.map(providerToEntry), {
+        softKeep: false,
+      });
+      logAt(
+        verified.length ? "info" : "warn",
+        `[notorrent] ${r.length} raw -> ${verified.length} playable for ${tmdbId}`
+      );
+      return { rawCount: r.length, playable: verified };
     },
-    { isSuccess: (r) => r != null }
+    // A provider returning URLs that all fail the media probe is unhealthy,
+    // not a circuit success. A zero-row result remains a normal title miss.
+    {
+      isSuccess: (result) =>
+        verifiedInventoryIsHealthy(result, { emptyIsTitleMiss: true }),
+    }
   );
-  if (!notorrent?.length) return [];
-  const unverified = notorrent.map(providerToEntry);
-  return filterVerifiedEntries(unverified);
+  return inventory?.playable ?? [];
 }
 
 /**
@@ -1938,7 +1955,7 @@ async function resolveCinemaosEntries(
   episode?: number
 ): Promise<SourceEntry[]> {
   if (!isProviderEnabled("cinemaos")) return [];
-  const streams = await withCircuit(
+  const inventory = await withCircuit(
     "cinemaos",
     async () => {
       const r = await withTimeout(
@@ -1946,13 +1963,26 @@ async function resolveCinemaosEntries(
         CINEMAOS_OUTER_TIMEOUT_MS
       );
       if (r == null) throw new Error("cinemaos_timeout");
-      return r;
+      if (!r.length) return { rawCount: 0, playable: [] as SourceEntry[] };
+
+      // CinemaOS frequently returns syntactically valid worker MP4 URLs whose
+      // media request is already a terminal 428. Only verified inventory is
+      // allowed into result/cache, and only that inventory closes the circuit.
+      const verified = await filterVerifiedEntries(r.map(providerToEntry), {
+        softKeep: false,
+      });
+      logAt(
+        verified.length ? "info" : "warn",
+        `[cinemaos] ${r.length} raw -> ${verified.length} playable for ${tmdbId}`
+      );
+      return { rawCount: r.length, playable: verified };
     },
-    { isSuccess: (r) => Array.isArray(r) && r.length > 0 }
+    {
+      isSuccess: (result) =>
+        verifiedInventoryIsHealthy(result, { emptyIsTitleMiss: false }),
+    }
   );
-  if (!streams?.length) return [];
-  logAt("info", `[cinemaos] ${streams.length} stream(s) for ${tmdbId}`);
-  return streams.map(providerToEntry);
+  return inventory?.playable ?? [];
 }
 
 /** After the first playable fast source, wait briefly for peers then return. */
