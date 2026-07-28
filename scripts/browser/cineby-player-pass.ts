@@ -92,7 +92,7 @@ const OUT_DIR =
   process.env.CINEBY_PLAYER_OUT_DIR || "/app/.browser-qa/cineby-player-pass";
 const WATCH_PATH = process.env.CINEBY_PLAYER_WATCH_PATH || "/watch/movie/550";
 const EXPECTED_TABS = ["Quality", "Sources", "Subtitles", "Audio", "Speed"];
-const EXPECTED_QUALITIES = ["Auto", "4K", "1440p", "1080p", "720p", "480p", "360p"];
+const EXPECTED_QUALITIES = ["Auto", "4K", "1440p", "1080p", "720p", "480p", "360p", "320p"];
 const checks: Check[] = [];
 const apiResponses: ApiResponseObservation[] = [];
 
@@ -123,7 +123,8 @@ function observeApiResponse(
   const url = new URL(response.url());
   if (url.origin !== BASE_ORIGIN) return;
   const isPlayback = url.pathname.startsWith("/api/playback/");
-  if (!isPlayback && url.pathname !== "/api/system-status") return;
+  const isHls = url.pathname.startsWith("/api/hls/");
+  if (!isPlayback && !isHls && url.pathname !== "/api/system-status") return;
   const mode = isPlayback
     ? url.searchParams.get("refresh") === "1"
       ? "recovery"
@@ -154,12 +155,16 @@ function auditApiContract(viewport: ViewportName): void {
   );
   const playbackFailures = observed.filter(
     (item) =>
-      item.path.startsWith("/api/playback/") &&
-      (item.status === 403 || item.status === 429 || item.status >= 500)
+      (item.path.startsWith("/api/playback/") ||
+        item.path.startsWith("/api/hls/")) &&
+      (item.status === 403 ||
+        item.status === 428 ||
+        item.status === 429 ||
+        item.status >= 500)
   );
   record(
     viewport,
-    "playback API avoids authorization, rate-limit, and server errors",
+    "playback and media proxy avoid authorization, dead-source, rate-limit, and server errors",
     playbackFailures.length === 0,
     playbackFailures.length
       ? playbackFailures
@@ -181,7 +186,8 @@ function decodedQualityHeight(video: VideoState): number | null {
   if (longEdge >= 1_900 || shortEdge >= 850) return 1080;
   if (longEdge >= 1_200 || shortEdge >= 600) return 720;
   if (longEdge >= 700 || shortEdge >= 400) return 480;
-  if (longEdge >= 500 || shortEdge >= 280) return 360;
+  if (longEdge >= 630 || shortEdge >= 340) return 360;
+  if (longEdge >= 560 || shortEdge >= 280) return 320;
   return null;
 }
 
@@ -298,13 +304,13 @@ async function auditSheet(
   await dialog.getByRole("tab", { name: "Quality", exact: true }).click();
   const qualityButtons = dialog
     .getByRole("button")
-    .filter({ hasText: /^(?:Auto|4K|1440p|1080p|720p|480p|360p)(?:\s|$)/ });
+    .filter({ hasText: /^(?:Auto|4K|1440p|1080p|720p|480p|360p|320p)(?:\s|$)/ });
   const qualityLabels = (await qualityButtons.allTextContents()).map((text) =>
     text.replace(/·.*$/, "").trim()
   );
   record(
     viewport,
-    "quality rail is stable from Auto through 360p",
+    "quality rail is stable from Auto through 320p",
     sameList(qualityLabels, EXPECTED_QUALITIES),
     qualityLabels.join(" | ")
   );

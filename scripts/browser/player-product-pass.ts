@@ -76,6 +76,15 @@ const FIRST_FRAME_TIMEOUT_MS = Number(process.env.FIRST_FRAME_TIMEOUT_MS || "450
 const checks: Check[] = [];
 const apiResponses: ApiResponseObservation[] = [];
 
+async function ensureBaseCookieScope(context: BrowserContext): Promise<void> {
+  const baseHost = new URL(BASE).hostname;
+  const storedCookies = await context.cookies();
+  const clones = storedCookies
+    .filter((cookie) => cookie.domain !== baseHost)
+    .map((cookie) => ({ ...cookie, domain: baseHost }));
+  if (clones.length) await context.addCookies(clones);
+}
+
 function check(
   viewport: ViewportName,
   name: string,
@@ -105,7 +114,8 @@ function observeApiResponse(
   const url = new URL(response.url());
   if (url.origin !== BASE_ORIGIN) return;
   const isPlayback = url.pathname.startsWith("/api/playback/");
-  if (!isPlayback && url.pathname !== "/api/system-status") return;
+  const isHls = url.pathname.startsWith("/api/hls/");
+  if (!isPlayback && !isHls && url.pathname !== "/api/system-status") return;
   const mode = isPlayback
     ? url.searchParams.get("refresh") === "1"
       ? "recovery"
@@ -136,12 +146,16 @@ function checkApiContract(viewport: ViewportName): void {
   );
   const playbackFailures = observed.filter(
     (item) =>
-      item.path.startsWith("/api/playback/") &&
-      (item.status === 403 || item.status === 429 || item.status >= 500)
+      (item.path.startsWith("/api/playback/") ||
+        item.path.startsWith("/api/hls/")) &&
+      (item.status === 403 ||
+        item.status === 428 ||
+        item.status === 429 ||
+        item.status >= 500)
   );
   check(
     viewport,
-    "playback API avoids authorization, rate-limit, and server errors",
+    "playback and media proxy avoid authorization, dead-source, rate-limit, and server errors",
     playbackFailures.length === 0,
     playbackFailures.length
       ? playbackFailures
@@ -215,11 +229,30 @@ async function runTerminalState(
   await terminal.waitFor({ state: "visible", timeout: 35_000 });
   check(viewport, "terminal playback error is visible", true);
 
+  const terminalFocusBefore = await page.evaluate(() => {
+    const active = document.activeElement;
+    return active?.getAttribute("aria-label") || active?.textContent?.trim() || "";
+  });
   const before = await videoState(page);
-  await page.keyboard.press("Space");
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("KeyK");
   await page.waitForTimeout(500);
+  const terminalFocusAfter = await page.evaluate(() => {
+    const dialog = document.querySelector("[data-player-error]");
+    const active = document.activeElement;
+    return {
+      inside: !!dialog && !!active && dialog.contains(active),
+      label:
+        active?.getAttribute("aria-label") || active?.textContent?.trim() || "",
+    };
+  });
+  check(
+    viewport,
+    "terminal actions support D-pad navigation",
+    terminalFocusAfter.inside &&
+      terminalFocusAfter.label !== terminalFocusBefore,
+    `${terminalFocusBefore || "none"} -> ${terminalFocusAfter.label || "none"}`
+  );
   const after = await videoState(page);
   check(
     viewport,
@@ -321,8 +354,8 @@ async function inViewport(page: Page, label: string): Promise<boolean> {
   return locator.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return (
-      rect.width >= 35.5 &&
-      rect.height >= 35.5 &&
+      rect.width >= 43.5 &&
+      rect.height >= 43.5 &&
       rect.left >= 0 &&
       rect.top >= 0 &&
       rect.right <= window.innerWidth &&
@@ -453,6 +486,13 @@ async function runDesktop(page: Page): Promise<void> {
     focusInsideOnOpen,
     focusInsideOnOpen ? undefined : "focus remains behind modal"
   );
+  const focusBeforeArrow = await page.evaluate(() => {
+    const active = document.activeElement;
+    return {
+      text: active?.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) || "",
+      label: active?.getAttribute("aria-label") || "",
+    };
+  });
   await page.keyboard.press("ArrowRight");
   const focusAfterArrow = await page.evaluate(() => {
     const dialog = document.querySelector('[role="dialog"][aria-label="Player settings"]');
@@ -460,13 +500,19 @@ async function runDesktop(page: Page): Promise<void> {
     return {
       inside: !!dialog && !!active && dialog.contains(active),
       text: active?.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) || "",
+      label: active?.getAttribute("aria-label") || "",
     };
   });
+  const focusMoved =
+    focusBeforeArrow.text !== focusAfterArrow.text ||
+    focusBeforeArrow.label !== focusAfterArrow.label;
   check(
     viewport,
     "D-pad arrow navigates settings",
-    focusAfterArrow.inside,
-    focusAfterArrow.text || "no focused settings control"
+    focusAfterArrow.inside && focusMoved,
+    `${focusBeforeArrow.label || focusBeforeArrow.text || "none"} -> ${
+      focusAfterArrow.label || focusAfterArrow.text || "none"
+    }`
   );
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "hidden" });
@@ -553,7 +599,7 @@ async function runCompactViewport(
   const hidden = results.filter(([, visible]) => !visible).map(([label]) => label);
   check(
     viewport,
-    "essential controls fit and meet 36px tap target",
+    "essential controls fit and meet 44px tap target",
     hidden.length === 0,
     hidden.length ? `off-screen or too small: ${hidden.join(", ")}` : undefined
   );
@@ -593,11 +639,13 @@ async function makeContext(
       : viewport === "mobile"
         ? { width: 390, height: 844 }
         : { width: 1920, height: 1080 };
-  return browser.newContext({
+  const context = await browser.newContext({
     viewport: dimensions,
     storageState: STORAGE_STATE,
     baseURL: BASE,
   });
+  await ensureBaseCookieScope(context);
+  return context;
 }
 
 async function runViewport(

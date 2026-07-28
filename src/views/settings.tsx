@@ -494,6 +494,7 @@ function PlaybackPreferencesSection() {
               <SelectItem value="720">Balanced — 720p</SelectItem>
               <SelectItem value="480">Data saver — 480p</SelectItem>
               <SelectItem value="360">Minimum data — 360p</SelectItem>
+              <SelectItem value="320">Lowest data — 320p when available</SelectItem>
             </SelectContent>
           </Select>
         </div>

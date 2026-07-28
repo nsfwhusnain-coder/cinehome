@@ -134,10 +134,11 @@ function maxHeightFromQuality(
   if (/\b720p\b/.test(text)) return 720;
   if (/\b480p\b/.test(text)) return 480;
   if (/\b360p\b/.test(text)) return 360;
+  if (/\b320p\b/.test(text)) return 320;
   const m = text.match(/(\d{3,4})p/);
   if (m) return Number(m[1]);
   const pathToken = text.match(
-    /[\/_-](2160|1440|1080|720|480|360)p?(?:[\/_.?&-]|$)/
+    /[\/_-](2160|1440|1080|720|480|360|320)p?(?:[\/_.?&-]|$)/
   );
   if (pathToken) return Number(pathToken[1]);
   return undefined;

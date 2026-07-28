@@ -9,7 +9,7 @@ describe("profile playback preferences", () => {
     expect(parsePlaybackQualityPreference("auto")).toBe("auto");
     expect(parsePlaybackQualityPreference("2160")).toBe(2160);
     expect(parsePlaybackQualityPreference(720)).toBe(720);
-    expect(parsePlaybackQualityPreference(320)).toBeNull();
+    expect(parsePlaybackQualityPreference(320)).toBe(320);
     expect(parsePlaybackQualityPreference("best")).toBeNull();
   });
 

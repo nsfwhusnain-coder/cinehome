@@ -183,7 +183,7 @@ function OptionRow({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[13px] transition-colors",
+        "flex min-h-11 w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[13px] transition-colors",
         disabled && "cursor-default opacity-55",
         !disabled && !active && "border-transparent hover:border-white/10 hover:bg-white/[0.08]",
         active
@@ -316,10 +316,14 @@ export function PlayerDock({
     const frame = window.requestAnimationFrame(() => {
       const root = dialogRef.current;
       if (!root) return;
-      focusableDockButtons(root)[0]?.focus();
+      (
+        root.querySelector<HTMLButtonElement>(
+          "[role='tab'][aria-selected='true']"
+        ) ?? focusableDockButtons(root)[0]
+      )?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [open, expandedSection]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -398,7 +402,9 @@ export function PlayerDock({
                   option.value !== activeQualityTarget && (
                     <span className="text-white/40"> · now</span>
                   )}
-                {option.value === "auto" && playingHeight > 0 && (
+                {option.value === "auto" &&
+                  activeQualityTarget === "auto" &&
+                  playingHeight > 0 && (
                   <span className="text-white/40">
                     {" "}· now {formatResolutionLabel(playingHeight)}
                   </span>
@@ -436,7 +442,7 @@ export function PlayerDock({
                     : slot.name
                 }
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[13px] transition-colors",
+                  "flex min-h-11 w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[13px] transition-colors",
                   selectable && "hover:bg-white/10",
                   slot.status === "active" && "bg-white/10 font-medium text-white",
                   failed && "opacity-55",
@@ -569,7 +575,7 @@ export function PlayerDock({
             <button
               type="button"
               onClick={onOpenShortcuts}
-              className="mt-1 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[13px] text-white/70 hover:bg-white/10"
+              className="mt-1 flex min-h-11 w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[13px] text-white/70 hover:bg-white/10"
             >
               <Keyboard className="h-4 w-4 text-white/45" />
               Keyboard shortcuts
@@ -639,7 +645,7 @@ export function PlayerDock({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="rounded-full p-1.5 text-white/55 transition hover:bg-white/15 hover:text-white"
+                  className="flex min-h-11 min-w-11 items-center justify-center rounded-full p-1.5 text-white/55 transition hover:bg-white/15 hover:text-white"
                   aria-label="Close"
                 >
                   <X className="h-4 w-4" />
@@ -658,7 +664,7 @@ export function PlayerDock({
                     aria-selected={activeSection === tab.section}
                     onClick={() => onExpandedSectionChange(tab.section)}
                     className={cn(
-                      "shrink-0 rounded-full px-3 py-1.5 text-[11px] font-medium transition",
+                      "min-h-11 shrink-0 rounded-full px-3 py-1.5 text-[11px] font-medium transition",
                       activeSection === tab.section
                         ? "bg-white text-black"
                         : "bg-white/[0.07] text-white/65 hover:bg-white/[0.12] hover:text-white"

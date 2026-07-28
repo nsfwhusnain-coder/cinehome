@@ -1,7 +1,7 @@
 export const PLAYBACK_QUALITY_SETTING_KEY = "playback_quality";
 export const AUDIO_LANGUAGE_SETTING_KEY = "audio_language";
 
-export const PLAYBACK_QUALITY_HEIGHTS = [2160, 1440, 1080, 720, 480, 360] as const;
+export const PLAYBACK_QUALITY_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 320] as const;
 export type PlaybackQualityHeight = (typeof PLAYBACK_QUALITY_HEIGHTS)[number];
 export type PlaybackQualityPreference = "auto" | PlaybackQualityHeight;
 

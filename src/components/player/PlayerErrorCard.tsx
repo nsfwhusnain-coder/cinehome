@@ -54,14 +54,23 @@ export function PlayerErrorCard({ headline, subtext, actions = [], onDismiss }: 
       onDismiss();
       return;
     }
-    if (event.key !== "Tab") return;
+    const isTab = event.key === "Tab";
+    const isPrevious =
+      (isTab && event.shiftKey) ||
+      event.key === "ArrowLeft" ||
+      event.key === "ArrowUp";
+    const isNext =
+      (isTab && !event.shiftKey) ||
+      event.key === "ArrowRight" ||
+      event.key === "ArrowDown";
+    if (!isPrevious && !isNext) return;
     const buttons = Array.from(
       dialog.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")
     );
     if (!buttons.length) return;
     event.preventDefault();
     const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const delta = event.shiftKey ? -1 : 1;
+    const delta = isPrevious ? -1 : 1;
     const next =
       current < 0 ? 0 : (current + delta + buttons.length) % buttons.length;
     buttons[next]?.focus();

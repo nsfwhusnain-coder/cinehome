@@ -606,6 +606,7 @@ describe("sourceMaxHeight / pickDefaultSource — R6 maxHeight:0 fall-through", 
     });
     expect(sourceMaxHeight(urlToken)).toBe(1080);
     expect(parseMaxHeight("https://cdn.example/1080/index.m3u8")).toBe(1080);
+    expect(parseMaxHeight("https://cdn.example/320/index.m3u8")).toBe(320);
   });
 
   it("maxHeight:0 + quality auto vs maxHeight:480 → unknown wins over 480", () => {

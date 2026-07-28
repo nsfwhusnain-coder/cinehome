@@ -32,6 +32,8 @@ describe("quality router", () => {
     expect(normalizePlayerQualityHeight(1080)).toBe(1080);
     expect(normalizePlayerQualityHeight(800)).toBe(720);
     expect(normalizePlayerQualityHeight(1440)).toBe(1440);
+    expect(normalizePlayerQualityHeight(360)).toBe(360);
+    expect(normalizePlayerQualityHeight(320)).toBe(320);
   });
 
   it("keeps the same stable rail and marks real availability", () => {
@@ -53,10 +55,12 @@ describe("quality router", () => {
       "720p",
       "480p",
       "360p",
+      "320p",
     ]);
     expect(options.find((option) => option.value === 1080)?.levelIndex).toBe(2);
     expect(options.find((option) => option.value === 2160)?.sourceId).toBe("uhd");
     expect(options.find((option) => option.value === 360)?.status).toBe("unavailable");
+    expect(options.find((option) => option.value === 320)?.status).toBe("unavailable");
   });
 
   it("removes failed and probe-dead sources from quality routing", () => {

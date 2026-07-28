@@ -139,7 +139,7 @@ docker run --rm --network host \
 
 The player has one responsive playback sheet with five stable tabs: **Quality,
 Sources, Subtitles, Audio, Speed**. Quality always shows `Auto`, `4K`, `1440p`,
-`1080p`, `720p`, `480p`, and `360p`; unavailable rungs remain visible but
+`1080p`, `720p`, `480p`, `360p`, and `320p`; unavailable rungs remain visible but
 disabled. `Auto` is the profile default. A fixed default is stored per user in
 `UserSetting` through `/api/preferences`; a one-off in-player switch applies
 only to the current watch.
@@ -158,8 +158,8 @@ switches, and desktop/phone sheet bounds. The profile test verifies the decoded
 effective quality (or an explicit unavailable/fallback state), and restores the
 original profile from a `finally` block even when an intermediate assertion
 fails. Both player passes also fail on normal-user `/api/system-status` polling
-or playback API `403`/`429`/`5xx` responses; their reports retain only safe path,
-mode, status, and cache metadata.
+or playback/media-proxy `403`/`428`/`429`/`5xx` responses; their reports retain
+only safe path, mode, status, and cache metadata.
 
 ```bash
 image_id=$(docker inspect --format '{{.Image}}' cinehome)
@@ -174,10 +174,11 @@ docker run --rm --network embedin_default \
 ### Combined browser release gate
 
 `scripts/browser/release-pass.ts` runs the interactive player pass, a
-deterministic terminal-error keyboard/transport pass, the Cineby-style
-quality/source contract, and exhausted-roster recovery in sequence. It stops
-on the first failed gate and writes a small aggregate report while each child
-keeps its detailed screenshots and evidence.
+deterministic terminal-error keyboard/transport pass, real adaptive quality
+down/up plus audio/subtitle controls, the Cineby-style quality/source contract,
+and exhausted-roster recovery in sequence. It stops on the first failed gate
+and writes a small aggregate report while each child keeps its detailed
+screenshots and evidence.
 
 ```bash
 image_id=$(docker inspect --format '{{.Image}}' cinehome)

@@ -3,8 +3,8 @@
  * Sequential production browser release gate.
  *
  * Each child writes its detailed report/screenshots. This wrapper prevents a
- * green controls pass from hiding a failed terminal-state, Cineby contract, or
- * forced-recovery pass.
+ * green controls pass from hiding a failed adaptive-track, terminal-state,
+ * Cineby-contract, or forced-recovery pass.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -41,6 +41,13 @@ const gates: Gate[] = [
       PLAYER_PRODUCT_EXPECT_TERMINAL: "1",
       PLAYER_PRODUCT_VIEWPORT: "desktop",
       PLAYER_PRODUCT_OUT_DIR: join(OUT_DIR, "player-terminal"),
+    },
+  },
+  {
+    name: "adaptive-controls",
+    script: "scripts/browser/adaptive-controls-pass.ts",
+    env: {
+      ADAPTIVE_OUT_DIR: join(OUT_DIR, "adaptive-controls"),
     },
   },
   {

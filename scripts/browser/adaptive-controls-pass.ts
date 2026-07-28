@@ -18,7 +18,7 @@
  *   ADAPTIVE_OUT_DIR=/app/.browser-qa/adaptive-controls-pass
  */
 
-import { chromium, type Page } from "playwright";
+import { chromium, type BrowserContext, type Page } from "playwright";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -59,6 +59,15 @@ const WATCH_PATH = process.env.ADAPTIVE_WATCH_PATH || "/watch/movie/550";
 const TARGET_PROVIDER = (process.env.ADAPTIVE_SOURCE_PROVIDER || "Vixsrc").toLowerCase();
 const TARGET_ID = (process.env.ADAPTIVE_SOURCE_ID || "vixsrc-luna").toLowerCase();
 const checks: Check[] = [];
+
+async function ensureBaseCookieScope(context: BrowserContext): Promise<void> {
+  const baseHost = new URL(BASE).hostname;
+  const cookies = await context.cookies();
+  const clones = cookies
+    .filter((cookie) => cookie.domain !== baseHost)
+    .map((cookie) => ({ ...cookie, domain: baseHost }));
+  if (clones.length) await context.addCookies(clones);
+}
 
 function record(
   name: string,
@@ -185,6 +194,19 @@ function qualityHeight(label: string): number {
   return match ? Number(match[1]) : 0;
 }
 
+function decodedQualityLabel(state: VideoState): string {
+  const longEdge = Math.max(state.width, state.height);
+  const shortEdge = Math.min(state.width, state.height);
+  if (longEdge >= 3_800 || shortEdge >= 1_800) return "4K";
+  if (longEdge >= 2_500 || shortEdge >= 1_400) return "1440p";
+  if (longEdge >= 1_900 || shortEdge >= 850) return "1080p";
+  if (longEdge >= 1_200 || shortEdge >= 600) return "720p";
+  if (longEdge >= 700 || shortEdge >= 400) return "480p";
+  if (longEdge >= 630 || shortEdge >= 340) return "360p";
+  if (longEdge >= 560 || shortEdge >= 280) return "320p";
+  return "";
+}
+
 async function chooseQuality(page: Page, height: number): Promise<void> {
   const dialog = await openSection(page, "Quality");
   const label = height === 2160 ? "4K" : `${height}p`;
@@ -275,6 +297,7 @@ async function main(): Promise<void> {
     storageState: STORAGE_STATE,
     baseURL: BASE,
   });
+  await ensureBaseCookieScope(context);
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
   const sources = new Map<string, PublicSource>();
@@ -340,13 +363,23 @@ async function main(): Promise<void> {
 
     await page.waitForTimeout(10_000);
     const autoSteady = await state(page);
+    const qualityDialog = await openSection(page, "Quality");
+    const autoText = (
+      await qualityDialog
+        .getByRole("button")
+        .filter({ hasText: /^Auto(?:\s|$)/i })
+        .first()
+        .innerText()
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+    const decodedLabel = decodedQualityLabel(autoSteady);
     record(
       "Auto reports actual decoded quality",
-      "pass",
-      `advertised=${target.maxHeight || "unknown"}; actual=${autoSteady.width}x${autoSteady.height}`
+      decodedLabel !== "" && autoText.includes(decodedLabel),
+      `advertised=${target.maxHeight || "unknown"}; actual=${autoSteady.width}x${autoSteady.height}; row=${autoText}`
     );
 
-    const qualityDialog = await openSection(page, "Quality");
     const qualityRows = await qualityDialog.getByRole("button").evaluateAll((buttons) =>
       buttons
         .map((button) => ({

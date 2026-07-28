@@ -31,6 +31,7 @@ const RESOLUTION_PATTERNS = [
   /\b720p\b/i,
   /\b480p\b/i,
   /\b360p\b/i,
+  /\b320p\b/i,
 ];
 
 /** Owner's absolute base quality — a source meeting this must never lose the
@@ -192,6 +193,7 @@ export function parseMaxHeight(text: string): number {
   if (/\b720p\b/.test(lower)) return 720;
   if (/\b480p\b/.test(lower)) return 480;
   if (/\b360p\b/.test(lower)) return 360;
+  if (/\b320p\b/.test(lower)) return 320;
   const resMatch = text.match(/(\d{3,4})p/i);
   if (resMatch) return Number(resMatch[1]);
   const dimMatch = text.match(/RESOLUTION=\d+x(\d+)/i);
@@ -199,7 +201,7 @@ export function parseMaxHeight(text: string): number {
   // Path/query tokens like /1080/ or _720_ (no trailing "p") — same contract as
   // scraper inferHeightFromUrl. Never invent beyond an unambiguous delimiter token.
   const pathToken = lower.match(
-    /[\/_-](2160|1440|1080|720|480|360)p?(?:[\/_.?&-]|$)/
+    /[\/_-](2160|1440|1080|720|480|360|320)p?(?:[\/_.?&-]|$)/
   );
   if (pathToken) return Number(pathToken[1]);
   return 0;

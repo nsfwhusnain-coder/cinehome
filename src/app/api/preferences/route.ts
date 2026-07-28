@@ -38,7 +38,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Playback quality must be Auto, 4K, 1440p, 1080p, 720p, 480p, or 360p and audio language must be valid.",
+          "Playback quality must be Auto, 4K, 1440p, 1080p, 720p, 480p, 360p, or 320p and audio language must be valid.",
       },
       { status: 400 }
     );

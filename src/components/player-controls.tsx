@@ -11,7 +11,6 @@ import {
   Captions,
   RotateCcw,
   RotateCw,
-  Cast,
   Cloud,
   ArrowLeft,
   PictureInPicture2,
@@ -149,6 +148,8 @@ export function PlayerControls({
   const buffered = usePlayerStore((s) => s.bufferedEnd);
 
   const [showEpisodes, setShowEpisodes] = useState(false);
+  const [supportsFullscreen, setSupportsFullscreen] = useState(false);
+  const [supportsPip, setSupportsPip] = useState(false);
   const shortcutsDialogRef = useRef<HTMLDivElement>(null);
   const shortcutsPreviousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -161,6 +162,16 @@ export function PlayerControls({
 
   const controlsVisible =
     showControls || alwaysShowControls || !!settingsOpen || showEpisodes;
+
+  useEffect(() => {
+    setSupportsFullscreen(
+      typeof document.documentElement.requestFullscreen === "function"
+    );
+    setSupportsPip(
+      document.pictureInPictureEnabled === true &&
+        typeof HTMLVideoElement.prototype.requestPictureInPicture === "function"
+    );
+  }, []);
 
   useEffect(() => {
     if (!shortcutsOpen) return;
@@ -193,7 +204,7 @@ export function PlayerControls({
         <button
           type="button"
           onClick={onBack}
-          className="flex h-9 w-9 items-center justify-center text-white transition hover:opacity-70"
+          className="flex h-11 w-11 items-center justify-center text-white transition hover:opacity-70"
           aria-label="Back"
         >
           <ArrowLeft className="h-7 w-7" strokeWidth={1.5} />
@@ -201,13 +212,7 @@ export function PlayerControls({
         <div className="min-w-0 flex-1 truncate text-center text-[15px] font-medium text-white">
           {title}
         </div>
-        <button
-          type="button"
-          className="flex h-9 w-9 items-center justify-center text-white transition hover:opacity-70"
-          aria-label="Cast"
-        >
-          <Cast className="h-[22px] w-[22px]" strokeWidth={1.5} />
-        </button>
+        <span className="h-11 w-11 shrink-0" aria-hidden />
       </div>
 
       {/* Settings dock (quality/speed) */}
@@ -329,9 +334,11 @@ export function PlayerControls({
                 <ListVideo className="h-5 w-5" />
               </IconBtn>
             ) : null}
-            <IconBtn onClick={onTogglePip} label="Picture in picture">
-              <PictureInPicture2 className="h-5 w-5" />
-            </IconBtn>
+            {supportsPip ? (
+              <IconBtn onClick={onTogglePip} label="Picture in picture">
+                <PictureInPicture2 className="h-5 w-5" />
+              </IconBtn>
+            ) : null}
             {/* On phones these live in Settings so the primary controls never
                 run off-screen. Desktop keeps the one-tap quick switches. */}
             <div className="hidden items-center gap-2 sm:flex">
@@ -366,9 +373,11 @@ export function PlayerControls({
             >
               <Settings className="h-5 w-5" />
             </IconBtn>
-            <IconBtn onClick={onToggleFullscreen} label="Fullscreen">
-              {isFullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}
-            </IconBtn>
+            {supportsFullscreen ? (
+              <IconBtn onClick={onToggleFullscreen} label="Fullscreen">
+                {isFullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}
+              </IconBtn>
+            ) : null}
           </div>
         </div>
       </div>
@@ -396,7 +405,7 @@ export function PlayerControls({
               <button
                 type="button"
                 onClick={onToggleShortcuts}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+                className="flex h-11 w-11 items-center justify-center rounded-full text-white/60 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
                 aria-label="Close keyboard shortcuts"
               >
                 <X className="h-4 w-4" />
@@ -441,7 +450,7 @@ function IconBtn({
       title={label}
       aria-label={label}
       className={cn(
-        "flex h-9 w-9 items-center justify-center text-white transition hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
+        "flex h-11 w-11 items-center justify-center text-white transition hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
         active && "opacity-100"
       )}
     >
