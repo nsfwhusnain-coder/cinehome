@@ -73,6 +73,7 @@ fi
 # that otherwise-healthy image impossible to tag after the build. Capture the
 # exact live image before touching `latest`; fail closed if Docker can no longer
 # resolve it, because continuing would mean deploying without an image rollback.
+predeploy_tag=""
 if docker inspect cinehome >/dev/null 2>&1; then
   live_image_id="$(docker inspect --format '{{.Image}}' cinehome)"
   if ! docker image inspect "${live_image_id}" >/dev/null 2>&1; then
@@ -89,50 +90,75 @@ if docker inspect cinehome >/dev/null 2>&1; then
   echo "rollback image tagged: ${predeploy_tag} -> ${live_image_id}"
 fi
 
+HEALTH_TIMEOUT_SECONDS=180
+HEALTH_REQUEST_MAX_SECONDS=2
+
+wait_for_runtime_health() {
+  local timeout_seconds="$1"
+  local health_deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < health_deadline )); do
+    container_health="$(
+      docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+        cinehome 2>/dev/null || true
+    )"
+    restart_count="$(docker inspect --format '{{.RestartCount}}' cinehome 2>/dev/null || true)"
+    oom_killed="$(docker inspect --format '{{.State.OOMKilled}}' cinehome 2>/dev/null || true)"
+
+    app_ok=0
+    scraper_ok=0
+    if curl -sf --max-time "${HEALTH_REQUEST_MAX_SECONDS}" "$DEPLOY_HEALTH_URL" >/dev/null 2>&1; then
+      app_ok=1
+    fi
+    if docker exec cinehome curl -sf --max-time "${HEALTH_REQUEST_MAX_SECONDS}" \
+      http://127.0.0.1:3030/health >/dev/null 2>&1; then
+      scraper_ok=1
+    fi
+
+    if [[ "${container_health}" == "healthy" ]] \
+      && [[ "${app_ok}" == "1" ]] \
+      && [[ "${scraper_ok}" == "1" ]] \
+      && [[ "${restart_count}" == "0" ]] \
+      && [[ "${oom_killed}" == "false" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+rollback_live_image() {
+  if [[ -z "${predeploy_tag}" ]]; then
+    echo "ERROR: no predeploy image tag is available for automatic rollback." >&2
+    return 1
+  fi
+  echo "ROLLBACK: restoring ${predeploy_tag}" >&2
+  docker image tag "${predeploy_tag}" cinehome-cinehome:latest
+  docker compose up -d --no-deps --force-recreate cinehome
+  if ! wait_for_runtime_health 120; then
+    echo "ERROR: automatic image rollback did not return to a healthy runtime." >&2
+    docker compose ps || true
+    docker compose logs --tail=100 cinehome || true
+    return 1
+  fi
+  echo "ROLLBACK OK: ${predeploy_tag} is healthy again" >&2
+}
+
 docker compose build
-docker compose up -d
+if ! docker compose up -d; then
+  echo "ERROR: Compose failed to start the candidate; rolling back." >&2
+  rollback_live_image || true
+  exit 1
+fi
 
 # Fail closed unless Compose's dual app+scraper health check is healthy, the
 # configured app URL responds, and the internal scraper endpoint responds.
-HEALTH_TIMEOUT_SECONDS=180
-HEALTH_REQUEST_MAX_SECONDS=2
-health_deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
-health_ok=0
-while (( SECONDS < health_deadline )); do
-  container_health="$(
-    docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
-      cinehome 2>/dev/null || true
-  )"
-  restart_count="$(docker inspect --format '{{.RestartCount}}' cinehome 2>/dev/null || true)"
-  oom_killed="$(docker inspect --format '{{.State.OOMKilled}}' cinehome 2>/dev/null || true)"
-
-  app_ok=0
-  scraper_ok=0
-  if curl -sf --max-time "${HEALTH_REQUEST_MAX_SECONDS}" "$DEPLOY_HEALTH_URL" >/dev/null 2>&1; then
-    app_ok=1
-  fi
-  if docker exec cinehome curl -sf --max-time "${HEALTH_REQUEST_MAX_SECONDS}" \
-    http://127.0.0.1:3030/health >/dev/null 2>&1; then
-    scraper_ok=1
-  fi
-
-  if [[ "${container_health}" == "healthy" ]] \
-    && [[ "${app_ok}" == "1" ]] \
-    && [[ "${scraper_ok}" == "1" ]] \
-    && [[ "${restart_count}" == "0" ]] \
-    && [[ "${oom_killed}" == "false" ]]; then
-    health_ok=1
-    break
-  fi
-  sleep 2
-done
-
-if [[ "${health_ok}" != "1" ]]; then
+if ! wait_for_runtime_health "${HEALTH_TIMEOUT_SECONDS}"; then
   echo "ERROR: deployment did not reach healthy app+scraper state within ${HEALTH_TIMEOUT_SECONDS} seconds." >&2
   echo "       container_health=${container_health:-missing} app_ok=${app_ok:-0} scraper_ok=${scraper_ok:-0}" >&2
   echo "       restart_count=${restart_count:-unknown} oom_killed=${oom_killed:-unknown}" >&2
   docker compose ps || true
   docker compose logs --tail=100 cinehome || true
+  rollback_live_image || true
   exit 1
 fi
 
