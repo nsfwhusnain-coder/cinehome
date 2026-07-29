@@ -1870,6 +1870,14 @@ export async function fetchProxied(
       upstreamSignal
     );
   } catch {
+    if (clientSignal?.aborted && !urlLooksLikePlaylist) {
+      // Quality switches, seeks, and source changes intentionally cancel
+      // obsolete segment requests. That is not an upstream failure and must
+      // never poison the 30-second negative cache for the replacement
+      // request. 499 truthfully records a client-closed request without
+      // manufacturing a server error.
+      return new Response(null, { status: 499 });
+    }
     metrics.errors += 1;
     // Timeout / ECONNRESET — negative-cache so retries short-circuit for 30s.
     setNegativeCache(upstream, rangeHeader, 502, "Upstream fetch failed");

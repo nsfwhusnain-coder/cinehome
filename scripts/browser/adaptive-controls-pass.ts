@@ -267,15 +267,32 @@ function qualityLabel(height: number | null): string {
   return height === 2160 ? "4K" : `${height}p`;
 }
 
-async function chooseQuality(page: Page, height: number): Promise<void> {
+async function chooseQuality(page: Page, height: number): Promise<string> {
+  const before = await state(page);
   const dialog = await openSection(page, "Quality");
   const label = height === 2160 ? "4K" : `${height}p`;
   const option = dialog
     .getByRole("button")
     .filter({ hasText: new RegExp(`^${label}(?:\\b|\\s)`, "i") })
     .first();
+  const mapping = await option.evaluate((button) => {
+    const element = button as HTMLButtonElement;
+    return {
+      sourceId: element.dataset.qualitySourceId || null,
+      levelIndex:
+        element.dataset.qualityLevelIndex == null
+          ? null
+          : Number(element.dataset.qualityLevelIndex),
+    };
+  });
+  const expectedSourceId =
+    mapping.levelIndex != null ? before.sourceId : mapping.sourceId;
+  if (!expectedSourceId) {
+    throw new Error(`${label} has no mapped source or active-manifest rung`);
+  }
   await option.click();
   await closeSettings(page);
+  return expectedSourceId;
 }
 
 async function waitForDecodedRung(
@@ -493,8 +510,8 @@ async function main(): Promise<void> {
     const highest = Math.max(...qualityHeights);
     const lowest = Math.min(...qualityHeights);
     if (Number.isFinite(highest) && highest > 0) {
-      await chooseQuality(page, highest);
-      const highState = await waitForDecodedRung(page, highest, target.id);
+      const highSourceId = await chooseQuality(page, highest);
+      const highState = await waitForDecodedRung(page, highest, highSourceId);
       record(
         "fixed highest quality changes the real decoder",
         "pass",
@@ -502,18 +519,18 @@ async function main(): Promise<void> {
       );
     }
     if (Number.isFinite(lowest) && lowest > 0 && lowest < highest) {
-      await chooseQuality(page, lowest);
-      const lowState = await waitForDecodedRung(page, lowest, target.id);
+      const lowSourceId = await chooseQuality(page, lowest);
+      const lowState = await waitForDecodedRung(page, lowest, lowSourceId);
       record(
         "fixed lower quality changes the real decoder",
         "pass",
         `${lowState.width}x${lowState.height}; source=${lowState.sourceId}`
       );
-      await chooseQuality(page, highest);
-      const restored = await waitForDecodedRung(page, highest, target.id);
+      const restoredSourceId = await chooseQuality(page, highest);
+      const restored = await waitForDecodedRung(page, highest, restoredSourceId);
       record(
-        "quality can switch back up without source failover",
-        restored.sourceId === target.id,
+        "quality can switch back up to its mapped source",
+        restored.sourceId === restoredSourceId,
         `${restored.width}x${restored.height}; source=${restored.sourceId}`
       );
     }
@@ -531,8 +548,8 @@ async function main(): Promise<void> {
       );
     } else {
       const profileBefore320 = await preferences(page);
-      await chooseQuality(page, 320);
-      const decoded320 = await waitForDecodedRung(page, 320, target.id);
+      const source320 = await chooseQuality(page, 320);
+      const decoded320 = await waitForDecodedRung(page, 320, source320);
       const profileAfter320 = await preferences(page);
       record(
         "real 320p rendition switch preserves the profile default",

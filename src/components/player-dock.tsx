@@ -170,11 +170,17 @@ function OptionRow({
   onClick,
   children,
   disabled,
+  dataQualityValue,
+  dataQualitySourceId,
+  dataQualityLevelIndex,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
   disabled?: boolean;
+  dataQualityValue?: string;
+  dataQualitySourceId?: string;
+  dataQualityLevelIndex?: number;
 }) {
   return (
     <button
@@ -182,6 +188,9 @@ function OptionRow({
       aria-pressed={active}
       disabled={disabled}
       onClick={onClick}
+      data-quality-value={dataQualityValue}
+      data-quality-source-id={dataQualitySourceId}
+      data-quality-level-index={dataQualityLevelIndex}
       className={cn(
         "flex min-h-11 w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[13px] transition-colors",
         disabled && "cursor-default opacity-55",
@@ -387,6 +396,9 @@ export function PlayerDock({
                 active={option.status === "active"}
                 disabled={disabled}
                 onClick={() => onQualityTargetChange(option.value)}
+                dataQualityValue={String(option.value)}
+                dataQualitySourceId={option.sourceId}
+                dataQualityLevelIndex={option.levelIndex}
               >
                 {option.label}
                 {option.status === "searching" && (
