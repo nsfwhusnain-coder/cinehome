@@ -153,4 +153,64 @@ describe("HLS proxy failure-cache hardening", () => {
     expect(cancelled).toBe(true);
     await response.body?.cancel();
   });
+
+  it("honors a transient upstream 429 before exposing an error to playback", async () => {
+    const upstream =
+      `https://rate-limited-${originalDateNow()}.invalid/video/segment.ts`;
+    let calls = 0;
+    let cancelled = false;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1]));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          {
+            status: 429,
+            headers: { "Retry-After": "0" },
+          }
+        );
+      }
+      return mediaResponse();
+    }) as unknown as typeof fetch;
+
+    const response = await fetchProxied(
+      session("rate-limit-recovery", upstream),
+      upstream,
+      null
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(cancelled).toBe(true);
+    await response.body?.cancel();
+  });
+
+  it("bounds upstream 429 recovery to one retry", async () => {
+    const upstream =
+      `https://rate-limit-bound-${originalDateNow()}.invalid/video/segment.ts`;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("slow down", {
+        status: 429,
+        headers: { "Retry-After": "0" },
+      });
+    }) as unknown as typeof fetch;
+
+    const response = await fetchProxied(
+      session("rate-limit-bound", upstream),
+      upstream,
+      null
+    );
+
+    expect(response.status).toBe(429);
+    expect(calls).toBe(2);
+  });
 });

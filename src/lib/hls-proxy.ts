@@ -1536,6 +1536,11 @@ export function isAllowedUpstreamUrl(upstream: string, session: HlsSession): boo
 }
 
 const MAX_UPSTREAM_REDIRECTS = 5;
+/** One protocol-aware retry for a CDN's transient 429 during quality/source churn. */
+const MAX_UPSTREAM_RATE_LIMIT_RETRIES = 1;
+const UPSTREAM_RATE_LIMIT_RETRY_DEFAULT_MS = 350;
+const UPSTREAM_RATE_LIMIT_RETRY_MIN_MS = 100;
+const UPSTREAM_RATE_LIMIT_RETRY_MAX_MS = 1_500;
 
 /** Aborts when EITHER input signal aborts (Node/Bun-portable — no AbortSignal.any dependency). */
 function combineAbortSignals(a: AbortSignal, b?: AbortSignal): AbortSignal {
@@ -1547,6 +1552,40 @@ function combineAbortSignals(a: AbortSignal, b?: AbortSignal): AbortSignal {
   a.addEventListener("abort", onAbort, { once: true });
   b.addEventListener("abort", onAbort, { once: true });
   return controller.signal;
+}
+
+function upstreamRetryAfterMs(value: string | null): number {
+  let requested = UPSTREAM_RATE_LIMIT_RETRY_DEFAULT_MS;
+  if (value) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      requested = seconds * 1_000;
+    } else {
+      const at = Date.parse(value);
+      if (Number.isFinite(at)) requested = Math.max(0, at - Date.now());
+    }
+  }
+  return Math.max(
+    UPSTREAM_RATE_LIMIT_RETRY_MIN_MS,
+    Math.min(UPSTREAM_RATE_LIMIT_RETRY_MAX_MS, requested)
+  );
+}
+
+function waitForUpstreamRetry(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -1567,8 +1606,24 @@ async function fetchUpstreamSafely(
 ): Promise<Response> {
   const signal = combineAbortSignals(AbortSignal.timeout(timeoutMs), clientSignal);
   let current = url;
+  let rateLimitRetries = 0;
   for (let hop = 0; hop <= MAX_UPSTREAM_REDIRECTS; hop++) {
-    const res = await fetch(current, { headers, redirect: "manual", signal });
+    let res: Response;
+    while (true) {
+      res = await fetch(current, { headers, redirect: "manual", signal });
+      if (
+        res.status !== 429 ||
+        rateLimitRetries >= MAX_UPSTREAM_RATE_LIMIT_RETRIES
+      ) {
+        break;
+      }
+      const retryAfterMs = upstreamRetryAfterMs(res.headers.get("retry-after"));
+      await res.body?.cancel("retrying transient upstream rate limit").catch(
+        () => undefined
+      );
+      rateLimitRetries += 1;
+      await waitForUpstreamRetry(retryAfterMs, signal);
+    }
     if (res.status < 300 || res.status >= 400) return res;
     const location = res.headers.get("location");
     // Manual redirect responses can carry a body. Leaving it unread pins the
@@ -1986,6 +2041,22 @@ export async function fetchProxied(
 
   if (!upstreamRes.ok) {
     metrics.errors += 1;
+    if (upstreamRes.status === 429) {
+      let host = "unknown";
+      try {
+        host = new URL(upstream).hostname;
+      } catch {
+        /* safe fallback */
+      }
+      console.warn(
+        JSON.stringify({
+          event: "hls_upstream_rate_limited",
+          host,
+          kind: negativeKind,
+          retries: MAX_UPSTREAM_RATE_LIMIT_RETRIES,
+        })
+      );
+    }
     // 5xx: negative-cache after fail threshold. 4xx: pass through (auth / missing may resolve).
     if (upstreamRes.status >= 500) {
       setNegativeCache(
