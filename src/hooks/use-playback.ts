@@ -130,7 +130,7 @@ function usableSourceCount(resp?: PlaybackResponse): number {
 }
 
 /** Keep proxy URLs stable for sources already playing; only append new servers. */
-function mergePlaybackResponses(
+export function mergePlaybackResponses(
   fast?: PlaybackResponse,
   full?: PlaybackResponse,
   fullStillOpen?: boolean
@@ -138,11 +138,17 @@ function mergePlaybackResponses(
   // Soft-miss: fast empty/error with no full yet — leave undefined so UI stays resolving.
   if (!hasPlayableSources(fast) && !full) return undefined;
 
-  const base = hasPlayableSources(fast)
-    ? fast!
-    : hasPlayableSources(full)
-      ? full!
-      : full ?? fast;
+  // A recovery generation deliberately invalidated every previously signed
+  // URL. It is authoritative even when it returns an empty partial roster;
+  // falling back to fast here resurrects the exact stale URL being recovered.
+  const recoveryFull = full?.refreshNonce != null;
+  const base = recoveryFull
+    ? full
+    : hasPlayableSources(fast)
+      ? fast!
+      : hasPlayableSources(full)
+        ? full!
+        : full ?? fast;
 
   if (!base) return undefined;
   if (!hasPlayableSources(base)) {
@@ -160,13 +166,15 @@ function mergePlaybackResponses(
       sources: [],
       providerId: full?.providerId ?? fast?.providerId,
       partial: stillPartial || undefined,
+      preferences: full?.preferences ?? fast?.preferences,
+      refreshNonce: full?.refreshNonce,
     };
   }
 
   const mergedSources = mergeProgressivePlaybackSources(
-    fast?.sources,
+    recoveryFull ? [] : fast?.sources,
     full?.sources,
-    full?.refreshNonce != null
+    recoveryFull
   );
   const streamUrlStillValid =
     !!base.streamUrl && mergedSources.some((s) => s.url === base.streamUrl);
@@ -239,6 +247,7 @@ export function usePrefetchPlayback(args: Omit<Args, "enabled" | "prefetch">) {
 /** Watch page: fast sources first, full scrape in background with gentle source polling. */
 export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { enabled?: boolean }) {
   const { data: session } = useSession();
+  const qc = useQueryClient();
   const canFetch = (args.enabled ?? true) && !!session;
   /** Only `retryFull()` may force a bounded recovery refresh. */
   const forceRefreshRef = useRef(false);
@@ -447,7 +456,27 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
       cancelRefetch: true,
       throwOnError: true,
     });
-  }, [full.refetch]);
+    // The server-side recovery invalidates the fast trust cache. Clear its
+    // client twin only after recovery succeeds so a stale signed URL cannot
+    // overwrite an empty/fresh full generation during progressive polling.
+    await qc.resetQueries({
+      queryKey: playbackQueryKey(
+        args.mediaType,
+        args.tmdbId,
+        args.season,
+        args.episode,
+        true
+      ),
+      exact: true,
+    });
+  }, [
+    full.refetch,
+    qc,
+    args.mediaType,
+    args.tmdbId,
+    args.season,
+    args.episode,
+  ]);
 
   return {
     data,
