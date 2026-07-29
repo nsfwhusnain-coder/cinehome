@@ -23,6 +23,7 @@ import {
   chromium,
   type Browser,
   type BrowserContext,
+  type Locator,
   type Page,
   type Response as PlaywrightResponse,
 } from "playwright";
@@ -44,6 +45,14 @@ interface SafeSource {
   provider: string;
   verified: boolean | null;
   probeOk: boolean | null;
+  compat: string | null;
+  container: string | null;
+}
+
+interface RosterTracker {
+  sources: Map<string, SafeSource>;
+  fullResponseCount: number;
+  failedSourceIds: Set<string>;
 }
 
 interface VideoState {
@@ -67,6 +76,13 @@ interface ApiResponseObservation {
   status: number;
   mode: "fast" | "full" | "recovery" | null;
   cache: string | null;
+}
+
+interface RosterObservation {
+  viewport: ViewportName;
+  settledMs: number;
+  usableApiSourceIds: string[];
+  displayedSourceIds: string[];
 }
 
 const BASE = (process.env.CINEHOME_BASE_URL || "http://127.0.0.1:4447").replace(/\/$/, "");
@@ -93,8 +109,12 @@ const OUT_DIR =
 const WATCH_PATH = process.env.CINEBY_PLAYER_WATCH_PATH || "/watch/movie/550";
 const EXPECTED_TABS = ["Quality", "Sources", "Subtitles", "Audio", "Speed"];
 const EXPECTED_QUALITIES = ["Auto", "4K", "1440p", "1080p", "720p", "480p", "360p", "320p"];
+const ROSTER_MIN_ENRICHMENT_MS = 12_000;
+const ROSTER_SETTLE_MS = 3_000;
+const ROSTER_TIMEOUT_MS = 45_000;
 const checks: Check[] = [];
 const apiResponses: ApiResponseObservation[] = [];
+const rosterObservations: RosterObservation[] = [];
 
 function record(
   viewport: ViewportName,
@@ -144,18 +164,26 @@ function observeApiResponse(
 
 async function collectApiSources(
   response: PlaywrightResponse,
-  apiSources: Map<string, SafeSource>
+  tracker: RosterTracker
 ): Promise<void> {
   if (!response.url().includes("/api/playback/") || !response.ok()) return;
   try {
     const payload = (await response.json()) as { sources?: unknown[] };
+    const url = new URL(response.url());
+    if (
+      url.searchParams.get("refresh") !== "1" &&
+      url.searchParams.get("fast") !== "1" &&
+      url.searchParams.get("prefetch") !== "1"
+    ) {
+      tracker.fullResponseCount += 1;
+    }
     for (const raw of payload.sources || []) {
       if (!raw || typeof raw !== "object") continue;
       const source = raw as Record<string, unknown>;
       if (typeof source.id !== "string" || typeof source.provider !== "string") {
         continue;
       }
-      apiSources.set(source.id, {
+      tracker.sources.set(source.id, {
         id: source.id,
         provider: source.provider,
         verified: typeof source.verified === "boolean" ? source.verified : null,
@@ -165,11 +193,59 @@ async function collectApiSources(
           typeof (source.probe as Record<string, unknown>).ok === "boolean"
             ? ((source.probe as Record<string, unknown>).ok as boolean)
             : null,
+        compat: typeof source.compat === "string" ? source.compat : null,
+        container:
+          typeof source.container === "string" ? source.container : null,
       });
     }
   } catch {
     // The player itself surfaces malformed playback responses.
   }
+}
+
+function createRosterTracker(): RosterTracker {
+  return {
+    sources: new Map<string, SafeSource>(),
+    fullResponseCount: 0,
+    failedSourceIds: new Set<string>(),
+  };
+}
+
+function observePlayerFailure(tracker: RosterTracker, text: string): void {
+  if (!text.startsWith("[playback-failure]")) return;
+  const jsonStart = text.indexOf("{");
+  if (jsonStart < 0) return;
+  try {
+    const payload = JSON.parse(text.slice(jsonStart)) as {
+      sourceId?: unknown;
+    };
+    if (typeof payload.sourceId === "string") {
+      tracker.failedSourceIds.add(payload.sourceId);
+    }
+  } catch {
+    // Malformed diagnostics cannot silently alter the expected roster.
+  }
+}
+
+function usableApiSourceIds(tracker: RosterTracker): string[] {
+  return [...tracker.sources.values()]
+    .filter(
+      (source) =>
+        source.verified !== false &&
+        source.probeOk !== false &&
+        source.compat !== "safari" &&
+        source.container !== "mkv" &&
+        source.container !== "webm" &&
+        !tracker.failedSourceIds.has(source.id)
+    )
+    .map((source) => source.id);
+}
+
+function sameSet(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value) => right.includes(value))
+  );
 }
 
 function auditApiContract(viewport: ViewportName): void {
@@ -311,10 +387,56 @@ async function savePreferences(page: Page, value: Preferences): Promise<Preferen
   }, value);
 }
 
+async function waitForRosterEnrichment(
+  sourceRows: Locator,
+  tracker: RosterTracker,
+  viewport: ViewportName
+): Promise<{ displayed: string[]; usable: string[] }> {
+  const startedAt = Date.now();
+  let stableSince = startedAt;
+  let fingerprint = "";
+  let displayed: string[] = [];
+  let usable: string[] = [];
+
+  while (Date.now() - startedAt < ROSTER_TIMEOUT_MS) {
+    displayed = await sourceRows.evaluateAll((buttons) =>
+      buttons
+        .map((button) => button.getAttribute("data-source-id") || "")
+        .filter(Boolean)
+    );
+    usable = usableApiSourceIds(tracker);
+    const nextFingerprint = `${[...displayed].sort()}|${[...usable].sort()}`;
+    if (nextFingerprint !== fingerprint) {
+      fingerprint = nextFingerprint;
+      stableSince = Date.now();
+    }
+    const elapsedMs = Date.now() - startedAt;
+    if (
+      tracker.fullResponseCount > 0 &&
+      displayed.length > 0 &&
+      elapsedMs >= ROSTER_MIN_ENRICHMENT_MS &&
+      Date.now() - stableSince >= ROSTER_SETTLE_MS
+    ) {
+      rosterObservations.push({
+        viewport,
+        settledMs: elapsedMs,
+        usableApiSourceIds: [...usable],
+        displayedSourceIds: [...displayed],
+      });
+      return { displayed, usable };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(
+    `roster did not settle; full=${tracker.fullResponseCount}; ` +
+      `usable=${usable.join(",") || "none"}; displayed=${displayed.join(",") || "none"}`
+  );
+}
+
 async function auditSheet(
   page: Page,
   viewport: ViewportName,
-  apiSources: Map<string, SafeSource>
+  tracker: RosterTracker
 ): Promise<{ sourceIds: string[]; qualityLabels: string[] }> {
   const dialog = await openSheet(page);
   const tabs = await dialog.getByRole("tab").allTextContents();
@@ -348,6 +470,11 @@ async function auditSheet(
   await dialog.getByRole("tab", { name: "Sources", exact: true }).click();
   const sourceRows = dialog.locator("button[data-source-id]");
   await sourceRows.first().waitFor({ state: "visible", timeout: 45_000 });
+  const settled = await waitForRosterEnrichment(
+    sourceRows,
+    tracker,
+    viewport
+  );
   const rows = await sourceRows.evaluateAll((buttons) =>
     buttons.map((button) => ({
       id: button.getAttribute("data-source-id") || "",
@@ -362,15 +489,24 @@ async function auditSheet(
   const sourceIds = rows.map((row) => row.id);
   const deadIds = rows
     .filter((row) => {
-      const source = apiSources.get(row.id);
+      const source = tracker.sources.get(row.id);
       return source?.verified === false || source?.probeOk === false;
     })
     .map((row) => row.id);
   record(
     viewport,
     "source list contains only real API sources",
-    rows.length > 0 && rows.every((row) => row.id && row.provider && apiSources.has(row.id)),
+    rows.length > 0 &&
+      rows.every(
+        (row) => row.id && row.provider && tracker.sources.has(row.id)
+      ),
     `${rows.length} usable rows`
+  );
+  record(
+    viewport,
+    "settled source list matches the usable API roster",
+    sameSet(sourceIds, settled.usable),
+    `displayed=${sourceIds.join(",")}; usable=${settled.usable.join(",")}`
   );
   record(
     viewport,
@@ -443,11 +579,171 @@ async function selectSource(
   return state(page);
 }
 
+async function exerciseDisplayedSources(
+  page: Page,
+  viewport: ViewportName,
+  sourceIds: string[]
+): Promise<void> {
+  if (sourceIds.length <= 1) {
+    record(
+      viewport,
+      "every displayed source reaches an advancing frame",
+      "skip",
+      "only one usable source"
+    );
+    record(
+      viewport,
+      "paused source switch remains paused",
+      "skip",
+      "only one usable source"
+    );
+    return;
+  }
+
+  for (const sourceId of sourceIds) {
+    const before = await state(page);
+    try {
+      const selected =
+        before.sourceId === sourceId
+          ? await waitForAdvancingVideo(page, sourceId)
+          : await selectSource(page, sourceId, true);
+      record(
+        viewport,
+        `displayed source ${sourceId} reaches an advancing frame`,
+        selected.currentTime >= Math.max(0, before.currentTime - 8),
+        `${before.currentTime.toFixed(1)}s -> ${selected.currentTime.toFixed(1)}s; ` +
+          `${selected.width}x${selected.height}`
+      );
+    } catch (error) {
+      record(
+        viewport,
+        `displayed source ${sourceId} reaches an advancing frame`,
+        false,
+        safeError(error)
+      );
+      throw error;
+    }
+  }
+
+  await page.keyboard.press("k");
+  await page.waitForFunction(() => {
+    const video = document.querySelector("video");
+    return video instanceof HTMLVideoElement && video.paused;
+  });
+  const pausedBefore = await state(page);
+  const returnTarget = sourceIds.find(
+    (sourceId) => sourceId !== pausedBefore.sourceId
+  );
+  if (!returnTarget) throw new Error("no alternate source for paused switch");
+  const pausedAfter = await selectSource(page, returnTarget, false);
+  record(
+    viewport,
+    "paused source switch remains paused",
+    pausedAfter.paused &&
+      pausedAfter.currentTime >= Math.max(0, pausedBefore.currentTime - 8),
+    `${pausedBefore.currentTime.toFixed(1)}s -> ${pausedAfter.currentTime.toFixed(1)}s`
+  );
+}
+
+async function focusedControl(page: Page): Promise<{
+  tab: string | null;
+  sourceId: string | null;
+  quality: string | null;
+}> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    return {
+      tab:
+        active?.getAttribute("role") === "tab"
+          ? active.textContent?.trim() || null
+          : null,
+      sourceId: active?.getAttribute("data-source-id") || null,
+      quality: active?.getAttribute("data-quality-value") || null,
+    };
+  });
+}
+
+async function openSheetWithRemote(page: Page): Promise<Locator> {
+  await showControls(page);
+  const settings = page.getByRole("button", {
+    name: "Settings",
+    exact: true,
+  });
+  await settings.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Player settings" });
+  await dialog.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute("role") === "tab"
+  );
+  return dialog;
+}
+
+async function auditTvDpad(page: Page, sourceCount: number): Promise<void> {
+  const viewport: ViewportName = "tv";
+  let dialog = await openSheetWithRemote(page);
+  await page.keyboard.press("ArrowLeft");
+  const qualityTab = await focusedControl(page);
+  record(
+    viewport,
+    "D-pad traverses from Sources to Quality",
+    qualityTab.tab === "Quality",
+    qualityTab.tab || "none"
+  );
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  const firstQuality = await focusedControl(page);
+  await page.keyboard.press("ArrowDown");
+  const secondQuality = await focusedControl(page);
+  record(
+    viewport,
+    "D-pad traverses enabled quality rows",
+    firstQuality.quality != null &&
+      secondQuality.quality != null &&
+      firstQuality.quality !== secondQuality.quality,
+    `${firstQuality.quality || "none"} -> ${secondQuality.quality || "none"}`
+  );
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+
+  dialog = await openSheetWithRemote(page);
+  await page.keyboard.press("ArrowRight");
+  const sourcesTab = await focusedControl(page);
+  record(
+    viewport,
+    "D-pad traverses from Quality to Sources",
+    sourcesTab.tab === "Sources",
+    sourcesTab.tab || "none"
+  );
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  const firstSource = await focusedControl(page);
+  let secondSource = firstSource;
+  if (sourceCount > 1) {
+    await page.keyboard.press("ArrowDown");
+    secondSource = await focusedControl(page);
+  }
+  record(
+    viewport,
+    "D-pad traverses displayed source rows",
+    firstSource.sourceId != null &&
+      (sourceCount <= 1 ||
+        (secondSource.sourceId != null &&
+          secondSource.sourceId !== firstSource.sourceId)),
+    sourceCount <= 1
+      ? firstSource.sourceId || "none"
+      : `${firstSource.sourceId || "none"} -> ${secondSource.sourceId || "none"}`
+  );
+  await page.screenshot({ path: join(OUT_DIR, "tv-dpad-sources.png") });
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+}
+
 async function runDesktop(
-  browser: Browser,
-  apiSources: Map<string, SafeSource>
+  browser: Browser
 ): Promise<void> {
   const viewport: ViewportName = "desktop";
+  const tracker = createRosterTracker();
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     storageState: STORAGE_STATE,
@@ -460,7 +756,10 @@ async function runDesktop(
 
   page.on("response", async (response) => {
     observeApiResponse(viewport, response);
-    await collectApiSources(response, apiSources);
+    await collectApiSources(response, tracker);
+  });
+  page.on("console", (message) => {
+    observePlayerFailure(tracker, message.text());
   });
 
   let initialProfile: Preferences | null = null;
@@ -483,46 +782,8 @@ async function runDesktop(
       String(initialProfile.playbackQuality)
     );
 
-    const audit = await auditSheet(page, viewport, apiSources);
-    const alternate = audit.sourceIds.find((id) => id !== initial.sourceId);
-    if (!alternate) {
-      record(viewport, "playing source switch preserves position", "skip", "only one usable source");
-      record(viewport, "paused source switch remains paused", "skip", "only one usable source");
-    } else {
-      const beforeSwitch = await state(page);
-      const switched = await selectSource(page, alternate, true);
-      record(
-        viewport,
-        "playing source switch preserves position",
-        switched.currentTime >= Math.max(0, beforeSwitch.currentTime - 8),
-        `${beforeSwitch.currentTime.toFixed(1)}s → ${switched.currentTime.toFixed(1)}s`
-      );
-
-      // Closing the settings dialog deliberately restores focus to the
-      // Settings button. Space must remain that button's accessible
-      // activation key, while K is the player's unambiguous global
-      // play/pause shortcut even when a control owns focus.
-      await page.keyboard.press("k");
-      await page.waitForFunction(() => {
-        const video = document.querySelector("video");
-        return video instanceof HTMLVideoElement && video.paused;
-      });
-      const pausedBefore = await state(page);
-      const returnTarget =
-        audit.sourceIds.find((id) => id !== alternate) || initial.sourceId;
-      if (returnTarget) {
-        const pausedAfter = await selectSource(page, returnTarget, false);
-        record(
-          viewport,
-          "paused source switch remains paused",
-          pausedAfter.paused &&
-            pausedAfter.currentTime >= Math.max(0, pausedBefore.currentTime - 8),
-          `${pausedBefore.currentTime.toFixed(1)}s → ${pausedAfter.currentTime.toFixed(1)}s`
-        );
-      } else {
-        record(viewport, "paused source switch remains paused", "skip", "no return source");
-      }
-    }
+    const audit = await auditSheet(page, viewport, tracker);
+    await exerciseDisplayedSources(page, viewport, audit.sourceIds);
 
     const afterSessionSwitch = await preferences(page);
     record(
@@ -594,10 +855,10 @@ async function runDesktop(
 }
 
 async function runMobile(
-  browser: Browser,
-  apiSources: Map<string, SafeSource>
+  browser: Browser
 ): Promise<void> {
   const viewport: ViewportName = "mobile";
+  const tracker = createRosterTracker();
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     storageState: STORAGE_STATE,
@@ -611,13 +872,16 @@ async function runMobile(
   page.setDefaultTimeout(20_000);
   page.on("response", async (response) => {
     observeApiResponse(viewport, response);
-    await collectApiSources(response, apiSources);
+    await collectApiSources(response, tracker);
+  });
+  page.on("console", (message) => {
+    observePlayerFailure(tracker, message.text());
   });
   try {
     await page.goto(WATCH_PATH, { waitUntil: "domcontentloaded" });
     await waitForAdvancingVideo(page);
     await page.waitForTimeout(1_000);
-    await auditSheet(page, viewport, apiSources);
+    await auditSheet(page, viewport, tracker);
   } catch (error) {
     record(viewport, "mobile Cineby-style player pass completed", false, safeError(error));
   } finally {
@@ -627,10 +891,10 @@ async function runMobile(
 }
 
 async function runTv(
-  browser: Browser,
-  apiSources: Map<string, SafeSource>
+  browser: Browser
 ): Promise<void> {
   const viewport: ViewportName = "tv";
+  const tracker = createRosterTracker();
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
     storageState: STORAGE_STATE,
@@ -642,13 +906,17 @@ async function runTv(
   page.setDefaultTimeout(20_000);
   page.on("response", async (response) => {
     observeApiResponse(viewport, response);
-    await collectApiSources(response, apiSources);
+    await collectApiSources(response, tracker);
+  });
+  page.on("console", (message) => {
+    observePlayerFailure(tracker, message.text());
   });
   try {
     await page.goto(WATCH_PATH, { waitUntil: "domcontentloaded" });
     await waitForAdvancingVideo(page);
     await page.waitForTimeout(1_000);
-    await auditSheet(page, viewport, apiSources);
+    const audit = await auditSheet(page, viewport, tracker);
+    await auditTvDpad(page, audit.sourceIds.length);
   } catch (error) {
     record(viewport, "TV Cineby-style player pass completed", false, safeError(error));
   } finally {
@@ -663,11 +931,10 @@ async function main(): Promise<void> {
   }
   mkdirSync(OUT_DIR, { recursive: true });
   const browser = await chromium.launch({ headless: true });
-  const apiSources = new Map<string, SafeSource>();
   try {
-    await runDesktop(browser, apiSources);
-    await runMobile(browser, apiSources);
-    await runTv(browser, apiSources);
+    await runDesktop(browser);
+    await runMobile(browser);
+    await runTv(browser);
   } finally {
     await browser.close();
   }
@@ -683,6 +950,7 @@ async function main(): Promise<void> {
     },
     checks,
     apiResponses,
+    rosterObservations,
   };
   const reportPath = join(OUT_DIR, "report.json");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);

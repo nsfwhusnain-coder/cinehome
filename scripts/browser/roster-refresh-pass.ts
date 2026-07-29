@@ -26,6 +26,9 @@ const STORAGE_STATE =
 const OUT_DIR =
   process.env.ROSTER_REFRESH_OUT_DIR ||
   "/app/.browser-qa/roster-refresh-pass";
+const MAX_RECOVERY_LATENCY_MS = Number(
+  process.env.ROSTER_REFRESH_MAX_LATENCY_MS || 45_000
+);
 
 interface Check {
   name: string;
@@ -56,6 +59,15 @@ function isMediaRequest(route: Route): boolean {
   return /\.(?:m3u8|mpd|mp4|m4s|ts)(?:$|\?)/i.test(request.url());
 }
 
+function isForbiddenReleaseStatus(status: number): boolean {
+  return (
+    status === 403 ||
+    status === 428 ||
+    status === 429 ||
+    status >= 500
+  );
+}
+
 async function main(): Promise<void> {
   if (!existsSync(STORAGE_STATE)) {
     throw new Error(`Storage state not found: ${STORAGE_STATE}`);
@@ -79,6 +91,8 @@ async function main(): Promise<void> {
   let allowedMediaRequests = 0;
   let refreshSourceCount = 0;
   let refreshDefaultSourceId: string | null = null;
+  let firstInjectedFailureAt: number | null = null;
+  let recoveryLatencyMs: number | null = null;
   const playerFailures: string[] = [];
   const postRefreshMediaStatuses: number[] = [];
   const playbackResponses: Array<{
@@ -102,6 +116,7 @@ async function main(): Promise<void> {
       return;
     }
     if (!refreshCompleted && isMediaRequest(route)) {
+      if (firstInjectedFailureAt == null) firstInjectedFailureAt = Date.now();
       injectedFailures += 1;
       await route.fulfill({
         status: 428,
@@ -199,11 +214,41 @@ async function main(): Promise<void> {
       sourceId: video.dataset.playbackSourceId || null,
     }));
     finalState = state;
+    recoveryLatencyMs =
+      firstInjectedFailureAt == null
+        ? null
+        : Date.now() - firstInjectedFailureAt;
+    const forbiddenPlaybackResponses = playbackResponses.filter((response) =>
+      isForbiddenReleaseStatus(response.status)
+    );
+    const forbiddenPostRefreshMedia = postRefreshMediaStatuses.filter(
+      isForbiddenReleaseStatus
+    );
 
     check("the initial roster was actually exhausted", injectedFailures >= 2, `${injectedFailures} forced failures`);
     check("the player requested one bounded recovery roster", refreshRequests === 1, `${refreshRequests} refresh request(s)`);
     check("the recovery API returned a fresh generation", refreshStatus === 200 && refreshNonce != null, `HTTP ${refreshStatus}, nonce=${refreshNonce != null}`);
     check("fresh sources reached an advancing decoded frame", state.width > 0 && state.currentTime > 0, `${state.width}x${state.height} via ${state.sourceId}`);
+    check(
+      "recovery completes inside the release latency budget",
+      recoveryLatencyMs != null &&
+        recoveryLatencyMs <= MAX_RECOVERY_LATENCY_MS,
+      `${recoveryLatencyMs ?? "unknown"}ms / ${MAX_RECOVERY_LATENCY_MS}ms`
+    );
+    check(
+      "recovery playback avoids authorization, dead-source, rate-limit, and server errors",
+      forbiddenPlaybackResponses.length === 0 &&
+        forbiddenPostRefreshMedia.length === 0,
+      [
+        ...forbiddenPlaybackResponses.map(
+          (response) =>
+            `${response.status} ${response.refresh ? "refresh" : "playback"}@${response.elapsedMs}ms`
+        ),
+        ...forbiddenPostRefreshMedia.map(
+          (status) => `${status} post-refresh-media`
+        ),
+      ].join(", ") || "none"
+    );
     check(
       "the player surfaced generation-scoped failures during recovery",
       playerFailures.length >= 2,
@@ -253,6 +298,8 @@ async function main(): Promise<void> {
     refreshNoncePresent: refreshNonce != null,
     refreshSourceCount,
     refreshDefaultSourceId,
+    maxRecoveryLatencyMs: MAX_RECOVERY_LATENCY_MS,
+    recoveryLatencyMs,
     injectedFailures,
     allowedMediaRequests,
     postRefreshMediaStatuses,
