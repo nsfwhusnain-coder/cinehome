@@ -94,6 +94,10 @@ const NEGATIVE_CACHE_TTL_MS = 30_000;
 const NEGATIVE_CACHE_FAIL_THRESHOLD = 3;
 /** Cap negative-cache entries (small; keyed by normalized URL). */
 const NEGATIVE_CACHE_MAX = 512;
+/** Incomplete failure streaks expire instead of living for the process lifetime. */
+const NEGATIVE_FAIL_STREAK_TTL_MS = NEGATIVE_CACHE_TTL_MS;
+/** Bound one/two-off failures from ever-new segment URLs. */
+const NEGATIVE_FAIL_COUNT_MAX = NEGATIVE_CACHE_MAX;
 /** Height-inject result cache for masters that lack RESOLUTION (indefinite-ish). */
 const RESOLUTION_INJECT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const RESOLUTION_INJECT_CACHE_MAX = 256;
@@ -149,6 +153,11 @@ interface NegativeCacheEntry {
   expiresAt: number;
 }
 
+interface NegativeFailCount {
+  count: number;
+  expiresAt: number;
+}
+
 interface InjectHeightEntry {
   height: number;
   expiresAt: number;
@@ -196,7 +205,7 @@ const manifestOrder: string[] = [];
 /** Normalized-URL failures (timeout / 5xx) — avoid retry storms. */
 const negativeCache = new Map<string, NegativeCacheEntry>();
 /** Consecutive fail counts before negative-cache admission. */
-const negativeFailCounts = new Map<string, number>();
+const negativeFailCounts = new Map<string, NegativeFailCount>();
 /** Master/media URL → injected height (URL-token or segment probe). */
 const injectHeightCache = new Map<string, InjectHeightEntry>();
 /** In-flight SWR revalidations (body / manifest cache keys). */
@@ -287,10 +296,12 @@ function isGlobalManifestCacheable(url: string): boolean {
 }
 
 /** Resolve body-cache scope: global CDN segments vs session-bound ambiguous URLs. */
+type BodyCacheKind = "segment" | "manifest";
+
 function resolveBodyCacheScope(
   session: HlsSession,
   url: string,
-  kind: "segment" | "manifest"
+  kind: BodyCacheKind
 ): { keyScope: string; sessionTag: string; global: boolean } {
   const global =
     kind === "segment" ? isGlobalSegmentCacheable(url) : isGlobalManifestCacheable(url);
@@ -459,14 +470,28 @@ function getCachedManifest(key: string): CacheLookup<ManifestCacheEntry> | null 
   return null;
 }
 
-function negativeCacheKey(url: string, range: string | null): string {
+function negativeCacheKey(
+  session: HlsSession,
+  url: string,
+  range: string | null,
+  kind: BodyCacheKind
+): string {
+  // Match the positive body cache's trust boundary: known CDN media may be
+  // global, while auth-bound roots and ambiguous hosts remain isolated to the
+  // HLS session that supplied their cookies/referer.
+  const scope = resolveBodyCacheScope(session, url, kind).keyScope;
   return createHash("sha256")
-    .update(`neg|${normalizeUpstreamForCache(url)}|${range ?? ""}`)
+    .update(`neg|${scope}|${normalizeUpstreamForCache(url)}|${range ?? ""}`)
     .digest("hex");
 }
 
-function getNegativeCache(url: string, range: string | null): NegativeCacheEntry | null {
-  const key = negativeCacheKey(url, range);
+function getNegativeCache(
+  session: HlsSession,
+  url: string,
+  range: string | null,
+  kind: BodyCacheKind
+): NegativeCacheEntry | null {
+  const key = negativeCacheKey(session, url, range, kind);
   const entry = negativeCache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
@@ -481,17 +506,40 @@ function getNegativeCache(url: string, range: string | null): NegativeCacheEntry
  * NEGATIVE_CACHE_FAIL_THRESHOLD consecutive fails for the same key.
  * Returns true when the negative entry was written.
  */
-function setNegativeCache(url: string, range: string | null, status: number, message: string): boolean {
-  const key = negativeCacheKey(url, range);
-  const fails = (negativeFailCounts.get(key) ?? 0) + 1;
-  negativeFailCounts.set(key, fails);
+function setNegativeCache(
+  session: HlsSession,
+  url: string,
+  range: string | null,
+  kind: BodyCacheKind,
+  status: number,
+  message: string
+): boolean {
+  const key = negativeCacheKey(session, url, range, kind);
+  const now = Date.now();
+  for (const [candidate, entry] of negativeFailCounts) {
+    if (entry.expiresAt <= now) negativeFailCounts.delete(candidate);
+  }
+  const previous = negativeFailCounts.get(key);
+  const fails =
+    (previous && previous.expiresAt > now ? previous.count : 0) + 1;
+  // Refresh insertion order so the cap evicts the least-recent streak.
+  negativeFailCounts.delete(key);
+  negativeFailCounts.set(key, {
+    count: fails,
+    expiresAt: now + NEGATIVE_FAIL_STREAK_TTL_MS,
+  });
   if (fails < NEGATIVE_CACHE_FAIL_THRESHOLD) {
+    while (negativeFailCounts.size > NEGATIVE_FAIL_COUNT_MAX) {
+      const oldest = negativeFailCounts.keys().next().value;
+      if (oldest === undefined) break;
+      negativeFailCounts.delete(oldest);
+    }
     return false;
   }
   negativeCache.set(key, {
     status,
     message,
-    expiresAt: Date.now() + NEGATIVE_CACHE_TTL_MS,
+    expiresAt: now + NEGATIVE_CACHE_TTL_MS,
   });
   negativeFailCounts.delete(key);
   while (negativeCache.size > NEGATIVE_CACHE_MAX) {
@@ -503,8 +551,13 @@ function setNegativeCache(url: string, range: string | null, status: number, mes
 }
 
 /** Clear fail streak on any successful upstream body (segment or manifest). */
-function clearNegativeFailStreak(url: string, range: string | null): void {
-  negativeFailCounts.delete(negativeCacheKey(url, range));
+function clearNegativeFailStreak(
+  session: HlsSession,
+  url: string,
+  range: string | null,
+  kind: BodyCacheKind
+): void {
+  negativeFailCounts.delete(negativeCacheKey(session, url, range, kind));
 }
 
 function injectHeightCacheKey(url: string): string {
@@ -1141,7 +1194,14 @@ function revalidateManifestInBackground(
       );
       if (!res.ok) {
         if (res.status >= 500) {
-          setNegativeCache(upstream, null, res.status, `Upstream ${res.status}`);
+          setNegativeCache(
+            session,
+            upstream,
+            null,
+            "manifest",
+            res.status,
+            `Upstream ${res.status}`
+          );
         }
         return;
       }
@@ -1153,7 +1213,14 @@ function revalidateManifestInBackground(
         maybeCacheRawManifest(session, upstream, text, "mpd", rewriteBase);
       }
     } catch {
-      setNegativeCache(upstream, null, 502, "Upstream fetch failed");
+      setNegativeCache(
+        session,
+        upstream,
+        null,
+        "manifest",
+        502,
+        "Upstream fetch failed"
+      );
     } finally {
       revalidatingKeys.delete(cacheKey);
     }
@@ -1181,7 +1248,14 @@ function revalidateSegmentInBackground(
       );
       if (!res.ok) {
         if (res.status >= 500) {
-          setNegativeCache(upstream, rangeHeader, res.status, `Upstream ${res.status}`);
+          setNegativeCache(
+            session,
+            upstream,
+            rangeHeader,
+            "segment",
+            res.status,
+            `Upstream ${res.status}`
+          );
         }
         return;
       }
@@ -1202,7 +1276,14 @@ function revalidateSegmentInBackground(
         expiresAt: Date.now() + ttl,
       });
     } catch {
-      setNegativeCache(upstream, rangeHeader, 502, "Upstream fetch failed");
+      setNegativeCache(
+        session,
+        upstream,
+        rangeHeader,
+        "segment",
+        502,
+        "Upstream fetch failed"
+      );
     } finally {
       revalidatingKeys.delete(cacheKey);
     }
@@ -1490,6 +1571,10 @@ async function fetchUpstreamSafely(
     const res = await fetch(current, { headers, redirect: "manual", signal });
     if (res.status < 300 || res.status >= 400) return res;
     const location = res.headers.get("location");
+    // Manual redirect responses can carry a body. Leaving it unread pins the
+    // upstream socket until GC and exhausts connection reuse under
+    // redirect-heavy segment traffic.
+    await res.body?.cancel("following upstream redirect").catch(() => undefined);
     if (!location) return res;
     let next: URL;
     try {
@@ -1847,7 +1932,15 @@ export async function fetchProxied(
   }
 
   // Negative cache short-circuit (timeout / 5xx / ECONNRESET) — 30s.
-  const neg = getNegativeCache(upstream, rangeHeader);
+  const negativeKind: BodyCacheKind = urlLooksLikePlaylist
+    ? "manifest"
+    : "segment";
+  const neg = getNegativeCache(
+    session,
+    upstream,
+    rangeHeader,
+    negativeKind
+  );
   if (neg) {
     metrics.negativeHits += 1;
     return new Response(neg.message, { status: neg.status });
@@ -1880,7 +1973,14 @@ export async function fetchProxied(
     }
     metrics.errors += 1;
     // Timeout / ECONNRESET — negative-cache so retries short-circuit for 30s.
-    setNegativeCache(upstream, rangeHeader, 502, "Upstream fetch failed");
+    setNegativeCache(
+      session,
+      upstream,
+      rangeHeader,
+      negativeKind,
+      502,
+      "Upstream fetch failed"
+    );
     return new Response("Upstream fetch failed", { status: 502 });
   }
 
@@ -1889,8 +1989,10 @@ export async function fetchProxied(
     // 5xx: negative-cache after fail threshold. 4xx: pass through (auth / missing may resolve).
     if (upstreamRes.status >= 500) {
       setNegativeCache(
+        session,
         upstream,
         rangeHeader,
+        negativeKind,
         upstreamRes.status,
         `Upstream ${upstreamRes.status}`
       );
@@ -1899,7 +2001,12 @@ export async function fetchProxied(
     return new Response(`Upstream ${upstreamRes.status}`, { status: upstreamRes.status });
   }
 
-  clearNegativeFailStreak(upstream, rangeHeader);
+  clearNegativeFailStreak(
+    session,
+    upstream,
+    rangeHeader,
+    negativeKind
+  );
 
   const contentType = mediaContentTypeForProxy(
     upstream,
