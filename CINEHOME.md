@@ -42,7 +42,7 @@ shows a useful sustained hit rate.
 ```bash
 # .env
 CINEPRO_URL=http://cinepro-core:3000
-CINEPRO_EVAL_UNTIL=2026-07-28T12:00:00.000Z
+CINEPRO_EVAL_UNTIL=<future ISO-8601 timestamp, no more than 48 hours>
 # or, only after a successful evaluation:
 # PROVIDER_CINEPRO=1
 WORKER_PROXY_ENABLED=0
@@ -79,40 +79,39 @@ that branch must be fast-forwarded into server `main` before deployment.
 `deploy.sh` deliberately refuses rsync so the server worktree cannot silently
 diverge from Git.
 
+Create the rollback snapshot while the old production image and database are
+still live. Then fast-forward the reviewed branch and deploy the exact SHA:
+
 ```bash
-# Run on hussyserver from the authoritative tree.
 cd /home/hussy/cinehome
 git status --short --branch
-SKIP_RSYNC=1 DEPLOY_PATH=/home/hussy/cinehome ./scripts/deploy.sh
+
+snapshot_output="$(./scripts/snapshot-production.sh predeploy)"
+printf '%s\n' "${snapshot_output}"
+snapshot_dir="$(awk -F': ' '/^snapshot OK:/ { print $2 }' <<<"${snapshot_output}")"
+
+git merge --ff-only review/player-reliability
+revision="$(git rev-parse HEAD)"
+SKIP_RSYNC=1 \
+EXPECTED_REVISION="${revision}" \
+PREDEPLOY_SNAPSHOT_DIR="${snapshot_dir}" \
+DEPLOY_PATH=/home/hussy/cinehome \
+./scripts/deploy.sh
 ```
 
-The deploy fails unless the tree is clean and checked out on `main`. Success
-requires the Compose app+scraper health check, the published app URL, and the
-internal scraper health endpoint to pass with zero container restarts or OOM
-kills. A failed health gate exits non-zero and preserves the predeploy rollback
-tag printed by the script.
+The deploy fails unless the tree is clean `main`, the expected full revision
+matches, a mode-700 snapshot is less than 60 minutes old and verifies fully,
+the live image has a resolvable rollback tag, and the Prisma schema matches the
+live image. Success requires the Compose app+scraper health check, published
+app URL, internal scraper health, zero restarts/OOM, and an OCI revision label
+equal to the reviewed SHA.
 
-Manual equivalent:
-
-```bash
-test "$(git branch --show-current)" = main
-test -z "$(git status --porcelain --untracked-files=all)"
-./scripts/disk-preflight.sh   # abort if free disk on / < 20GB
-# deploy.sh supplies NODE_DOWNLOAD_IP automatically when host/Tailscale DNS is
-# broken but CineHome's explicit container DNS can resolve nodejs.org.
-# Manual deploys must also tag BEFORE build. Never rebuild `latest` first.
-live_image=$(docker inspect --format '{{.Image}}' cinehome)
-docker image inspect "$live_image" >/dev/null
-docker image tag "$live_image" \
-  "cinehome-cinehome:predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
-docker compose build
-docker compose up -d --wait --wait-timeout 180
-test "$(docker inspect --format '{{.State.Health.Status}}' cinehome)" = healthy
-test "$(docker inspect --format '{{.RestartCount}}' cinehome)" = 0
-test "$(docker inspect --format '{{.State.OOMKilled}}' cinehome)" = false
-curl -sf http://127.0.0.1:4445
-docker exec cinehome curl -sf http://127.0.0.1:3030/health
-```
+Once candidate activation begins, an EXIT/HUP/INT/TERM trap is armed. A failed
+start, failed health/revision gate, or interrupted shell restores the exact old
+image with `--no-build`, proves its image ID, and repeats health checks before
+printing `ROLLBACK OK`. Do not replace this path with raw `docker compose up`;
+that bypasses the snapshot, source-identity, health, and automatic rollback
+contracts.
 
 Disk hygiene:
 
@@ -126,7 +125,12 @@ Disk hygiene:
 **Note:** `docker builder prune` is always **host-wide** (every project’s BuildKit cache on the machine), not CineHome-only. Default uses `--filter until=168h` so recent cache is kept; use `--builder-all` only on a dedicated box when you need max reclaim.
 
 Secrets: copy `.env.example` → `.env` on the server. **Never commit `.env`.**
-The server-side deploy does not copy or modify `.env` or `db/`.
+The deploy does not replace `.env` or the database bind mount. Startup still
+runs `prisma db push`, so deployment refuses an implicit schema change; schema
+work requires an explicit reviewed migration and rollback procedure. The
+predeploy snapshot captures online SQLite backups, protected env/config,
+rendered Compose, the exact image/tag/archive, Git bundle, checksums, and
+logical table fingerprints.
 `.dockerignore` must continue to exclude `.browser-qa/` because it contains
 authenticated Playwright storage state; it also excludes persisted transcode
 data. A production image must pass `test ! -e /app/.browser-qa`.

@@ -28,6 +28,22 @@ if ! docker inspect cinehome >/dev/null 2>&1; then
   echo "ERROR: live cinehome container is unavailable." >&2
   exit 1
 fi
+container_health="$(
+  docker inspect --format \
+    '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+    cinehome
+)"
+restart_count="$(docker inspect --format '{{.RestartCount}}' cinehome)"
+oom_killed="$(docker inspect --format '{{.State.OOMKilled}}' cinehome)"
+if [[ "${container_health}" != "healthy" ]] \
+  || [[ "${restart_count}" != "0" ]] \
+  || [[ "${oom_killed}" != "false" ]] \
+  || ! curl -sf --max-time 3 http://127.0.0.1:4445 >/dev/null \
+  || ! docker exec cinehome curl -sf --max-time 3 \
+    http://127.0.0.1:3030/health >/dev/null; then
+  echo "ERROR: refusing to snapshot an unhealthy/restarted/OOM runtime." >&2
+  exit 1
+fi
 
 umask 077
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -47,12 +63,15 @@ if docker image inspect "${rollback_tag}" >/dev/null 2>&1; then
 fi
 docker image tag "${live_image_id}" "${rollback_tag}"
 
-printf 'created_utc=%s\ncommit=%s\nbranch=%s\nimage_id=%s\nrollback_tag=%s\n' \
+printf 'created_utc=%s\ncommit=%s\nbranch=%s\nimage_id=%s\nrollback_tag=%s\nhealth=%s\nrestarts=%s\noom_killed=%s\n' \
   "${timestamp}" \
   "$(git -C "${ROOT}" rev-parse HEAD)" \
   "$(git -C "${ROOT}" branch --show-current)" \
   "${live_image_id}" \
   "${rollback_tag}" \
+  "${container_health}" \
+  "${restart_count}" \
+  "${oom_killed}" \
   > "${snapshot_dir}/MANIFEST"
 
 for config_path in .env docker-compose.yml Dockerfile start.sh Caddyfile; do

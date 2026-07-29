@@ -1,5 +1,9 @@
 # Baseline metrics — PR-01 / M0
 
+> Historical scraper-only baseline from 2026-07-08. For browser TTFF, delivered
+> decoder dimensions, seek, rebuffer, source identity, and failure recovery,
+> use `docs/OWNERSHIP-LOG-2026-07-25.md` and the latest dated ownership log.
+
 Smoke harness records **scraper-side** marks only (no browser TTFF).
 
 Canonical fixture: **The Witcher** S1E1 — `tmdbId=71912`, `mediaType=tv`, `season=1`, `episode=1`.
@@ -140,10 +144,10 @@ Use **B** for multi-source presence checks only, not for `scrape_fast_ms` deltas
 |------------|---------|------------------|---------|----------------|----------------|-----------|--------|-----------|----------------|---------------------|-------|
 |            |         | cold_fast / warm_cached / cold_full | y/n |                |                |           |        |           |                |                     |       |
 
-## Out of scope for PR-01
+## Historical out of scope for PR-01
 
 | Mark | Status |
 |------|--------|
-| `ttff_ms` (Play → first frame) | **Not required** — capture later (PR-05 / product TTFF) |
-| Authenticated browser smoke | **Not required** |
+| `ttff_ms` (Play → first frame) | Captured by the ownership browser harness after this historical baseline |
+| Authenticated browser smoke | Required by the current release gate |
 | Proxy hit rate | PR-03 |

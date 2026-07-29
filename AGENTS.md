@@ -42,9 +42,9 @@
    - `cinehome-qa` — browser screenshots + smoke (read/execute)
 3. After code changes: focused tests + `bunx tsc --noEmit` (or the exact Docker
    build) → commit the authoritative server tree →
-   `SKIP_RSYNC=1 ./scripts/deploy.sh` on the server → browser QA.
-   The deploy script refuses rsync, a dirty tree, and any branch other than
-   server `main`.
+   a fresh protected snapshot → exact-revision `scripts/deploy.sh` on the
+   server → browser QA. The deploy script refuses rsync, dirty/non-main source,
+   a missing/stale snapshot, an unexpected SHA, and an implicit schema change.
 4. Handoffs: `.claude/handoffs/*.md` for multi-step audits (optional).
 5. **Do not** launch Godot boss/coder agents here.
 
@@ -59,8 +59,12 @@
 
 ## Deploy & ops
 ```bash
-# From the authoritative server tree
-SKIP_RSYNC=1 ./scripts/deploy.sh
+# From the authoritative server tree, after the predeploy snapshot and FF-only merge
+revision="$(git rev-parse HEAD)"
+SKIP_RSYNC=1 \
+EXPECTED_REVISION="${revision}" \
+PREDEPLOY_SNAPSHOT_DIR=/home/hussy/cinehome-backups/<snapshot> \
+./scripts/deploy.sh
 
 # Smoke (scraper only, inside container)
 ssh hussyserver 'docker exec cinehome bun /app/scripts/smoke-playback.ts'

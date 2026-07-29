@@ -22,7 +22,7 @@ afterEach(() => {
 
 function runScenario(
   scenario: string,
-  mode: "rollback" | "cutover" = "rollback"
+  mode: "rollback" | "cutover" | "hup" | "int" | "term" = "rollback"
 ) {
   const directory = mkdtempSync(join(tmpdir(), "cinehome-deploy-runtime-"));
   temporaryDirectories.push(directory);
@@ -95,9 +95,9 @@ exit 44
   chmodSync(join(fakeBin, "docker"), 0o755);
   chmodSync(join(fakeBin, "curl"), 0o755);
 
-  const body =
-    mode === "cutover"
-      ? `
+  let body = "rollback_live_image\n";
+  if (mode === "cutover") {
+    body = `
 arm_cutover_rollback
 if ! docker compose up -d; then
   exit 1
@@ -106,8 +106,13 @@ if ! wait_for_runtime_health 1; then
   exit 1
 fi
 disarm_cutover_rollback
-`
-      : "rollback_live_image\n";
+`;
+  } else if (mode !== "rollback") {
+    body = `
+arm_cutover_rollback
+kill -${mode.toUpperCase()} $$
+`;
+  }
   const result = spawnSync(
     "bash",
     [
@@ -178,6 +183,20 @@ describe("behavioral deploy rollback", () => {
       expect(result.state).toBe("sha256:old");
       expect(result.output).toContain("ROLLBACK OK:");
       expect(result.output).not.toContain("CRITICAL:");
+    });
+  }
+
+  for (const [signal, exitCode] of [
+    ["hup", 129],
+    ["int", 130],
+    ["term", 143],
+  ] as const) {
+    test(`an armed ${signal.toUpperCase()} restores before exiting`, () => {
+      const result = runScenario("success", signal);
+
+      expect(result.status).toBe(exitCode);
+      expect(result.state).toBe("sha256:old");
+      expect(result.output).toContain("ROLLBACK OK:");
     });
   }
 });
