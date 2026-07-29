@@ -523,7 +523,9 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
       const res = await fetch(endpoint, { method: "POST" });
       if (res.ok) {
         toast.success("Request sent");
-        void retryFull();
+        void retryFull().catch(() => {
+          toast.error("Fresh sources could not be loaded");
+        });
       } else toast.error("Request failed");
     } catch {
       toast.error("Request failed");

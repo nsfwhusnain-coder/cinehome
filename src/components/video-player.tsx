@@ -1209,9 +1209,10 @@ export function VideoPlayer({
   }, []);
 
   const requestAutomaticRosterRefresh = useCallback((): boolean => {
+    const retrySources = onRetrySourcesRef.current;
     if (
       automaticRosterRefreshRef.current ||
-      !onRetrySourcesRef.current
+      !retrySources
     ) {
       return false;
     }
@@ -1219,7 +1220,13 @@ export function VideoPlayer({
     setError(null);
     setBuffering(true);
     if (everPlayedRef.current) setIsSwitchingServer(true);
-    onRetrySourcesRef.current();
+    void Promise.resolve()
+      .then(() => retrySources())
+      .catch(() => {
+        setIsSwitchingServer(false);
+        setBuffering(false);
+        setError(ALL_SOURCES_FAILED_MSG);
+      });
     return true;
   }, [setBuffering, setError]);
 
@@ -1889,7 +1896,20 @@ export function VideoPlayer({
     setError(null);
     setBuffering(true);
     if (everPlayedRef.current) setIsSwitchingServer(true);
-    onRetrySourcesRef.current?.();
+    const retrySources = onRetrySourcesRef.current;
+    if (!retrySources) {
+      setIsSwitchingServer(false);
+      setBuffering(false);
+      setError(ALL_SOURCES_FAILED_MSG);
+      return;
+    }
+    void Promise.resolve()
+      .then(() => retrySources())
+      .catch(() => {
+        setIsSwitchingServer(false);
+        setBuffering(false);
+        setError(ALL_SOURCES_FAILED_MSG);
+      });
   }, [setError, setBuffering]);
 
   /**

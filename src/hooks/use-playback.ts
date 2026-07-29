@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import type { MediaType, PlaybackResponse } from "@/lib/playback/types";
 import {
@@ -41,6 +42,22 @@ export function playbackQueryKey(
   fast?: boolean
 ) {
   return ["playback", mediaType, tmdbId, season, episode, fast ? "fast" : "full"] as const;
+}
+
+export function playbackRecoveryQueryKey(
+  mediaType: MediaType,
+  tmdbId: number,
+  season?: number,
+  episode?: number
+) {
+  return [
+    "playback",
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+    "recovery",
+  ] as const;
 }
 
 /** Match server scraper budgets — never hang UX on Playwright. */
@@ -106,6 +123,80 @@ async function fetchPlayback(
   }
   if (json.preferences) syncProfilePlaybackPreferences(json.preferences);
   return json;
+}
+
+/**
+ * Resolve a fresh signed roster outside the ordinary full query.
+ *
+ * Recovery cannot be a boolean consumed by the ordinary query function:
+ * TanStack may reuse an already-running ordinary promise, and a query retry
+ * invokes the function again after any one-shot flag has been cleared. A
+ * dedicated key makes recovery single-flight while ensuring every retry is a
+ * cache-bypassing request. Publishing the result into both ordinary caches
+ * also prevents a stale fast response from resurrecting an expired URL.
+ */
+export async function recoverPlaybackRoster(
+  qc: QueryClient,
+  {
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+  }: Pick<Args, "mediaType" | "tmdbId" | "season" | "episode">
+): Promise<PlaybackResponse> {
+  const fullKey = playbackQueryKey(
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+    false
+  );
+  const fastKey = playbackQueryKey(
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+    true
+  );
+  const recoveryKey = playbackRecoveryQueryKey(
+    mediaType,
+    tmdbId,
+    season,
+    episode
+  );
+
+  // Abort an older ordinary resolve before recovery starts. fetchPlayback
+  // consumes TanStack's signal, so that request cannot land after recovery.
+  await qc.cancelQueries({ queryKey: fullKey, exact: true });
+
+  try {
+    const recovered = await qc.fetchQuery({
+      queryKey: recoveryKey,
+      queryFn: ({ signal }) =>
+        fetchPlayback(
+          mediaType,
+          tmdbId,
+          season,
+          episode,
+          false,
+          signal,
+          true
+        ),
+      retry: shouldRetryPlaybackRequest,
+      retryDelay: 250,
+      staleTime: 0,
+      gcTime: 0,
+    });
+
+    qc.setQueryData(fullKey, recovered);
+    qc.setQueryData(fastKey, recovered);
+    return recovered;
+  } finally {
+    // No observer owns this transport-only key. Removing it makes a later,
+    // deliberate recovery issue a new request while concurrent callers still
+    // share the in-flight promise above.
+    qc.removeQueries({ queryKey: recoveryKey, exact: true });
+  }
 }
 
 /**
@@ -249,9 +340,6 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const { data: session } = useSession();
   const qc = useQueryClient();
   const canFetch = (args.enabled ?? true) && !!session;
-  /** Only `retryFull()` may force a bounded recovery refresh. */
-  const forceRefreshRef = useRef(false);
-
   // Hero/detail hover preresolve warms client memory — seed RQ so first paint skips cold wait.
   const memSeed = useMemo((): PlaybackResponse | undefined => {
     if (typeof window === "undefined") return undefined;
@@ -288,19 +376,15 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
 
   const full = useQuery({
     queryKey: playbackQueryKey(args.mediaType, args.tmdbId, args.season, args.episode, false),
-    queryFn: ({ signal }) => {
-      const recoveryRefresh = forceRefreshRef.current;
-      forceRefreshRef.current = false;
-      return fetchPlayback(
+    queryFn: ({ signal }) =>
+      fetchPlayback(
         args.mediaType,
         args.tmdbId,
         args.season,
         args.episode,
         false,
-        signal,
-        recoveryRefresh
-      );
-    },
+        signal
+      ),
     // Fires in parallel with `fast` (not gated on it settling) — first usable
     // result wins; see mergePlaybackResponses / fullStillOpen below.
     enabled: canFetch,
@@ -448,29 +532,16 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
    * source and silently switch servers before recovery owned the outcome.
    */
   const retryFull = useCallback(async () => {
-    forceRefreshRef.current = true;
     pollStartedAtRef.current = null;
     setDiscoveryWallHit(false);
     setSoftMissWallHit(false);
-    await full.refetch({
-      cancelRefetch: true,
-      throwOnError: true,
-    });
-    // The server-side recovery invalidates the fast trust cache. Clear its
-    // client twin only after recovery succeeds so a stale signed URL cannot
-    // overwrite an empty/fresh full generation during progressive polling.
-    await qc.resetQueries({
-      queryKey: playbackQueryKey(
-        args.mediaType,
-        args.tmdbId,
-        args.season,
-        args.episode,
-        true
-      ),
-      exact: true,
+    await recoverPlaybackRoster(qc, {
+      mediaType: args.mediaType,
+      tmdbId: args.tmdbId,
+      season: args.season,
+      episode: args.episode,
     });
   }, [
-    full.refetch,
     qc,
     args.mediaType,
     args.tmdbId,
