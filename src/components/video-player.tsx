@@ -2563,7 +2563,14 @@ export function VideoPlayer({
           const list = levelsFromHls(hls);
           const level = list.find((l) => l.index === data.level);
           const h = level ? effectiveLevelHeight(level) : 0;
-          setPlayingHeight(h);
+          const decoded = decodedQualityHeight(
+            video.videoWidth || 0,
+            video.videoHeight || 0
+          );
+          // Decoder dimensions are authoritative. LEVEL_SWITCHED can arrive
+          // before the new frame is rendered, so keep the previous decoded
+          // tier until the video `resize` event confirms the new raster.
+          setPlayingHeight(decoded > 0 ? decoded : h);
           if (h > 0 && h < HLS_MIN_HEIGHT * 0.95 && videoRef.current) {
             applyPromotionResult(
               maybePromoteHlsQuality(
@@ -3092,6 +3099,16 @@ export function VideoPlayer({
         markEverPlayed();
       }
     };
+    const onVideoResize = () => {
+      const decodedTier = decodedQualityHeight(
+        video.videoWidth || 0,
+        video.videoHeight || 0
+      );
+      if (decodedTier <= 0) return;
+      setPlayingHeight(decodedTier);
+      const sourceId = activeSourceRef.current?.id;
+      if (sourceId) recordDetectedHeight(sourceId, decodedTier);
+    };
     const resumeIfNeeded = () => {
       setBuffering(false);
       if (video.readyState >= 2 && video.currentTime >= HEALTHY_PLAY_LOCK_S) {
@@ -3207,6 +3224,7 @@ export function VideoPlayer({
     video.addEventListener("progress", onProgressBuf);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("playing", onPlaying);
+    video.addEventListener("resize", onVideoResize);
     video.addEventListener("canplay", onCanPlay);
     video.addEventListener("canplaythrough", onCanPlayThrough);
     video.addEventListener("volumechange", onVolumeChange);
@@ -3224,6 +3242,7 @@ export function VideoPlayer({
       video.removeEventListener("progress", onProgressBuf);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("resize", onVideoResize);
       video.removeEventListener("canplay", onCanPlay);
       video.removeEventListener("canplaythrough", onCanPlayThrough);
       video.removeEventListener("volumechange", onVolumeChange);

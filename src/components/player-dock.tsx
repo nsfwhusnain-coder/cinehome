@@ -410,6 +410,11 @@ export function PlayerDock({
                 {option.preferred && option.status !== "active" && (
                   <span className="text-white/40"> · default</span>
                 )}
+                {option.fallbackHeight != null && (
+                  <span className="text-amber-300/75">
+                    {" "}· fallback to {formatResolutionLabel(option.fallbackHeight)}
+                  </span>
+                )}
                 {option.status === "active" &&
                   option.value !== activeQualityTarget && (
                     <span className="text-white/40"> · now</span>

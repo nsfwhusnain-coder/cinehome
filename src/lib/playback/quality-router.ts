@@ -23,6 +23,8 @@ export interface PlayerQualityOption {
   sourceId?: string;
   /** Stored user target, even while playback is honestly using a fallback. */
   preferred?: boolean;
+  /** Decoder-confirmed fallback when the preferred rung did not materialize. */
+  fallbackHeight?: PlayerQualityHeight;
 }
 
 export function qualityLabel(height: PlayerQualityHeight): string {
@@ -124,6 +126,10 @@ export function buildPlayerQualityOptions(args: {
     const preferred = args.selected === height;
     const isEffectiveFallback =
       args.selected !== "auto" && actualHeight === height;
+    const fallbackHeight =
+      preferred && actualHeight != null && actualHeight !== height
+        ? actualHeight
+        : undefined;
     options.push({
       value: height,
       label: qualityLabel(height),
@@ -138,6 +144,7 @@ export function buildPlayerQualityOptions(args: {
       ...(levelIndex != null ? { levelIndex } : {}),
       ...(source ? { sourceId: source.id } : {}),
       ...(preferred ? { preferred: true } : {}),
+      ...(fallbackHeight != null ? { fallbackHeight } : {}),
     });
   }
   return options;

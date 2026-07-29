@@ -105,4 +105,24 @@ describe("quality router", () => {
     expect(shouldCommitQualityTarget(preferred)).toBe(false);
     expect(shouldCommitQualityTarget(preferred, true)).toBe(true);
   });
+
+  it("labels a decoder-confirmed fallback when metadata promised the preferred rung", () => {
+    const options = buildPlayerQualityOptions({
+      sources: [source("flaky-adaptive", 720, [720, 480])],
+      activeSourceId: "flaky-adaptive",
+      activeLevels: [
+        { index: 0, height: 480 },
+        { index: 1, height: 720 },
+      ],
+      selected: 720,
+      actualHeight: 480,
+    });
+
+    const preferred = options.find((option) => option.value === 720)!;
+    const effective = options.find((option) => option.value === 480)!;
+    expect(preferred.preferred).toBe(true);
+    expect(preferred.fallbackHeight).toBe(480);
+    expect(preferred.status).toBe("available");
+    expect(effective.status).toBe("active");
+  });
 });
