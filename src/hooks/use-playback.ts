@@ -24,6 +24,7 @@ import {
   shouldRetryPlaybackRequest,
 } from "@/lib/playback/request-error";
 import { progressivePollInterval } from "@/lib/playback/progressive-poll";
+import { PLAYBACK_RECOVERY_WALL_MS } from "@/lib/playback/recovery-budget";
 
 interface Args {
   tmdbId: number;
@@ -67,15 +68,21 @@ const CLIENT_FULL_TIMEOUT_MS = 30_000;
 /** Consume TanStack's cancellation signal without giving up the request wall. */
 function playbackRequestSignal(
   timeoutMs: number,
-  querySignal?: AbortSignal
+  ...ownerSignals: Array<AbortSignal | undefined>
 ): AbortSignal {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  if (!querySignal) return timeoutSignal;
-  if (querySignal.aborted) return querySignal;
+  const signals = [
+    timeoutSignal,
+    ...ownerSignals.filter((signal): signal is AbortSignal => Boolean(signal)),
+  ];
+  const alreadyAborted = signals.find((signal) => signal.aborted);
+  if (alreadyAborted) return alreadyAborted;
+  if (signals.length === 1) return timeoutSignal;
   const controller = new AbortController();
   const abort = (): void => controller.abort();
-  timeoutSignal.addEventListener("abort", abort, { once: true });
-  querySignal.addEventListener("abort", abort, { once: true });
+  for (const signal of signals) {
+    signal.addEventListener("abort", abort, { once: true });
+  }
   return controller.signal;
 }
 
@@ -86,7 +93,8 @@ async function fetchPlayback(
   episode?: number,
   fast?: boolean,
   querySignal?: AbortSignal,
-  recoveryRefresh?: boolean
+  recoveryRefresh?: boolean,
+  recoveryWallSignal?: AbortSignal
 ): Promise<PlaybackResponse> {
   const params = new URLSearchParams();
   if (mediaType === "tv") {
@@ -108,7 +116,8 @@ async function fetchPlayback(
     cache: "no-store",
     signal: playbackRequestSignal(
       fast ? CLIENT_FAST_TIMEOUT_MS : CLIENT_FULL_TIMEOUT_MS,
-      querySignal
+      querySignal,
+      recoveryWallSignal
     ),
   });
   const json = (await res.json()) as PlaybackResponse & {
@@ -142,7 +151,10 @@ export async function recoverPlaybackRoster(
     tmdbId,
     season,
     episode,
-  }: Pick<Args, "mediaType" | "tmdbId" | "season" | "episode">
+  }: Pick<Args, "mediaType" | "tmdbId" | "season" | "episode">,
+  recoveryWallSignal: AbortSignal = AbortSignal.timeout(
+    PLAYBACK_RECOVERY_WALL_MS
+  )
 ): Promise<PlaybackResponse> {
   const fullKey = playbackQueryKey(
     mediaType,
@@ -184,7 +196,8 @@ export async function recoverPlaybackRoster(
           episode,
           false,
           signal,
-          true
+          true,
+          recoveryWallSignal
         ),
       retry: shouldRetryPlaybackRequest,
       retryDelay: 250,
@@ -192,6 +205,9 @@ export async function recoverPlaybackRoster(
       gcTime: 0,
     });
 
+    if (recoveryWallSignal.aborted) {
+      throw new DOMException("Playback recovery ownership expired", "AbortError");
+    }
     // An interval/observer may have started another ordinary request during a
     // long resolver call. Revoke both once more at the publication boundary;
     // after these awaited cancellations, the synchronous writes below are the
@@ -200,6 +216,9 @@ export async function recoverPlaybackRoster(
       qc.cancelQueries({ queryKey: fullKey, exact: true }),
       qc.cancelQueries({ queryKey: fastKey, exact: true }),
     ]);
+    if (recoveryWallSignal.aborted) {
+      throw new DOMException("Playback recovery ownership expired", "AbortError");
+    }
     qc.setQueryData(fullKey, recovered);
     qc.setQueryData(fastKey, recovered);
     return recovered;

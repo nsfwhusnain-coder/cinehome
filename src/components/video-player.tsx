@@ -45,6 +45,7 @@ import {
   applyHlsRecoveryPlan,
   seedNextAutoLevel,
 } from "@/lib/playback/hls-engine-policy";
+import { HLS_SESSION_REFRESH_TIMEOUT_MS } from "@/lib/playback/recovery-budget";
 import {
   getPreferredProvider,
   getPreferredQualityHeight,
@@ -159,8 +160,6 @@ const HLS_LEVEL_LOADING_TIMEOUT_MS = 30_000;
 const HLS_FRAG_LOADING_MAX_RETRY = 5;
 const HLS_STALL_RECOVER_DEBOUNCE_MS = 1500;
 const HLS_MAX_NETWORK_RECOVERIES = 3;
-/** A signed-URL refresh must either produce a new generation or fail over. */
-const HLS_SESSION_REFRESH_TIMEOUT_MS = 45_000;
 /** Engine-agnostic backstop: playhead-not-advancing-while-playing poll cadence. */
 const STALL_WATCHDOG_POLL_MS = 3_000;
 /** No forward progress for this long while "playing" counts as a real stall.

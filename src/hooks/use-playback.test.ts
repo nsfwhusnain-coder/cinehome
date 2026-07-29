@@ -2,6 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import type { PlaybackResponse, PlaybackSource } from "@/lib/playback/types";
 import {
+  HLS_SESSION_REFRESH_TIMEOUT_MS,
+  PLAYBACK_RECOVERY_WALL_MS,
+} from "@/lib/playback/recovery-budget";
+import {
   mergePlaybackResponses,
   playbackQueryKey,
   recoverPlaybackRoster,
@@ -61,6 +65,12 @@ describe("watch playback recovery merge", () => {
 });
 
 describe("watch playback recovery transport", () => {
+  it("keeps the whole resolver wall inside player generation ownership", () => {
+    expect(PLAYBACK_RECOVERY_WALL_MS).toBeLessThan(
+      HLS_SESSION_REFRESH_TIMEOUT_MS
+    );
+  });
+
   it("cancels a deferred ordinary full fetch and always starts recovery", async () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -224,6 +234,58 @@ describe("watch playback recovery transport", () => {
       expect(recovered.sources?.[0]?.url).toBe(
         "https://authoritative.invalid/video.mp4"
       );
+    } finally {
+      globalThis.fetch = originalFetch;
+      qc.clear();
+    }
+  });
+
+  it("does not publish a transport result after recovery ownership expires", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const fullKey = playbackQueryKey("movie", 550, undefined, undefined, false);
+    const fastKey = playbackQueryKey("movie", 550, undefined, undefined, true);
+    const prior: PlaybackResponse = {
+      status: "available",
+      sources: [source("https://prior.invalid/video.mp4")],
+    };
+    qc.setQueryData(fullKey, prior);
+    qc.setQueryData(fastKey, prior);
+
+    let releaseLateTransport!: () => void;
+    const lateTransport = new Promise<void>((resolve) => {
+      releaseLateTransport = resolve;
+    });
+    const originalFetch = globalThis.fetch;
+    // Deliberately model a broken transport adapter that ignores abort and
+    // resolves late. The publication guard must still reject its result.
+    globalThis.fetch = (async (_input: RequestInfo | URL) => {
+      await lateTransport;
+      return new Response(
+        JSON.stringify({
+          status: "available",
+          sources: [source("https://too-late.invalid/video.mp4")],
+          refreshNonce: 792,
+        } satisfies PlaybackResponse),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+    const owner = new AbortController();
+
+    try {
+      const recovery = recoverPlaybackRoster(
+        qc,
+        { mediaType: "movie", tmdbId: 550 },
+        owner.signal
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      owner.abort();
+      releaseLateTransport();
+
+      await expect(recovery).rejects.toThrow();
+      expect(qc.getQueryData<PlaybackResponse>(fullKey)).toEqual(prior);
+      expect(qc.getQueryData<PlaybackResponse>(fastKey)).toEqual(prior);
     } finally {
       globalThis.fetch = originalFetch;
       qc.clear();
