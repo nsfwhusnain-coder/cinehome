@@ -69,6 +69,12 @@ export function sourceIdentity(provider: string, label: string): string {
 }
 
 export function playbackSourceKey(source: PlaybackSource): string {
+  // Real-Debrid deliberately resolves several distinct releases at the same
+  // advertised height (native-1080-1/2/3). They share provider + label, but
+  // their stable slot-bearing ids are separate failover servers. Collapsing
+  // them by the generic display identity discards those proven backups before
+  // they can reach the player or server picker.
+  if (source.origin === "debrid") return `debrid:${source.id}`;
   return sourceIdentity(source.provider, source.label);
 }
 

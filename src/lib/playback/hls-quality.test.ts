@@ -18,6 +18,17 @@ import type { QualityLevel } from "@/stores/player-store";
  * pickDefaultQualityIndex (≥1080 when present).
  */
 describe("buildQualityOptions", () => {
+  it("classifies standard and cropped 2560-wide cinema levels as 1440p", () => {
+    expect(
+      buildQualityOptions([
+        { index: 0, width: 2560, height: 1440, bitrate: 8_000_000 },
+        { index: 1, width: 2560, height: 1072, bitrate: 7_000_000 },
+      ])
+    ).toEqual([
+      { index: 0, height: 1440, label: "1440p" },
+    ]);
+  });
+
   it("classifies cropped 1920-wide cinema levels as 1080p", () => {
     expect(
       buildQualityOptions([{ index: 0, width: 1920, height: 800, bitrate: 4_000_000 }])
@@ -162,6 +173,15 @@ describe("pickDefaultQualityIndex", () => {
 });
 
 describe("ABR floor guard (findMinLevelIndexForHeight / findBestLevelForTarget)", () => {
+  it("findBestLevelForTarget selects a real 2560-wide 1440p rung", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, width: 1920, height: 1080, bitrate: 4_000_000 },
+      { index: 1, width: 2560, height: 1072, bitrate: 7_000_000 },
+      { index: 2, width: 3840, height: 1600, bitrate: 15_000_000 },
+    ];
+    expect(findBestLevelForTarget(levels, 1440)).toBe(1);
+  });
+
   it("findMinLevelIndexForHeight picks the lowest >=1080 rung, never below", () => {
     const levels: QualityLevel[] = [
       { index: 0, height: 480 },

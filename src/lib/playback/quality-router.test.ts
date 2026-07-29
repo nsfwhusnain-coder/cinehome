@@ -63,6 +63,23 @@ describe("quality router", () => {
     expect(options.find((option) => option.value === 320)?.status).toBe("unavailable");
   });
 
+  it("maps a real cropped 1440p adaptive rendition to the 1440p rail", () => {
+    const options = buildPlayerQualityOptions({
+      sources: [source("adaptive", 2160, [2160, 1440, 1080])],
+      activeSourceId: "adaptive",
+      activeLevels: [
+        { index: 0, width: 1920, height: 800, bitrate: 4_000_000 },
+        { index: 1, width: 2560, height: 1072, bitrate: 7_000_000 },
+        { index: 2, width: 3840, height: 1600, bitrate: 15_000_000 },
+      ],
+      selected: "auto",
+    });
+
+    const qhd = options.find((option) => option.value === 1440);
+    expect(qhd?.status).toBe("available");
+    expect(qhd?.levelIndex).toBe(1);
+  });
+
   it("removes failed and probe-dead sources from quality routing", () => {
     const dead = source("dead", 2160);
     dead.probe = { ok: false, ttfbMs: 0, bytesPerSec: 0, speedScore: 0 };

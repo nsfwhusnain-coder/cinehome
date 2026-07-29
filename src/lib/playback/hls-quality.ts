@@ -35,8 +35,10 @@ export function effectiveLevelHeight(
 ): number {
   const width = level.width ?? 0;
   // Cinemascope encodes crop the raster height while retaining the delivery
-  // class: 3840x1600 is 4K-class and 1920x800 is 1080p-class.
+  // class: 3840x1600 is 4K-class, 2560x1072 is 1440p-class, and
+  // 1920x800 is 1080p-class.
   if (width >= 3000 && level.height >= 1200) return 2160;
+  if (width >= 2500 && level.height >= 900) return 1440;
   if (width >= 1800 && level.height >= 700) return 1080;
   if (width >= 1200 && level.height >= 500) return 720;
   if (level.height > 0) return level.height;
