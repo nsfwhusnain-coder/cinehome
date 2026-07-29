@@ -610,7 +610,33 @@ async function exerciseDisplayedSources(
     const before = await state(page);
     const startedAt = Date.now();
     try {
-      if (before.sourceId !== sourceId) await chooseSource(page, sourceId);
+      if (before.sourceId !== sourceId) {
+        // A failure earlier in this long all-server exercise can legitimately
+        // replace the entire recovery roster. IDs captured by the initial
+        // audit are then already gone before their turn; waiting 20 seconds
+        // for a nonexistent row misclassifies correct dead-row removal as a
+        // product failure.
+        const dialog = await openSheet(page);
+        await dialog.getByRole("tab", { name: "Sources", exact: true }).click();
+        const target = dialog.locator(
+          `button[data-source-id="${sourceId}"]`
+        );
+        const stillDisplayed = (await target.count()) > 0;
+        if (stillDisplayed) await target.click();
+        await closeSheet(page);
+        if (!stillDisplayed) {
+          const recovered = await waitForAdvancingVideo(page, undefined, 10_000);
+          record(
+            viewport,
+            `displayed source ${sourceId} plays or is removed with recovery`,
+            Boolean(recovered.sourceId && recovered.sourceId !== sourceId),
+            `already removed by an earlier roster recovery; ` +
+              `healthy source=${recovered.sourceId}; ` +
+              `${recovered.width}x${recovered.height}`
+          );
+          continue;
+        }
+      }
       let firstHealthyPosition: number | null = null;
       let selected: VideoState | null = null;
       let recovered: VideoState | null = null;
