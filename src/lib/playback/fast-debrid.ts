@@ -10,7 +10,7 @@ export function buildFastDebridResponse(
   sources: PlaybackSource[],
   qualityHint: "auto" | number = "auto"
 ): PlaybackResponse | null {
-  const eligible =
+  const exactMatches =
     typeof qualityHint === "number"
       ? sources.filter((source) => {
           const advertised = source.ladder?.length
@@ -19,15 +19,24 @@ export function buildFastDebridResponse(
           return advertised.includes(qualityHint);
         })
       : sources;
-  // A fixed profile is a delivery constraint, not a scoring suggestion. If
-  // the fast single-file roster lacks that exact rung, fall through to the
-  // adaptive provider path rather than silently starting a larger file.
-  const best = pickDefaultSource(eligible, null, qualityHint);
+  // Prefer the exact saved rung, but never turn a verified cache hit into a
+  // blank player merely because that title does not carry the requested
+  // resolution. The stable quality rail marks the missing rung unavailable;
+  // playback starts on the closest ranked source while the parallel full
+  // resolver continues looking for an exact adaptive match.
+  const best = pickDefaultSource(
+    exactMatches.length ? exactMatches : sources,
+    null,
+    qualityHint
+  );
   if (!best) return null;
   return {
     status: "available",
     streamUrl: best.url,
-    sources: eligible,
+    // Keep every independently-proven backup visible. Filtering this list to
+    // the selected quality made server options disappear between profile
+    // choices and removed same-quality failover candidates.
+    sources,
     providerId: "debrid",
     partial: true,
   };

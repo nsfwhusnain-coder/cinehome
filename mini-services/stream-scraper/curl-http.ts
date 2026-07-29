@@ -54,28 +54,33 @@ export async function curlGet(url: string, options: CurlRequestOptions = {}): Pr
   }
   args.push(url);
 
-  const statusCode = await new Promise<number>((resolve, reject) => {
-    const proc = spawn("curl", args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    proc.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    proc.on("close", (code) => {
-      if (code !== 0 && !stdout.trim()) {
-        reject(new Error(stderr.trim() || `curl exited ${code}`));
-        return;
-      }
-      const status = parseInt(stdout.trim(), 10);
-      resolve(Number.isFinite(status) ? status : 0);
-    });
-    proc.on("error", reject);
-  });
-
   try {
+    const statusCode = await new Promise<number>((resolve, reject) => {
+      const proc = spawn("curl", args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      proc.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      proc.on("close", (code) => {
+        // curl can print an HTTP status before exiting non-zero (for example,
+        // a timeout after response headers). That is still an incomplete
+        // request and may not have created the output file at all. Treat the
+        // process result as authoritative instead of surfacing a misleading
+        // ENOENT while trying to read a missing body.
+        if (code !== 0) {
+          reject(new Error(stderr.trim() || `curl exited ${code}`));
+          return;
+        }
+        const status = parseInt(stdout.trim(), 10);
+        resolve(Number.isFinite(status) ? status : 0);
+      });
+      proc.on("error", reject);
+    });
+
     const body = await readFile(bodyPath);
     const headerRaw = await readFile(headerPath, "utf8").catch(() => "");
     const parsedHeaders = parseResponseHeaders(headerRaw);

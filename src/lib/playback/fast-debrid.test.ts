@@ -43,17 +43,49 @@ describe("buildFastDebridResponse", () => {
     expect(response).toBeNull();
   });
 
-  it("honors a fixed quality only when that exact rung is cached", () => {
+  it("honors an exact fixed quality without hiding trusted backup servers", () => {
     const sources = [
-      debrid({ id: "native-2160", quality: "2160p", maxHeight: 2160 }),
-      debrid({ id: "native-1080", quality: "1080p", maxHeight: 1080 }),
-      debrid({ id: "native-720", quality: "720p", maxHeight: 720 }),
+      debrid({
+        id: "native-2160",
+        url: "https://download.real-debrid.example/movie-2160.mp4",
+        quality: "2160p",
+        maxHeight: 2160,
+      }),
+      debrid({
+        id: "native-1080",
+        url: "https://download.real-debrid.example/movie-1080.mp4",
+        quality: "1080p",
+        maxHeight: 1080,
+      }),
+      debrid({
+        id: "native-720",
+        url: "https://download.real-debrid.example/movie-720.mp4",
+        quality: "720p",
+        maxHeight: 720,
+      }),
     ];
 
-    expect(buildFastDebridResponse(sources, 1080)?.sources?.map((source) => source.id))
-      .toEqual(["native-1080"]);
-    expect(buildFastDebridResponse(sources, 720)?.sources?.map((source) => source.id))
-      .toEqual(["native-720"]);
-    expect(buildFastDebridResponse(sources, 320)).toBeNull();
+    const fixed1080 = buildFastDebridResponse(sources, 1080);
+    expect(fixed1080?.streamUrl).toBe(sources[1]!.url);
+    expect(fixed1080?.sources?.map((source) => source.id)).toEqual([
+      "native-2160",
+      "native-1080",
+      "native-720",
+    ]);
+  });
+
+  it("falls back truthfully when the saved rung is unavailable", () => {
+    const sources = [
+      debrid({ id: "native-1080-a" }),
+      debrid({
+        id: "native-1080-b",
+        url: "https://download.real-debrid.example/movie-backup.mp4",
+      }),
+    ];
+
+    const response = buildFastDebridResponse(sources, 720);
+    expect(response?.status).toBe("available");
+    expect(response?.streamUrl).toBe(sources[0]!.url);
+    expect(response?.sources).toEqual(sources);
   });
 });

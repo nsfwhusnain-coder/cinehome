@@ -34,7 +34,11 @@ import { shouldConsumePlaybackResolveBudget } from "@/lib/playback/resolve-budge
  *   cache-bypassing recovery attempts per title in ten minutes after the
  *   player exhausts a roster. The global full-resolve limiter still applies.
  */
-const FULL_RESOLVE_PER_TITLE_LIMIT = 12;
+// One watch page can make one initial full request plus five bounded
+// progressive polls. Allow several legitimate reloads/devices in the same
+// five-minute window; the separate per-user ceiling still bounds catalogue
+// abuse across titles.
+const FULL_RESOLVE_PER_TITLE_LIMIT = 30;
 const FULL_RESOLVE_PER_USER_LIMIT = 90;
 const FULL_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
 const fullResolvePerTitleLimiter = new RateLimiter({
