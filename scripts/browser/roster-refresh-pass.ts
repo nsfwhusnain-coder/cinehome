@@ -457,6 +457,25 @@ async function main(): Promise<void> {
       if (!refreshCompleted) {
         throw new Error("HLS 410 did not produce a completed refresh request");
       }
+      if (EMPTY_RECOVERY_MODE) {
+        // The first (injected empty) response deliberately hands ownership to
+        // the title rescue. Do not let an overlapping ordinary poll produce a
+        // frame and end the gate while that authoritative second response is
+        // still on the wire; wait for its complete body, then require fresh
+        // playhead advancement below.
+        const rescueDeadline = Date.now() + MAX_RECOVERY_LATENCY_MS;
+        while (
+          (refreshResponseSourceCounts[1] ?? 0) === 0 &&
+          Date.now() < rescueDeadline
+        ) {
+          await page.waitForTimeout(250);
+        }
+        if ((refreshResponseSourceCounts[1] ?? 0) === 0) {
+          throw new Error(
+            "empty signed-session roster did not yield a completed title rescue"
+          );
+        }
+      }
       await page.locator("video").evaluate((video: HTMLVideoElement) => {
         video.dataset.refreshGateTime = String(video.currentTime);
       });
