@@ -65,12 +65,14 @@ export function EpisodesPanel({
   );
 
   const [panelSeason, setPanelSeason] = useState(season);
+  const resetKey = `${open ? "open" : "closed"}:${season}`;
+  const [previousResetKey, setPreviousResetKey] = useState(resetKey);
+  if (resetKey !== previousResetKey) {
+    setPreviousResetKey(resetKey);
+    if (open) setPanelSeason(season);
+  }
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (open) setPanelSeason(season);
-  }, [open, season]);
 
   useEffect(() => {
     if (!open) return;
