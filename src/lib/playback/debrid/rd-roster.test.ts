@@ -140,7 +140,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
             const body = pathname.includes(UNSUPPORTED_CONTAINER_HASH)
               ? new Uint8Array(32)
               : isoBmffBytes();
-            return new Response(body, {
+            return new Response(body as unknown as BodyInit, {
               status: 206,
               headers: {
                 "Content-Range": `bytes 0-${body.length - 1}/${totalBytes}`,
@@ -198,7 +198,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
       }
       if (url.includes("download.real-debrid.com") && init?.headers) {
         const body = isoBmffBytes();
-        return new Response(body, {
+        return new Response(body as unknown as BodyInit, {
           status: 206,
           headers: {
             "Content-Range": `bytes 0-${body.length - 1}/${2 * 1024 * 1024 * 1024}`,

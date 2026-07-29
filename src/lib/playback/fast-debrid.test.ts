@@ -50,9 +50,9 @@ describe("buildFastDebridResponse", () => {
       debrid({ id: "native-720", quality: "720p", maxHeight: 720 }),
     ];
 
-    expect(buildFastDebridResponse(sources, 1080)?.sources.map((source) => source.id))
+    expect(buildFastDebridResponse(sources, 1080)?.sources?.map((source) => source.id))
       .toEqual(["native-1080"]);
-    expect(buildFastDebridResponse(sources, 720)?.sources.map((source) => source.id))
+    expect(buildFastDebridResponse(sources, 720)?.sources?.map((source) => source.id))
       .toEqual(["native-720"]);
     expect(buildFastDebridResponse(sources, 320)).toBeNull();
   });
