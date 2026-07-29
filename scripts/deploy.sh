@@ -1,64 +1,55 @@
 #!/usr/bin/env bash
-# Deploy CineHome to the server (or build/up locally).
-# Does NOT hardcode passwords. Uses SSH agent / your own keys.
+# Deploy CineHome from the authoritative Git tree on the production server.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
+# Production is built only from clean `main` in /home/hussy/cinehome. Developer
+# mirrors must push a reviewed branch and fast-forward it there; this script
+# deliberately refuses rsync so the authority cannot silently diverge from Git.
 # Optional overrides (never put secrets here):
-#   DEPLOY_HOST=hussy@100.89.184.84
-#   DEPLOY_SSH_PORT=58222
 #   DEPLOY_PATH=/home/hussy/cinehome
 #   DEPLOY_HEALTH_URL=http://127.0.0.1:4445  (or public URL)
-#   SKIP_RSYNC=1  — only run compose on current host (server-side)
-#   DEPLOY_I_MEAN_IT=1 — allow non-/cinehome DEPLOY_PATH (dangerous with rsync --delete)
-DEPLOY_HOST="${DEPLOY_HOST:-hussy@100.89.184.84}"
-DEPLOY_SSH_PORT="${DEPLOY_SSH_PORT:-58222}"
+#   SKIP_RSYNC=1  — required acknowledgement of server-side deploy
 DEPLOY_PATH="${DEPLOY_PATH:-/home/hussy/cinehome}"
 DEPLOY_HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:4445}"
 SKIP_RSYNC="${SKIP_RSYNC:-0}"
-DEPLOY_I_MEAN_IT="${DEPLOY_I_MEAN_IT:-0}"
 
-# Guard rsync --delete target: refuse paths that do not end with /cinehome
-# unless the operator explicitly opts in.
-if [[ "${DEPLOY_PATH}" != */cinehome ]] && [[ "${DEPLOY_I_MEAN_IT}" != "1" ]]; then
-  echo "ERROR: DEPLOY_PATH must end with '/cinehome' (got: ${DEPLOY_PATH})." >&2
-  echo "       Override with DEPLOY_I_MEAN_IT=1 only if you intend rsync --delete there." >&2
+if [[ "${DEPLOY_PATH}" != "/home/hussy/cinehome" ]]; then
+  echo "ERROR: production DEPLOY_PATH must be /home/hussy/cinehome (got: ${DEPLOY_PATH})." >&2
   exit 1
 fi
 
-ssh_base() {
-  ssh -p "${DEPLOY_SSH_PORT}" "${DEPLOY_HOST}" "$@"
-}
+if [[ "${SKIP_RSYNC}" != "1" ]]; then
+  echo "ERROR: production deploys must run from server Git main with SKIP_RSYNC=1." >&2
+  echo "       Push a reviewed branch, fast-forward it in ${DEPLOY_PATH}, then rerun there." >&2
+  exit 1
+fi
 
 echo "=== CineHome deploy ==="
-echo "host=${DEPLOY_HOST} port=${DEPLOY_SSH_PORT} path=${DEPLOY_PATH}"
-
-if [[ "${SKIP_RSYNC}" != "1" ]]; then
-  echo
-  echo "=== rsync tree (excludes secrets, node_modules, .next, db) ==="
-  # Preserve server .env and db/; never push local secrets by default.
-  # Include .env.example before the catch-all .env.* exclude (rsync first-match).
-  rsync -az --delete \
-    --exclude '.git/' \
-    --exclude 'node_modules/' \
-    --exclude 'mini-services/stream-scraper/node_modules/' \
-    --exclude '.next/' \
-    --exclude 'db/' \
-    --exclude '.env' \
-    --include '.env.example' \
-    --exclude '.env.*' \
-    --exclude '*.log' \
-    -e "ssh -p ${DEPLOY_SSH_PORT}" \
-    "${ROOT}/" "${DEPLOY_HOST}:${DEPLOY_PATH}/"
-else
-  echo "SKIP_RSYNC=1 — assuming code is already at ${DEPLOY_PATH} on this host"
-fi
+echo "path=${DEPLOY_PATH} source=server-git-main"
 
 remote_script="$(cat <<'REMOTE'
 set -euo pipefail
 cd "$DEPLOY_PATH"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "${repo_root}" ]] || [[ "$(cd "${repo_root}" && pwd -P)" != "$(pwd -P)" ]]; then
+  echo "ERROR: DEPLOY_PATH is not the root of the authoritative Git tree." >&2
+  exit 1
+fi
+if [[ "$(git branch --show-current)" != "main" ]]; then
+  echo "ERROR: production deploys require the authoritative main branch." >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo "ERROR: authoritative main has uncommitted or untracked changes." >&2
+  git status --short >&2
+  exit 1
+fi
+echo "source OK: main@$(git rev-parse --short=12 HEAD)"
+
 chmod +x scripts/*.sh start.sh 2>/dev/null || true
 ./scripts/disk-preflight.sh
 
@@ -100,21 +91,52 @@ fi
 
 docker compose build
 docker compose up -d
-# Health: published app port (compose maps 4445:3000). Scraper stays internal :3030.
-for i in $(seq 1 30); do
-  if curl -sf --max-time 5 "$DEPLOY_HEALTH_URL" >/dev/null 2>&1 \
-    || curl -sf --max-time 5 "http://127.0.0.1:4445" >/dev/null 2>&1; then
-    echo "health OK (HTTP)"
-    exit 0
+
+# Fail closed unless Compose's dual app+scraper health check is healthy, the
+# configured app URL responds, and the internal scraper endpoint responds.
+HEALTH_TIMEOUT_SECONDS=180
+HEALTH_REQUEST_MAX_SECONDS=2
+health_deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+health_ok=0
+while (( SECONDS < health_deadline )); do
+  container_health="$(
+    docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+      cinehome 2>/dev/null || true
+  )"
+  restart_count="$(docker inspect --format '{{.RestartCount}}' cinehome 2>/dev/null || true)"
+  oom_killed="$(docker inspect --format '{{.State.OOMKilled}}' cinehome 2>/dev/null || true)"
+
+  app_ok=0
+  scraper_ok=0
+  if curl -sf --max-time "${HEALTH_REQUEST_MAX_SECONDS}" "$DEPLOY_HEALTH_URL" >/dev/null 2>&1; then
+    app_ok=1
   fi
-  if docker exec cinehome curl -sf --max-time 5 http://127.0.0.1:3030/health >/dev/null 2>&1; then
-    echo "health OK (scraper inside container); waiting for app..."
+  if docker exec cinehome curl -sf --max-time "${HEALTH_REQUEST_MAX_SECONDS}" \
+    http://127.0.0.1:3030/health >/dev/null 2>&1; then
+    scraper_ok=1
+  fi
+
+  if [[ "${container_health}" == "healthy" ]] \
+    && [[ "${app_ok}" == "1" ]] \
+    && [[ "${scraper_ok}" == "1" ]] \
+    && [[ "${restart_count}" == "0" ]] \
+    && [[ "${oom_killed}" == "false" ]]; then
+    health_ok=1
+    break
   fi
   sleep 2
 done
-echo "WARNING: health curl did not succeed within timeout; check: docker compose logs --tail=100" >&2
-docker compose ps || true
-exit 1
+
+if [[ "${health_ok}" != "1" ]]; then
+  echo "ERROR: deployment did not reach healthy app+scraper state within ${HEALTH_TIMEOUT_SECONDS} seconds." >&2
+  echo "       container_health=${container_health:-missing} app_ok=${app_ok:-0} scraper_ok=${scraper_ok:-0}" >&2
+  echo "       restart_count=${restart_count:-unknown} oom_killed=${oom_killed:-unknown}" >&2
+  docker compose ps || true
+  docker compose logs --tail=100 cinehome || true
+  exit 1
+fi
+
+echo "health OK (Compose app+scraper, HTTP, zero restarts/OOM)"
 REMOTE
 )"
 
@@ -122,14 +144,7 @@ REMOTE
 printf -v remote_env 'export DEPLOY_PATH=%q; export DEPLOY_HEALTH_URL=%q\n' \
   "${DEPLOY_PATH}" "${DEPLOY_HEALTH_URL}"
 
-if [[ "${SKIP_RSYNC}" == "1" ]]; then
-  eval "${remote_env}"
-  bash -c "${remote_script}"
-else
-  ssh_base "bash -s" <<EOF
-${remote_env}
-${remote_script}
-EOF
-fi
+eval "${remote_env}"
+bash -c "${remote_script}"
 
 echo "=== deploy finished ==="

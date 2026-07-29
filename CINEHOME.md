@@ -73,19 +73,30 @@ If segments return Upstream 403, set `WORKER_PROXY_ENABLED=0` and restart.
 - URL: `http://100.89.184.84:4445`
 
 ## Deploy
-Prefer the script (rsync + remote build/up + health check; no passwords hardcoded):
+Production is built only from the clean, committed `main` branch in the
+authoritative server tree. A developer mirror may push a reviewed branch, but
+that branch must be fast-forwarded into server `main` before deployment.
+`deploy.sh` deliberately refuses rsync so the server worktree cannot silently
+diverge from Git.
 
 ```bash
-# From local SoT (uses SSH keys / agent)
-./scripts/deploy.sh
-
-# Or already on the server with code in place:
+# Run on hussyserver from the authoritative tree.
+cd /home/hussy/cinehome
+git status --short --branch
 SKIP_RSYNC=1 DEPLOY_PATH=/home/hussy/cinehome ./scripts/deploy.sh
 ```
+
+The deploy fails unless the tree is clean and checked out on `main`. Success
+requires the Compose app+scraper health check, the published app URL, and the
+internal scraper health endpoint to pass with zero container restarts or OOM
+kills. A failed health gate exits non-zero and preserves the predeploy rollback
+tag printed by the script.
 
 Manual equivalent:
 
 ```bash
+test "$(git branch --show-current)" = main
+test -z "$(git status --porcelain --untracked-files=all)"
 ./scripts/disk-preflight.sh   # abort if free disk on / < 20GB
 # deploy.sh supplies NODE_DOWNLOAD_IP automatically when host/Tailscale DNS is
 # broken but CineHome's explicit container DNS can resolve nodejs.org.
@@ -95,9 +106,12 @@ docker image inspect "$live_image" >/dev/null
 docker image tag "$live_image" \
   "cinehome-cinehome:predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
 docker compose build
-docker compose up -d
+docker compose up -d --wait --wait-timeout 180
+test "$(docker inspect --format '{{.State.Health.Status}}' cinehome)" = healthy
+test "$(docker inspect --format '{{.RestartCount}}' cinehome)" = 0
+test "$(docker inspect --format '{{.State.OOMKilled}}' cinehome)" = false
 curl -sf http://127.0.0.1:4445
-docker exec cinehome curl -s http://127.0.0.1:3030/health
+docker exec cinehome curl -sf http://127.0.0.1:3030/health
 ```
 
 Disk hygiene:
@@ -112,10 +126,10 @@ Disk hygiene:
 **Note:** `docker builder prune` is always **host-wide** (every project’s BuildKit cache on the machine), not CineHome-only. Default uses `--filter until=168h` so recent cache is kept; use `--builder-all` only on a dedicated box when you need max reclaim.
 
 Secrets: copy `.env.example` → `.env` on the server. **Never commit `.env`.**
-`deploy.sh` rsync includes `.env.example` but never pushes `.env` / other
-`.env.*`. `.dockerignore` must continue to exclude `.browser-qa/` because it
-contains authenticated Playwright storage state; it also excludes persisted
-transcode data. A production image must pass `test ! -e /app/.browser-qa`.
+The server-side deploy does not copy or modify `.env` or `db/`.
+`.dockerignore` must continue to exclude `.browser-qa/` because it contains
+authenticated Playwright storage state; it also excludes persisted transcode
+data. A production image must pass `test ! -e /app/.browser-qa`.
 
 ### Player interaction product pass
 

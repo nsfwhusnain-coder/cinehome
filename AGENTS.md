@@ -43,6 +43,8 @@
 3. After code changes: focused tests + `bunx tsc --noEmit` (or the exact Docker
    build) → commit the authoritative server tree →
    `SKIP_RSYNC=1 ./scripts/deploy.sh` on the server → browser QA.
+   The deploy script refuses rsync, a dirty tree, and any branch other than
+   server `main`.
 4. Handoffs: `.claude/handoffs/*.md` for multi-step audits (optional).
 5. **Do not** launch Godot boss/coder agents here.
 

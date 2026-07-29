@@ -1,7 +1,9 @@
 # Absolute Cinema — Reliable 1080p Always, Pull 4K When Possible
 
 **Status:** Implemented in SoT (`cinehome-sot`) — 2026-07-17  
-**Live path:** deploy with `./scripts/deploy.sh` → verify `:4445` + scraper health
+**Live path:** from server Git `main`, deploy with `SKIP_RSYNC=1
+DEPLOY_PATH=/home/hussy/cinehome ./scripts/deploy.sh` → verify `:4445` + scraper
+health
 
 ## Subagent task breakdown (orchestrator map → real files)
 
@@ -41,7 +43,7 @@
 2. **Typecheck**  
    `bunx tsc --noEmit`
 3. **Deploy app+scraper** (single image)  
-   `./scripts/deploy.sh`
+   `SKIP_RSYNC=1 DEPLOY_PATH=/home/hussy/cinehome ./scripts/deploy.sh`
 4. **Health**  
    ```bash
    curl -sf http://100.89.184.84:4445/api/system-status
@@ -158,7 +160,7 @@ Handoffs: `.claude/handoffs/phase1-diagnosis-2026-07-18.md`, `phase2-r6-fix.md` 
 
 | Layer | Action |
 |-------|--------|
-| Full image | Redeploy previous known-good SoT commit via `./scripts/deploy.sh` |
+| Full image | Redeploy previous known-good server `main` commit via `SKIP_RSYNC=1 DEPLOY_PATH=/home/hussy/cinehome ./scripts/deploy.sh` |
 | R8 only | Revert `first-frame-wall.ts` + player wire; restore fixed 22s wall |
 | R7 only | Revert `enrich-timeout.ts` usage; restore inline setTimeout race (accepts false HARD TIMEOUT logs) |
 | R6/R9 | Revert ranking helpers; client may thrash default vs scraper again |
