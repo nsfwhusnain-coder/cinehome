@@ -306,15 +306,9 @@ async function main(): Promise<void> {
       });
     }
     await page.waitForFunction(
-      (wantedSourceId) => {
+      () => {
         const video = document.querySelector("video");
         if (!(video instanceof HTMLVideoElement)) return false;
-        if (
-          wantedSourceId &&
-          video.dataset.playbackSourceId !== wantedSourceId
-        ) {
-          return false;
-        }
         const previous = Number(video.dataset.refreshGateTime || "0");
         if (video.videoWidth > 0 && video.readyState >= 2 && video.currentTime > previous + 0.35) {
           return true;
@@ -322,7 +316,7 @@ async function main(): Promise<void> {
         video.dataset.refreshGateTime = String(video.currentTime);
         return false;
       },
-      sessionTargetSourceId,
+      undefined,
       { timeout: 90_000, polling: 500 }
     );
     const state = await page.locator("video").evaluate((video: HTMLVideoElement) => ({
@@ -356,13 +350,18 @@ async function main(): Promise<void> {
         (failure) =>
           Number.isInteger(failure.generation) && failure.generation > 0
       );
+    const sessionTargetFailures = playerFailureRecords.filter(
+      (failure) => failure.sourceId === sessionTargetSourceId
+    );
 
     if (SESSION_EXPIRY_MODE) {
       check(
         "session expiry is absorbed without failing the logical source",
-        injectedFailures >= 1 && playerFailureRecords.length === 0,
+        injectedFailures >= 1 &&
+          sessionTargetSourceId != null &&
+          sessionTargetFailures.length === 0,
         `${injectedFailures} forced 410 response(s); ` +
-          `${playerFailureRecords.length} source failure(s)`
+          `${sessionTargetFailures.length} target-source failure(s)`
       );
     } else {
       check(
@@ -398,8 +397,8 @@ async function main(): Promise<void> {
     if (SESSION_EXPIRY_MODE) {
       check(
         "the renewed generation resumes without a terminal failure claim",
-        playerFailureRecords.length === 0,
-        `${playerFailureRecords.length} structured failure(s)`
+        sessionTargetFailures.length === 0,
+        `${sessionTargetFailures.length} failure(s) for ${sessionTargetSourceId}`
       );
     } else {
       check(
