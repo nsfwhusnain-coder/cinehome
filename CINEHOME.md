@@ -198,7 +198,8 @@ docker run --rm --network embedin_default \
 `scripts/browser/release-pass.ts` runs the interactive player pass, a
 deterministic terminal-error keyboard/transport pass, real adaptive quality
 down/up plus audio/subtitle controls, the Cineby-style quality/source contract,
-and exhausted-roster recovery in sequence. It stops on the first failed gate
+exhausted-roster recovery, signed-session renewal, and repeated-expiry
+budget/failover in sequence. It stops on the first failed gate
 and writes a small aggregate report while each child keeps its detailed
 screenshots and evidence.
 

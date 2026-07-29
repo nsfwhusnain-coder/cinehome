@@ -10,6 +10,7 @@ import {
   chromium,
   type BrowserContext,
   type Page,
+  type Request,
   type Route,
 } from "playwright";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -35,6 +36,9 @@ if (FAILURE_STATUS !== 410 && FAILURE_STATUS !== 428) {
   throw new Error("ROSTER_FAILURE_STATUS must be 410 or 428");
 }
 const SESSION_EXPIRY_MODE = FAILURE_STATUS === 410;
+const SESSION_EXHAUSTION_MODE =
+  SESSION_EXPIRY_MODE &&
+  process.env.ROSTER_SESSION_EXHAUSTION === "1";
 
 interface Check {
   name: string;
@@ -85,7 +89,7 @@ async function showControls(page: Page): Promise<void> {
 
 async function selectRealHlsSource(
   page: Page,
-  beforeSelect: () => void
+  beforeSelect: (sourceId: string) => void
 ): Promise<string> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -103,7 +107,7 @@ async function selectRealHlsSource(
       );
     const target = ids.find((id) => /vidking|vixsrc/i.test(id));
     if (target) {
-      beforeSelect();
+      beforeSelect(target);
       await dialog.locator(`button[data-source-id="${target}"]`).click();
       await page.keyboard.press("Escape");
       return target;
@@ -141,6 +145,11 @@ async function main(): Promise<void> {
   let recoveryLatencyMs: number | null = null;
   let faultInjectionEnabled = !SESSION_EXPIRY_MODE;
   let sessionTargetSourceId: string | null = null;
+  const injectedRequests = new WeakSet<Request>();
+  const initialSourceById = new Map<
+    string,
+    Record<string, unknown> & { id: string; url?: unknown }
+  >();
   const playerFailures: string[] = [];
   const playerFailureRecords: Array<{
     sourceId: string;
@@ -166,12 +175,63 @@ async function main(): Promise<void> {
       requestUrl.searchParams.get("refresh") === "1"
     ) {
       refreshRequests += 1;
+      if (SESSION_EXHAUSTION_MODE && sessionTargetSourceId) {
+        const staleTarget = initialSourceById.get(sessionTargetSourceId);
+        const upstream = await route.fetch();
+        const payload = (await upstream.json().catch(() => null)) as
+          | (Record<string, unknown> & {
+              sources?: Array<Record<string, unknown> & { id?: unknown }>;
+            })
+          | null;
+        if (staleTarget && payload) {
+          const peerSources = (payload.sources ?? []).filter(
+            (source) => source.id !== sessionTargetSourceId
+          );
+          await route.fulfill({
+            response: upstream,
+            json: {
+              ...payload,
+              streamUrl:
+                typeof staleTarget.url === "string"
+                  ? staleTarget.url
+                  : payload.streamUrl,
+              sources: [staleTarget, ...peerSources],
+            },
+          });
+          return;
+        }
+        await route.fulfill({ response: upstream });
+        return;
+      }
       await route.continue();
       return;
     }
-    if (faultInjectionEnabled && !refreshCompleted && isMediaRequest(route)) {
+    const mediaRequest = isMediaRequest(route);
+    let shouldInject = faultInjectionEnabled && !refreshCompleted && mediaRequest;
+    if (
+      faultInjectionEnabled &&
+      SESSION_EXHAUSTION_MODE &&
+      mediaRequest &&
+      sessionTargetSourceId
+    ) {
+      let activeSourceId: string | null = null;
+      try {
+        activeSourceId = await route
+          .request()
+          .frame()
+          .page()
+          .locator("video")
+          .getAttribute("data-playback-source-id");
+      } catch {
+        // Worker/orphan requests have no frame and cannot be tied safely to
+        // the logical source under test, so let them continue.
+      }
+      shouldInject = activeSourceId === sessionTargetSourceId;
+    }
+    if (shouldInject) {
       if (firstInjectedFailureAt == null) firstInjectedFailureAt = Date.now();
       injectedFailures += 1;
+      injectedRequests.add(route.request());
       await route.fulfill({
         status: FAILURE_STATUS,
         contentType: "text/plain",
@@ -179,7 +239,7 @@ async function main(): Promise<void> {
       });
       return;
     }
-    if (refreshCompleted && isMediaRequest(route)) allowedMediaRequests += 1;
+    if (refreshCompleted && mediaRequest) allowedMediaRequests += 1;
     await route.continue();
   });
 
@@ -241,7 +301,11 @@ async function main(): Promise<void> {
       typeof firstSourceId === "string" ? firstSourceId : null;
   });
   page.on("response", (response) => {
-    if (refreshCompleted && isMediaRequest({ request: () => response.request() } as Route)) {
+    if (
+      refreshCompleted &&
+      !injectedRequests.has(response.request()) &&
+      isMediaRequest({ request: () => response.request() } as Route)
+    ) {
       postRefreshMediaStatuses.push(response.status());
     }
   });
@@ -250,13 +314,20 @@ async function main(): Promise<void> {
     if (!url.pathname.includes("/api/playback/")) return;
     const payload = (await response.json().catch(() => null)) as {
       partial?: unknown;
-      sources?: Array<{ id?: unknown }>;
+      sources?: Array<Record<string, unknown> & { id?: unknown; url?: unknown }>;
     } | null;
     const sourceIds = (payload?.sources ?? [])
       .map((source) => source.id)
       .filter((id): id is string => typeof id === "string");
     if (!refreshCompleted && url.searchParams.get("refresh") !== "1") {
-      for (const sourceId of sourceIds) initialSourceIds.add(sourceId);
+      for (const source of payload?.sources ?? []) {
+        if (typeof source.id !== "string") continue;
+        initialSourceIds.add(source.id);
+        initialSourceById.set(source.id, {
+          ...source,
+          id: source.id,
+        });
+      }
     }
     playbackResponses.push({
       elapsedMs: Date.now() - startedAt,
@@ -291,7 +362,8 @@ async function main(): Promise<void> {
       // Progressive MP4 hides HTTP status behind MEDIA_ERR_NETWORK. Select a
       // real adaptive server so the injected 410 reaches hls.js's structured
       // response path and proves signed-session renewal specifically.
-      sessionTargetSourceId = await selectRealHlsSource(page, () => {
+      sessionTargetSourceId = await selectRealHlsSource(page, (sourceId) => {
+        sessionTargetSourceId = sourceId;
         faultInjectionEnabled = true;
       });
       const refreshDeadline = Date.now() + 45_000;
@@ -354,7 +426,20 @@ async function main(): Promise<void> {
       (failure) => failure.sourceId === sessionTargetSourceId
     );
 
-    if (SESSION_EXPIRY_MODE) {
+    if (SESSION_EXHAUSTION_MODE) {
+      check(
+        "repeated session expiry is bounded and fails over the expired source",
+        injectedFailures >= 2 &&
+          sessionTargetSourceId != null &&
+          sessionTargetFailures.length === 1 &&
+          sessionTargetFailures[0]?.reason ===
+            "hls_session_refresh_exhausted" &&
+          state.sourceId !== sessionTargetSourceId,
+        `${injectedFailures} forced 410 response(s); ` +
+          `${sessionTargetFailures.length} target failure(s); ` +
+          `final=${state.sourceId ?? "none"}`
+      );
+    } else if (SESSION_EXPIRY_MODE) {
       check(
         "session expiry is absorbed without failing the logical source",
         injectedFailures >= 1 &&
@@ -394,7 +479,14 @@ async function main(): Promise<void> {
         ),
       ].join(", ") || "none"
     );
-    if (SESSION_EXPIRY_MODE) {
+    if (SESSION_EXHAUSTION_MODE) {
+      check(
+        "session refresh exhaustion produces one generation-owned terminal claim",
+        sessionTargetFailures.length === 1 &&
+          sessionTargetFailures[0]?.generation > 0,
+        `${sessionTargetFailures.length} failure(s) for ${sessionTargetSourceId}`
+      );
+    } else if (SESSION_EXPIRY_MODE) {
       check(
         "the renewed generation resumes without a terminal failure claim",
         sessionTargetFailures.length === 0,
@@ -446,6 +538,8 @@ async function main(): Promise<void> {
     at: new Date().toISOString(),
     base: BASE,
     failureStatus: FAILURE_STATUS,
+    sessionExpiryMode: SESSION_EXPIRY_MODE,
+    sessionExhaustionMode: SESSION_EXHAUSTION_MODE,
     sessionTargetSourceId,
     watchPath: WATCH_PATH,
     refreshRequests,

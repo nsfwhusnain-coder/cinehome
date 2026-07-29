@@ -34,6 +34,9 @@ Secrets, media URLs, PINs, cookies, and storage-state contents are excluded.
   refresh for the normal case, proves a new nonce, rejects terminal failure
   claims against the refreshing logical source, and requires a later advancing
   decoded frame.
+- A second release gate keeps returning 410 to that logical source after its
+  refresh. It requires one bounded refresh, one generation-owned exhaustion
+  failure, a different healthy peer, and a later advancing decoded frame.
 - Terminal errors and sleep timers record explicit pause intent before pausing.
   Native PiP user pause is preserved, while engine-owned teardown pauses are
   excluded so playing PiP failover does not incorrectly stop the replacement.
