@@ -45,4 +45,3 @@ describe("RosterRecoveryArbiter", () => {
     expect(arbiter.requestAutomatic()).toBe("start");
   });
 });
-

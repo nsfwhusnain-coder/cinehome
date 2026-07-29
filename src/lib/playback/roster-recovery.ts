@@ -47,4 +47,3 @@ export class RosterRecoveryArbiter {
     this.automaticUsed = false;
   }
 }
-
