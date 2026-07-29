@@ -901,6 +901,18 @@ async function runDesktop(
     );
     await page.reload({ waitUntil: "domcontentloaded" });
     const profilePlayback = await waitForAdvancingVideo(page);
+    const firstEffectiveHeight = decodedQualityHeight(profilePlayback);
+    const qualitySettleStartedAt = Date.now();
+    let settledProfilePlayback = profilePlayback;
+    while (
+      decodedQualityHeight(settledProfilePlayback) !==
+        testProfile.playbackQuality &&
+      Date.now() - qualitySettleStartedAt < 8_000
+    ) {
+      await page.waitForTimeout(250);
+      settledProfilePlayback = await state(page);
+    }
+    const qualitySettleMs = Date.now() - qualitySettleStartedAt;
     const profileDialog = await openSheet(page);
     await profileDialog.getByRole("tab", { name: "Quality", exact: true }).click();
     const profileQualityRow = profileDialog.getByRole("button", {
@@ -909,14 +921,18 @@ async function runDesktop(
     const profileQualityText = await profileQualityRow
       .innerText()
       .catch(() => "");
-    const effectiveHeight = decodedQualityHeight(profilePlayback);
+    const effectiveHeight = decodedQualityHeight(settledProfilePlayback);
     const explicitFallback = /unavailable|fallback/i.test(profileQualityText);
     record(
       viewport,
       "profile default changes effective playback or declares a fallback",
       effectiveHeight === testProfile.playbackQuality || explicitFallback,
-      `requested ${testProfile.playbackQuality}p, decoded ${
+      `requested ${testProfile.playbackQuality}p, first ${
+        firstEffectiveHeight == null ? "unknown" : `${firstEffectiveHeight}p`
+      }, settled ${
         effectiveHeight == null ? "unknown" : `${effectiveHeight}p`
+      } in ${qualitySettleMs}ms via ${
+        settledProfilePlayback.sourceId || "unknown"
       }, row "${profileQualityText || "missing"}"`
     );
     await closeSheet(page);

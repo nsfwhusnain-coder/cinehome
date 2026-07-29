@@ -41,6 +41,10 @@ import {
   ADAPTIVE_CLIMB_BUFFER_SECONDS,
 } from "@/lib/playback/hls-quality";
 import {
+  applyHlsRecoveryPlan,
+  seedNextAutoLevel,
+} from "@/lib/playback/hls-engine-policy";
+import {
   getPreferredProvider,
   getPreferredQualityHeight,
   getPreferredAudioLanguage,
@@ -599,17 +603,7 @@ function recoverHlsAdaptive(
     policy: getQualityFloorPolicySafe(),
   });
 
-  hls.capLevelToPlayerSize = false;
-  hls.autoLevelCapping = -1;
-  if (plan.kind === "fixed" || plan.kind === "absolute-floor") {
-    hls.nextLevel = plan.level;
-  } else if (
-    plan.kind === "adaptive-downshift" ||
-    plan.kind === "adaptive-climb"
-  ) {
-    hls.loadLevel = -1;
-    hls.nextLoadLevel = plan.level;
-  }
+  applyHlsRecoveryPlan(hls, plan);
 
   try {
     hls.startLoad();
@@ -706,11 +700,16 @@ function applyPreferredHlsQuality(
     // non-flushing) — never currentLevel unless a fixed user pick requires it.
     hls.autoLevelCapping = -1;
     hls.capLevelToPlayerSize = false;
+    // Release a previous fixed menu/profile selection without currentLevel's
+    // destructive flush. This restores manualLevel=-1 before seeding the next
+    // Auto fragment; otherwise the UI could say Auto while hls.js stayed pinned.
     const defaultIdx = pickDefaultQualityIndex(levels);
     const idx = defaultIdx >= 0 ? defaultIdx : findBestLevelForTarget(levels, HLS_MIN_HEIGHT);
     if (idx >= 0) {
       hls.startLevel = idx;
-      hls.nextLoadLevel = idx;
+      seedNextAutoLevel(hls, idx);
+    } else {
+      hls.loadLevel = -1;
     }
     return -1;
   }
@@ -770,8 +769,7 @@ function maybePromoteHlsQuality(
   if (preferredHeight === "auto") {
     // One-fragment Auto hint: no manual pin and no currentLevel flush. hls.js
     // clears forcedAutoLevel after that fragment is loaded.
-    hls.loadLevel = -1;
-    hls.nextLoadLevel = idx;
+    seedNextAutoLevel(hls, idx);
     return idx;
   }
   return switchHlsLevelSmooth(hls, idx);
@@ -1145,7 +1143,10 @@ export function VideoPlayer({
   dockOpenRef.current = dockOpen;
   shortcutsOpenRef.current = shortcutsOpen;
   const networkRecoveriesRef = useRef(0);
-  const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionRefreshRef = useRef<{
+    attempt: SourceAttemptToken;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
   const lastStallRecoverAtRef = useRef(0);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
@@ -1154,6 +1155,23 @@ export function VideoPlayer({
    * from failing whichever source happens to be current now.
    */
   const sourceAttemptControllerRef = useRef(new SourceAttemptController());
+  const clearSessionRefresh = useCallback(
+    (attempt?: SourceAttemptToken): boolean => {
+      const owner = sessionRefreshRef.current;
+      if (!owner) return false;
+      if (
+        attempt &&
+        (owner.attempt.generation !== attempt.generation ||
+          owner.attempt.sourceId !== attempt.sourceId)
+      ) {
+        return false;
+      }
+      clearTimeout(owner.timer);
+      sessionRefreshRef.current = null;
+      return true;
+    },
+    []
+  );
   const invalidateSourceAttempt = useCallback(() => {
     sourceAttemptControllerRef.current.invalidate();
   }, []);
@@ -1213,9 +1231,9 @@ export function VideoPlayer({
       if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
       if (newSourceNoticeTimerRef.current) clearTimeout(newSourceNoticeTimerRef.current);
       if (resumeNoticeTimerRef.current) clearTimeout(resumeNoticeTimerRef.current);
-      if (sessionRefreshTimerRef.current) clearTimeout(sessionRefreshTimerRef.current);
+      clearSessionRefresh();
     };
-  }, []);
+  }, [clearSessionRefresh]);
 
   /** Episode/title identity — reset session flags so next title never inherits resume/source state. */
   const mediaKey = `${mediaType ?? "movie"}:${tmdbId ?? tvId ?? title}:${tvSeason ?? ""}:${tvEpisode ?? ""}`;
@@ -1254,10 +1272,7 @@ export function VideoPlayer({
     probeInFlightRef.current.clear();
     pendingUrlRefreshRef.current = false;
     automaticRosterRefreshRef.current = false;
-    if (sessionRefreshTimerRef.current) {
-      clearTimeout(sessionRefreshTimerRef.current);
-      sessionRefreshTimerRef.current = null;
-    }
+    clearSessionRefresh();
     if (failoverNoticeTimerRef.current) {
       clearTimeout(failoverNoticeTimerRef.current);
       failoverNoticeTimerRef.current = null;
@@ -1271,18 +1286,16 @@ export function VideoPlayer({
       resumeNoticeTimerRef.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- identity change only
-  }, [mediaKey, setCurrentTime, setError, invalidateSourceAttempt]);
+  }, [
+    mediaKey,
+    setCurrentTime,
+    setError,
+    invalidateSourceAttempt,
+    clearSessionRefresh,
+  ]);
 
   useEffect(() => {
     if (refreshNonce == null) return;
-    if (sessionRefreshTimerRef.current) {
-      clearTimeout(sessionRefreshTimerRef.current);
-      sessionRefreshTimerRef.current = null;
-    }
-    const refreshingAttempt = sourceAttemptControllerRef.current.currentToken();
-    if (refreshingAttempt) {
-      sourceAttemptControllerRef.current.finishRefresh(refreshingAttempt);
-    }
     // The response is a newly scraped roster. Re-arm every logical source ID
     // because its signed URL may have changed even when the stable ID did not.
     failedSourceIdsRef.current.clear();
@@ -2074,10 +2087,6 @@ export function VideoPlayer({
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
       }
-      if (sessionRefreshTimerRef.current) {
-        clearTimeout(sessionRefreshTimerRef.current);
-        sessionRefreshTimerRef.current = null;
-      }
       failActiveSource("media_element_error", sourceAttempt);
     };
     video.addEventListener("error", onBoundMediaElementError);
@@ -2523,11 +2532,8 @@ export function VideoPlayer({
          * Absolute ABR floor guard, part 1 (pre-emptive): fires BEFORE the
          * switch takes effect. If ABR (or any other path) is about to switch
          * to a sub-1080 level while a >=1080 rung exists on this ladder,
-         * cancel the switch immediately by re-pointing nextLevel/loadLevel at
-         * the floor rung — so no low-quality fragment is even requested.
-         * Re-assigning `nextLevel` here fires a fresh LEVEL_SWITCHING for the
-         * floor level, whose own height already satisfies the guard, so this
-         * terminates in one hop (no loop).
+         * seed the next Auto load at the floor without permanently setting
+         * hls.js manualLevel. Auto may still climb above 1080 afterward.
          */
         hls.on(Hls.Events.LEVEL_SWITCHING, (_e, data) => {
           if (
@@ -2544,8 +2550,7 @@ export function VideoPlayer({
           if (h < HLS_MIN_HEIGHT * 0.95 && ladderMax >= HLS_MIN_HEIGHT) {
             const floorIdx = findMinLevelIndexForHeight(levelList, HLS_MIN_HEIGHT);
             if (floorIdx >= 0 && floorIdx !== data.level) {
-              hls.nextLevel = floorIdx;
-              hls.loadLevel = floorIdx;
+              seedNextAutoLevel(hls, floorIdx);
             }
           }
         });
@@ -2625,25 +2630,24 @@ export function VideoPlayer({
             pendingUrlRefreshRef.current = true;
             setBuffering(true);
             if (everPlayedRef.current) setIsSwitchingServer(true);
-            if (sessionRefreshTimerRef.current) {
-              clearTimeout(sessionRefreshTimerRef.current);
-            }
-            sessionRefreshTimerRef.current = setTimeout(() => {
-              sessionRefreshTimerRef.current = null;
+            clearSessionRefresh(sourceAttempt);
+            const refreshTimer = setTimeout(() => {
+              if (!clearSessionRefresh(sourceAttempt)) return;
               if (
                 sourceAttemptControllerRef.current.finishRefresh(sourceAttempt)
               ) {
                 failActiveSource("hls_session_refresh_timeout", sourceAttempt);
               }
             }, HLS_SESSION_REFRESH_TIMEOUT_MS);
+            sessionRefreshRef.current = {
+              attempt: sourceAttempt,
+              timer: refreshTimer,
+            };
             void Promise.resolve()
               .then(() => onRetrySourcesRef.current?.())
               .catch(() => {
-                if (sessionRefreshTimerRef.current) {
-                  clearTimeout(sessionRefreshTimerRef.current);
-                  sessionRefreshTimerRef.current = null;
-                }
                 if (
+                  clearSessionRefresh(sourceAttempt) &&
                   sourceAttemptControllerRef.current.finishRefresh(sourceAttempt)
                 ) {
                   failActiveSource("hls_session_refresh_failed", sourceAttempt);
@@ -2829,6 +2833,7 @@ export function VideoPlayer({
       // reset()/destroy() can synchronously abort XHR and emit loadend. Make
       // that callback stale before teardown starts.
       sourceAttemptControllerRef.current.invalidate(sourceAttempt);
+      clearSessionRefresh(sourceAttempt);
       if (stallTimerRef.current) {
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
@@ -2974,6 +2979,12 @@ export function VideoPlayer({
       // or terminal). Buffer arithmetic cannot distinguish a low-buffer user
       // pause from an underrun and previously allowed delayed `canplay` to
       // resume behind the terminal/sleep overlay.
+      // PiP controls are native and bypass our commands, so capture that one
+      // untagged user-pause surface explicitly. Source teardown never occurs
+      // while this element remains the active PiP document element.
+      if (document.pictureInPictureElement === video) {
+        userPausedRef.current = true;
+      }
       setIsPlaying(false);
     };
     const onTimeUpdate = () => {
