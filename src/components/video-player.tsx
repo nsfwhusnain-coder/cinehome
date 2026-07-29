@@ -4007,7 +4007,7 @@ export function VideoPlayer({
 
       {failoverNotice && (
         <div
-          className="pointer-events-none absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-400/25 bg-black/75 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
+          className="pointer-events-none absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-400/25 bg-black/75 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
           role="status"
           aria-live="polite"
         >
@@ -4018,7 +4018,7 @@ export function VideoPlayer({
 
       {!failoverNotice && showSwitchingChip && (
         <div
-          className="pointer-events-none absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
+          className="pointer-events-none absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
           role="status"
           aria-live="polite"
         >
@@ -4033,7 +4033,7 @@ export function VideoPlayer({
       {/* Change 3: non-blocking new-source nudge — does not interrupt playback. */}
       {!failoverNotice && !showSwitchingChip && newSourceNotice && (
         <div
-          className="absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
+          className="absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
           role="status"
           aria-live="polite"
         >
@@ -4066,7 +4066,7 @@ export function VideoPlayer({
           now lives inside the unified LoadingScreen overlay's status text above. */}
       {showBufferingChip && !newSourceNotice && (
         <div
-          className="pointer-events-none absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
+          className="pointer-events-none absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
           role="status"
           aria-live="polite"
         >
@@ -4087,7 +4087,7 @@ export function VideoPlayer({
           see the `status={resumeNotice ?? loadingStatus}` prop on LoadingScreen). */}
       {!showHunting && !failoverNotice && !showSwitchingChip && !newSourceNotice && resumeNotice && (
         <div
-          className="pointer-events-none absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
+          className="pointer-events-none absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
           role="status"
           aria-live="polite"
         >
@@ -4103,7 +4103,7 @@ export function VideoPlayer({
             if (v) v.muted = false;
             setAutoplayHint(null);
           }}
-          className="absolute left-1/2 top-6 z-30 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md hover:bg-black/80"
+          className="absolute left-1/2 top-14 z-30 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md hover:bg-black/80"
         >
           {MUTED_AUTOPLAY_HINT}
         </button>
