@@ -498,7 +498,11 @@ async function runDesktop(
         `${beforeSwitch.currentTime.toFixed(1)}s → ${switched.currentTime.toFixed(1)}s`
       );
 
-      await page.keyboard.press("Space");
+      // Closing the settings dialog deliberately restores focus to the
+      // Settings button. Space must remain that button's accessible
+      // activation key, while K is the player's unambiguous global
+      // play/pause shortcut even when a control owns focus.
+      await page.keyboard.press("k");
       await page.waitForFunction(() => {
         const video = document.querySelector("video");
         return video instanceof HTMLVideoElement && video.paused;
