@@ -94,6 +94,12 @@ async function main(): Promise<void> {
   let firstInjectedFailureAt: number | null = null;
   let recoveryLatencyMs: number | null = null;
   const playerFailures: string[] = [];
+  const playerFailureRecords: Array<{
+    sourceId: string;
+    generation: number;
+    reason: string;
+  }> = [];
+  const initialSourceIds = new Set<string>();
   const postRefreshMediaStatuses: number[] = [];
   const playbackResponses: Array<{
     elapsedMs: number;
@@ -133,7 +139,30 @@ async function main(): Promise<void> {
   page.setDefaultTimeout(30_000);
   page.on("console", (message) => {
     const text = message.text();
-    if (text.includes("[playback-failure]")) playerFailures.push(text);
+    if (!text.includes("[playback-failure]")) return;
+    playerFailures.push(text);
+    const jsonStart = text.indexOf("{");
+    if (jsonStart < 0) return;
+    try {
+      const payload = JSON.parse(text.slice(jsonStart)) as {
+        sourceId?: unknown;
+        generation?: unknown;
+        reason?: unknown;
+      };
+      if (
+        typeof payload.sourceId === "string" &&
+        typeof payload.generation === "number" &&
+        typeof payload.reason === "string"
+      ) {
+        playerFailureRecords.push({
+          sourceId: payload.sourceId,
+          generation: payload.generation,
+          reason: payload.reason,
+        });
+      }
+    } catch {
+      // The raw console line remains in the report for diagnosis.
+    }
   });
   page.on("response", async (response) => {
     const url = new URL(response.url());
@@ -175,15 +204,19 @@ async function main(): Promise<void> {
       partial?: unknown;
       sources?: Array<{ id?: unknown }>;
     } | null;
+    const sourceIds = (payload?.sources ?? [])
+      .map((source) => source.id)
+      .filter((id): id is string => typeof id === "string");
+    if (!refreshCompleted && url.searchParams.get("refresh") !== "1") {
+      for (const sourceId of sourceIds) initialSourceIds.add(sourceId);
+    }
     playbackResponses.push({
       elapsedMs: Date.now() - startedAt,
       refresh: url.searchParams.get("refresh") === "1",
       status: response.status(),
       cache: response.headers()["x-playback-cache"] ?? null,
       partial: payload?.partial === true,
-      sourceIds: (payload?.sources ?? [])
-        .map((source) => source.id)
-        .filter((id): id is string => typeof id === "string"),
+      sourceIds,
     });
   });
 
@@ -224,8 +257,27 @@ async function main(): Promise<void> {
     const forbiddenPostRefreshMedia = postRefreshMediaStatuses.filter(
       isForbiddenReleaseStatus
     );
+    const failedInitialIds = new Set(
+      playerFailureRecords.map((failure) => failure.sourceId)
+    );
+    const everyInitialSourceFailed =
+      initialSourceIds.size > 0 &&
+      [...initialSourceIds].every((sourceId) =>
+        failedInitialIds.has(sourceId)
+      );
+    const generationScopedFailures =
+      playerFailureRecords.length >= initialSourceIds.size &&
+      playerFailureRecords.every(
+        (failure) =>
+          Number.isInteger(failure.generation) && failure.generation > 0
+      );
 
-    check("the initial roster was actually exhausted", injectedFailures >= 2, `${injectedFailures} forced failures`);
+    check(
+      "the initial roster was actually exhausted",
+      injectedFailures >= initialSourceIds.size && everyInitialSourceFailed,
+      `${injectedFailures} forced failure(s); initial=${[...initialSourceIds].join(",") || "none"}; ` +
+        `failed=${[...failedInitialIds].join(",") || "none"}`
+    );
     check("the player requested one bounded recovery roster", refreshRequests === 1, `${refreshRequests} refresh request(s)`);
     check("the recovery API returned a fresh generation", refreshStatus === 200 && refreshNonce != null, `HTTP ${refreshStatus}, nonce=${refreshNonce != null}`);
     check("fresh sources reached an advancing decoded frame", state.width > 0 && state.currentTime > 0, `${state.width}x${state.height} via ${state.sourceId}`);
@@ -251,8 +303,8 @@ async function main(): Promise<void> {
     );
     check(
       "the player surfaced generation-scoped failures during recovery",
-      playerFailures.length >= 2,
-      `${playerFailures.length} structured failure(s)`
+      generationScopedFailures,
+      `${playerFailureRecords.length}/${initialSourceIds.size} structured failure(s)`
     );
   } catch (error) {
     finalState = await page
@@ -304,8 +356,10 @@ async function main(): Promise<void> {
     allowedMediaRequests,
     postRefreshMediaStatuses,
     playbackResponses,
+    initialSourceIds: [...initialSourceIds],
     playerFailureCount: playerFailures.length,
     playerFailures: playerFailures.slice(-12),
+    playerFailureRecords: playerFailureRecords.slice(-12),
     finalState,
     summary: {
       pass: checks.filter((item) => item.pass).length,
