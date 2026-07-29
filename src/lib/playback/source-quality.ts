@@ -794,12 +794,31 @@ export function pickDefaultSource(
   const pickPool = eligiblePlaybackSources(sources);
   if (!pickPool.length) return null;
   const heightTarget = resolvePreferredHeightTarget(preferredHeight);
+  const offersFixedTarget = (source: PlaybackSource): boolean => {
+    if (typeof preferredHeight !== "number") return false;
+    const maxHeight = sourceMaxHeight(source) || 0;
+    const heights = source.ladder?.length ? source.ladder : [maxHeight];
+    return heights.some(
+      (height) =>
+        Math.abs(height - preferredHeight) <=
+        Math.max(40, preferredHeight * 0.12)
+    );
+  };
+  const exactTargetPool =
+    typeof preferredHeight === "number"
+      ? pickPool.filter(offersFixedTarget)
+      : [];
+  // A saved fixed quality is a stronger startup contract than the last server
+  // the user happened to click. Restrict ranking to sources that can actually
+  // supply that rung when at least one exists; only fall back to the full pool
+  // when the requested quality is genuinely unavailable.
+  const rankedPool = exactTargetPool.length ? exactTargetPool : pickPool;
 
   // Honor stored preference only when non-empty and source is in the playable pool.
   // Never force Luna preference over probe-verified Aether/Horizon.
   const pref = (preferredProvider || DEFAULT_SOURCE_KEY || "").trim();
   if (pref) {
-    const prefMatches = pickPool.filter((s) => matchesPreference(s, pref));
+    const prefMatches = rankedPool.filter((s) => matchesPreference(s, pref));
     if (prefMatches.length) {
       // Among preference matches: HD known > unknown > sub-HD (ranking only).
       const sortedPref = [...prefMatches].sort((a, b) => {
@@ -823,7 +842,7 @@ export function pickDefaultSource(
 
   // Ranking only — never filters the pool empty.
   // Poison gate first, then height tiers, multi-rung / probe / prio.
-  const sorted = [...pickPool].sort((a, b) => {
+  const sorted = [...rankedPool].sort((a, b) => {
     const aPoison = isPoisonStreamUrl(a.url) ? 1 : 0;
     const bPoison = isPoisonStreamUrl(b.url) ? 1 : 0;
     if (aPoison !== bPoison) return aPoison - bPoison;
@@ -831,16 +850,8 @@ export function pickDefaultSource(
     const aH = sourceMaxHeight(a) || 0;
     const bH = sourceMaxHeight(b) || 0;
     if (typeof preferredHeight === "number") {
-      const offersTarget = (source: PlaybackSource, maxHeight: number) => {
-        const heights = source.ladder?.length ? source.ladder : [maxHeight];
-        return heights.some(
-          (height) =>
-            Math.abs(height - preferredHeight) <=
-            Math.max(40, preferredHeight * 0.12)
-        );
-      };
-      const aTarget = offersTarget(a, aH) ? 1 : 0;
-      const bTarget = offersTarget(b, bH) ? 1 : 0;
+      const aTarget = offersFixedTarget(a) ? 1 : 0;
+      const bTarget = offersFixedTarget(b) ? 1 : 0;
       if (aTarget !== bTarget) return bTarget - aTarget;
     }
     const heightTier = (h: number): number => {

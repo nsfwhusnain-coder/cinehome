@@ -451,6 +451,56 @@ describe("resolvePreferredHeightTarget / preferred-height scoring (Change 11)", 
     const hd = makeSource({ id: "hd", label: "Aether", maxHeight: 1080 });
     expect(pickDefaultSource([sub, hd], null, "auto")?.id).toBe("hd");
   });
+
+  it("fixed quality outranks a stored server that cannot supply that rung", () => {
+    const preferredServer = makeSource({
+      id: "debrid-1080",
+      provider: "Debrid",
+      label: "Kronos",
+      maxHeight: 1080,
+      ladder: [1080],
+    });
+    const adaptive = makeSource({
+      id: "adaptive",
+      provider: "Vixsrc",
+      label: "Eos",
+      maxHeight: 1080,
+      ladder: [1080, 720, 480],
+    });
+
+    expect(
+      pickDefaultSource(
+        [preferredServer, adaptive],
+        "Debrid|Kronos",
+        720
+      )?.id
+    ).toBe("adaptive");
+  });
+
+  it("keeps the stored server as a fallback when no source offers the fixed rung", () => {
+    const preferredServer = makeSource({
+      id: "debrid-1080",
+      provider: "Debrid",
+      label: "Kronos",
+      maxHeight: 1080,
+      ladder: [1080],
+    });
+    const other = makeSource({
+      id: "other-1080",
+      provider: "Vixsrc",
+      label: "Eos",
+      maxHeight: 1080,
+      ladder: [1080],
+    });
+
+    expect(
+      pickDefaultSource(
+        [other, preferredServer],
+        "Debrid|Kronos",
+        320
+      )?.id
+    ).toBe("debrid-1080");
+  });
 });
 
 describe("findNewSourceIds (Change 3)", () => {
