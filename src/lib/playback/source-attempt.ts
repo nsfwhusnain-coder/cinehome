@@ -23,7 +23,11 @@ export interface SourceAttemptToken {
 }
 
 export type AttemptFailureSignal = "ignored" | "retry" | "recover" | "terminal";
-export type AttemptRefreshSignal = "ignored" | "started" | "pending";
+export type AttemptRefreshSignal =
+  | "ignored"
+  | "started"
+  | "pending"
+  | "exhausted";
 
 interface AttemptState {
   token: SourceAttemptToken;
@@ -36,16 +40,26 @@ interface AttemptState {
 export class SourceAttemptController {
   private generation = 0;
   private current: AttemptState | null = null;
+  /**
+   * A refreshed roster can preserve the same stable source ID while changing
+   * only its signed URL. Keep this budget outside AttemptState so an unchanged,
+   * still-expired source cannot start a fresh refresh loop on every generation.
+   */
+  private readonly refreshAttemptsBySource = new Map<string, number>();
 
   constructor(
     private readonly hardTransportFailureLimit = 2,
-    private readonly stallRecoveryLimit = 1
+    private readonly stallRecoveryLimit = 1,
+    private readonly sessionRefreshLimit = 1
   ) {
     if (hardTransportFailureLimit < 1) {
       throw new Error("hardTransportFailureLimit must be at least 1");
     }
     if (stallRecoveryLimit < 0) {
       throw new Error("stallRecoveryLimit cannot be negative");
+    }
+    if (sessionRefreshLimit < 1) {
+      throw new Error("sessionRefreshLimit must be at least 1");
     }
   }
 
@@ -95,6 +109,25 @@ export class SourceAttemptController {
     this.current.stallRecoveries = 0;
   }
 
+  /**
+   * Only measured playhead advancement is healthy enough to reopen signed-URL
+   * refresh recovery. A `playing` event alone can precede another immediate
+   * 410 and must not make the cross-generation budget unbounded.
+   */
+  noteHealthyPlayback(token: SourceAttemptToken): void {
+    if (!this.isCurrent(token)) return;
+    this.noteProgress(token);
+    this.refreshAttemptsBySource.delete(token.sourceId);
+  }
+
+  /**
+   * Clear title-scoped history when the media identity changes. Source IDs are
+   * stable within a roster, but may be reused by a provider for another title.
+   */
+  resetRefreshBudget(): void {
+    this.refreshAttemptsBySource.clear();
+  }
+
   noteHardTransportFailure(token: SourceAttemptToken): AttemptFailureSignal {
     if (!this.isCurrent(token) || !this.current) return "ignored";
     // A signed-URL refresh owns this generation until it either produces a
@@ -141,6 +174,9 @@ export class SourceAttemptController {
   requestRefresh(token: SourceAttemptToken): AttemptRefreshSignal {
     if (!this.isCurrent(token) || !this.current) return "ignored";
     if (this.current.refreshing) return "pending";
+    const attempts = this.refreshAttemptsBySource.get(token.sourceId) ?? 0;
+    if (attempts >= this.sessionRefreshLimit) return "exhausted";
+    this.refreshAttemptsBySource.set(token.sourceId, attempts + 1);
     this.current.refreshing = true;
     return "started";
   }

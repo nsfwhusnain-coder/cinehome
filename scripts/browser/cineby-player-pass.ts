@@ -922,17 +922,26 @@ async function runDesktop(
       .innerText()
       .catch(() => "");
     const effectiveHeight = decodedQualityHeight(settledProfilePlayback);
-    const explicitFallback = /unavailable|fallback/i.test(profileQualityText);
+    const targetRungUnavailable =
+      /unavailable/i.test(profileQualityText) &&
+      (await profileQualityRow.isDisabled().catch(() => false));
+    const decodedFallbackConfirmed =
+      effectiveHeight != null && /fallback/i.test(profileQualityText);
+    const acceptableUnavailableFallback =
+      targetRungUnavailable && decodedFallbackConfirmed;
     record(
       viewport,
-      "profile default changes effective playback or declares a fallback",
-      effectiveHeight === testProfile.playbackQuality || explicitFallback,
+      "profile default matches decode or proves its rung is unavailable",
+      effectiveHeight === testProfile.playbackQuality ||
+        acceptableUnavailableFallback,
       `requested ${testProfile.playbackQuality}p, first ${
         firstEffectiveHeight == null ? "unknown" : `${firstEffectiveHeight}p`
       }, settled ${
         effectiveHeight == null ? "unknown" : `${effectiveHeight}p`
       } in ${qualitySettleMs}ms via ${
         settledProfilePlayback.sourceId || "unknown"
+      }, target ${
+        targetRungUnavailable ? "unavailable" : "available/searching"
       }, row "${profileQualityText || "missing"}"`
     );
     await closeSheet(page);

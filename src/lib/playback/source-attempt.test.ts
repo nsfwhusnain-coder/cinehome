@@ -86,7 +86,52 @@ describe("SourceAttemptController", () => {
 
     expect(controller.finishRefresh(oldAttempt)).toBe(false);
     expect(controller.requestRefresh(oldAttempt)).toBe("ignored");
-    expect(controller.requestRefresh(currentAttempt)).toBe("started");
+    expect(controller.requestRefresh(currentAttempt)).toBe("exhausted");
+  });
+
+  it("bounds repeated signed-url refreshes across replacement generations", () => {
+    const controller = new SourceAttemptController();
+    const expiredAttempt = controller.begin("signed-source");
+
+    expect(controller.requestRefresh(expiredAttempt)).toBe("started");
+    const stillExpiredAttempt = controller.begin("signed-source");
+
+    expect(controller.requestRefresh(stillExpiredAttempt)).toBe("exhausted");
+    expect(controller.claimTerminal(stillExpiredAttempt)).toBe(true);
+  });
+
+  it("reopens the refresh budget only after measured healthy playback", () => {
+    const controller = new SourceAttemptController();
+    const expiredAttempt = controller.begin("signed-source");
+    expect(controller.requestRefresh(expiredAttempt)).toBe("started");
+
+    const recoveredAttempt = controller.begin("signed-source");
+    controller.noteProgress(recoveredAttempt);
+    expect(controller.requestRefresh(recoveredAttempt)).toBe("exhausted");
+
+    controller.noteHealthyPlayback(recoveredAttempt);
+    expect(controller.requestRefresh(recoveredAttempt)).toBe("started");
+  });
+
+  it("keeps refresh budgets independent across peer sources", () => {
+    const controller = new SourceAttemptController();
+    const sourceA = controller.begin("source-a");
+    expect(controller.requestRefresh(sourceA)).toBe("started");
+    const sourceAReplacement = controller.begin("source-a");
+    expect(controller.requestRefresh(sourceAReplacement)).toBe("exhausted");
+
+    const sourceB = controller.begin("source-b");
+    expect(controller.requestRefresh(sourceB)).toBe("started");
+  });
+
+  it("clears cross-title refresh history explicitly", () => {
+    const controller = new SourceAttemptController();
+    const oldTitle = controller.begin("provider-stable-id");
+    expect(controller.requestRefresh(oldTitle)).toBe("started");
+
+    controller.resetRefreshBudget();
+    const newTitle = controller.begin("provider-stable-id");
+    expect(controller.requestRefresh(newTitle)).toBe("started");
   });
 
   it("invalidates before teardown so abort callbacks cannot claim failure", () => {

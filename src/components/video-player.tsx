@@ -28,6 +28,7 @@ import {
   SourceAttemptController,
   type SourceAttemptToken,
 } from "@/lib/playback/source-attempt";
+import { MediaPauseIntentController } from "@/lib/playback/pause-intent";
 import { preresolvePlayback } from "@/lib/playback-preresolve";
 import {
   annotateLevelHeights,
@@ -913,6 +914,8 @@ export function VideoPlayer({
   const [everPlayed, setEverPlayed] = useState(false);
   /** True only after intentional user pause — do not auto-resume after underrun. */
   const userPausedRef = useRef(false);
+  /** Separates native PiP user pauses from pause events caused by engine teardown. */
+  const pauseIntentControllerRef = useRef(new MediaPauseIntentController());
   /** Terminal UI blocks delayed canplay/play events until an explicit retry. */
   const terminalBlockedRef = useRef(false);
   /** Mid-watch source switch / failover — compact chip only, keep last frame. */
@@ -1240,6 +1243,7 @@ export function VideoPlayer({
 
   useEffect(() => {
     invalidateSourceAttempt();
+    sourceAttemptControllerRef.current.resetRefreshBudget();
     failedSourceIdsRef.current.clear();
     setFailedSourceIds([]);
     userSelectedSourceRef.current = false;
@@ -2628,6 +2632,13 @@ export function VideoPlayer({
             const refreshSignal =
               sourceAttemptControllerRef.current.requestRefresh(sourceAttempt);
             if (refreshSignal === "ignored" || refreshSignal === "pending") return;
+            if (refreshSignal === "exhausted") {
+              failActiveSource(
+                "hls_session_refresh_exhausted",
+                sourceAttempt
+              );
+              return;
+            }
 
             try {
               hls.stopLoad();
@@ -2836,6 +2847,13 @@ export function VideoPlayer({
 
     return () => {
       dashCancelled = true;
+      // Engine teardown clears/reloads the shared media element and emits a
+      // native pause. Tag it before pause() so an active PiP session does not
+      // persist "user paused" and suppress the replacement source's autoplay.
+      if (!video.paused) {
+        pauseIntentControllerRef.current.expectInternalPause();
+        video.pause();
+      }
       video.removeEventListener("error", onBoundMediaElementError);
       // reset()/destroy() can synchronously abort XHR and emit loadend. Make
       // that callback stale before teardown starts.
@@ -2986,12 +3004,18 @@ export function VideoPlayer({
       // or terminal). Buffer arithmetic cannot distinguish a low-buffer user
       // pause from an underrun and previously allowed delayed `canplay` to
       // resume behind the terminal/sleep overlay.
-      // PiP controls are native and bypass our commands, so capture that one
-      // untagged user-pause surface explicitly. Source teardown never occurs
-      // while this element remains the active PiP document element.
-      if (document.pictureInPictureElement === video) {
+      // PiP controls are native and bypass our commands, so capture that
+      // untagged user-pause surface explicitly.
+      const pauseDisposition =
+        pauseIntentControllerRef.current.consumePause(
+          document.pictureInPictureElement === video
+        );
+      if (pauseDisposition === "native-user") {
         userPausedRef.current = true;
       }
+      // A queued teardown pause may arrive after the replacement generation
+      // already started. Do not let that stale event flip current UI state.
+      if (pauseDisposition === "internal" && !video.paused) return;
       setIsPlaying(false);
     };
     const onTimeUpdate = () => {
@@ -3169,7 +3193,9 @@ export function VideoPlayer({
       const advanced = video.currentTime - baseline.pos;
       if (advanced > STALL_WATCHDOG_MIN_ADVANCE_S) {
         const attempt = sourceAttemptControllerRef.current.currentToken();
-        if (attempt) sourceAttemptControllerRef.current.noteProgress(attempt);
+        if (attempt) {
+          sourceAttemptControllerRef.current.noteHealthyPlayback(attempt);
+        }
         stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
         return;
       }
