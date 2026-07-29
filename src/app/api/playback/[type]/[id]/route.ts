@@ -30,9 +30,11 @@ import { shouldConsumePlaybackResolveBudget } from "@/lib/playback/resolve-budge
  * - `noCacheResolveLimiter` bounds `nocache=1` requests specifically (admin
  *   -only — see below), which skip even the raw-scrape cache and force a
  *   brand new scrape + debrid resolve every single call.
- * - `recoveryRefreshLimiter` gives an authenticated user at most three
- *   cache-bypassing recovery attempts per title in ten minutes after the
- *   player exhausts a roster. The global full-resolve limiter still applies.
+ * - `recoveryRefreshLimiter` gives an authenticated user at most six
+ *   cache-bypassing recovery attempts per title in ten minutes. A real watch
+ *   can legitimately consume several while testing servers and recovering an
+ *   expired session; the global 90-per-user full-resolve ceiling still bounds
+ *   catalogue-wide abuse.
  */
 // One watch page can make one initial full request plus five bounded
 // progressive polls. Allow several legitimate reloads/devices in the same
@@ -57,7 +59,7 @@ const noCacheResolveLimiter = new RateLimiter({
   windowMs: NOCACHE_RESOLVE_WINDOW_MS,
 });
 
-const RECOVERY_REFRESH_LIMIT = 3;
+const RECOVERY_REFRESH_LIMIT = 6;
 const RECOVERY_REFRESH_WINDOW_MS = 10 * 60 * 1000;
 const recoveryRefreshLimiter = new RateLimiter({
   limit: RECOVERY_REFRESH_LIMIT,

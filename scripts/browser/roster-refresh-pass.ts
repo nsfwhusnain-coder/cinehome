@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     let shouldInject = faultInjectionEnabled && !refreshCompleted && mediaRequest;
     if (
       faultInjectionEnabled &&
-      SESSION_EXHAUSTION_MODE &&
+      SESSION_EXPIRY_MODE &&
       mediaRequest &&
       sessionTargetSourceId
     ) {
@@ -254,7 +254,9 @@ async function main(): Promise<void> {
         // Worker/orphan requests have no frame and cannot be tied safely to
         // the logical source under test, so let them continue.
       }
-      shouldInject = activeSourceId === sessionTargetSourceId;
+      shouldInject =
+        activeSourceId === sessionTargetSourceId &&
+        (SESSION_EXHAUSTION_MODE || !refreshCompleted);
     }
     if (shouldInject) {
       if (firstInjectedFailureAt == null) firstInjectedFailureAt = Date.now();

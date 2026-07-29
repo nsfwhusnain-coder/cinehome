@@ -1216,7 +1216,6 @@ export function VideoPlayer({
       return false;
     }
     automaticRosterRefreshRef.current = true;
-    pendingUrlRefreshRef.current = true;
     setError(null);
     setBuffering(true);
     if (everPlayedRef.current) setIsSwitchingServer(true);
@@ -1302,6 +1301,9 @@ export function VideoPlayer({
     if (refreshNonce == null) return;
     // The response is a newly scraped roster. Re-arm every logical source ID
     // because its signed URL may have changed even when the stable ID did not.
+    // This is deliberately the ONLY place that arms URL adoption: setting the
+    // flag when a request merely starts lets an ordinary render consume it and
+    // remount the unchanged expired URL before the response is available.
     failedSourceIdsRef.current.clear();
     pendingUrlRefreshRef.current = true;
     let cancelled = false;
@@ -1879,9 +1881,9 @@ export function VideoPlayer({
   tryNextSourceRef.current = tryNextSource;
 
   const handleRetryFull = useCallback(() => {
-    // Same source id may come back from the re-fetch with a renewed URL
-    // (expired token, transient scrape miss) — see pendingUrlRefreshRef.
-    pendingUrlRefreshRef.current = true;
+    // The refreshNonce effect arms same-ID URL adoption only after the
+    // recovery response exists. Arming it here lets an unrelated parent
+    // render reload the still-dead URL before recovery owns the outcome.
     userPausedRef.current = false;
     terminalBlockedRef.current = false;
     setError(null);
@@ -2645,7 +2647,6 @@ export function VideoPlayer({
             } catch {
               /* the generation token still owns refresh arbitration */
             }
-            pendingUrlRefreshRef.current = true;
             setBuffering(true);
             if (everPlayedRef.current) setIsSwitchingServer(true);
             clearSessionRefresh(sourceAttempt);
