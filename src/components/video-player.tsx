@@ -793,15 +793,18 @@ function isInteractivePlayerTarget(target: EventTarget | null): boolean {
 
 /**
  * Manual mid-play switch without `currentLevel`: keep the decoded buffer and
- * move on the next fragment boundary. This avoids the time reset/black flash
- * seen on Cineby's cross-rung switches while still locking future loads.
+ * move as soon as the current fragment boundary permits. hls.js `nextLevel`
+ * aborts obsolete loading and flushes only forward buffer outside the playing
+ * fragment; `loadLevel` alone deliberately waits behind the entire buffered
+ * window (up to 30 seconds here), which made an explicit quality click look
+ * broken. This keeps the playhead continuous without the hard interruption of
+ * `currentLevel`.
  */
 function switchHlsLevelSmooth(hls: Hls, levelIndex: number): number {
   if (levelIndex < 0) return -1;
   hls.capLevelToPlayerSize = false;
   hls.autoLevelCapping = -1;
-  hls.loadLevel = levelIndex;
-  hls.nextLoadLevel = levelIndex;
+  hls.nextLevel = levelIndex;
   return levelIndex;
 }
 
