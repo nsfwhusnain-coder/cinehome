@@ -9,6 +9,7 @@
 import {
   chromium,
   type BrowserContext,
+  type Page,
   type Route,
 } from "playwright";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -74,6 +75,45 @@ function isForbiddenReleaseStatus(status: number): boolean {
   );
 }
 
+async function showControls(page: Page): Promise<void> {
+  const box = await page.locator("video").boundingBox();
+  if (box) {
+    await page.mouse.move(box.x + Math.min(20, box.width / 2), box.y + 20);
+  }
+  await page.waitForTimeout(150);
+}
+
+async function selectRealHlsSource(
+  page: Page,
+  beforeSelect: () => void
+): Promise<string> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    await showControls(page);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Player settings" });
+    await dialog.waitFor({ state: "visible" });
+    await dialog.getByRole("tab", { name: "Sources", exact: true }).click();
+    const ids = await dialog
+      .locator("button[data-source-id]")
+      .evaluateAll((buttons) =>
+        buttons
+          .map((button) => button.getAttribute("data-source-id") || "")
+          .filter(Boolean)
+      );
+    const target = ids.find((id) => /vidking|vixsrc/i.test(id));
+    if (target) {
+      beforeSelect();
+      await dialog.locator(`button[data-source-id="${target}"]`).click();
+      await page.keyboard.press("Escape");
+      return target;
+    }
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(500);
+  }
+  throw new Error("no real HLS source appeared for the session-expiry gate");
+}
+
 async function main(): Promise<void> {
   if (!existsSync(STORAGE_STATE)) {
     throw new Error(`Storage state not found: ${STORAGE_STATE}`);
@@ -99,6 +139,8 @@ async function main(): Promise<void> {
   let refreshDefaultSourceId: string | null = null;
   let firstInjectedFailureAt: number | null = null;
   let recoveryLatencyMs: number | null = null;
+  let faultInjectionEnabled = !SESSION_EXPIRY_MODE;
+  let sessionTargetSourceId: string | null = null;
   const playerFailures: string[] = [];
   const playerFailureRecords: Array<{
     sourceId: string;
@@ -127,7 +169,7 @@ async function main(): Promise<void> {
       await route.continue();
       return;
     }
-    if (!refreshCompleted && isMediaRequest(route)) {
+    if (faultInjectionEnabled && !refreshCompleted && isMediaRequest(route)) {
       if (firstInjectedFailureAt == null) firstInjectedFailureAt = Date.now();
       injectedFailures += 1;
       await route.fulfill({
@@ -232,10 +274,47 @@ async function main(): Promise<void> {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
     });
+    if (SESSION_EXPIRY_MODE) {
+      await page.waitForFunction(
+        () => {
+          const video = document.querySelector("video");
+          return (
+            video instanceof HTMLVideoElement &&
+            video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+            video.videoWidth > 0 &&
+            !video.paused
+          );
+        },
+        undefined,
+        { timeout: 45_000 }
+      );
+      // Progressive MP4 hides HTTP status behind MEDIA_ERR_NETWORK. Select a
+      // real adaptive server so the injected 410 reaches hls.js's structured
+      // response path and proves signed-session renewal specifically.
+      sessionTargetSourceId = await selectRealHlsSource(page, () => {
+        faultInjectionEnabled = true;
+      });
+      const refreshDeadline = Date.now() + 45_000;
+      while (!refreshCompleted && Date.now() < refreshDeadline) {
+        await page.waitForTimeout(250);
+      }
+      if (!refreshCompleted) {
+        throw new Error("HLS 410 did not produce a completed refresh request");
+      }
+      await page.locator("video").evaluate((video: HTMLVideoElement) => {
+        video.dataset.refreshGateTime = String(video.currentTime);
+      });
+    }
     await page.waitForFunction(
-      () => {
+      (wantedSourceId) => {
         const video = document.querySelector("video");
         if (!(video instanceof HTMLVideoElement)) return false;
+        if (
+          wantedSourceId &&
+          video.dataset.playbackSourceId !== wantedSourceId
+        ) {
+          return false;
+        }
         const previous = Number(video.dataset.refreshGateTime || "0");
         if (video.videoWidth > 0 && video.readyState >= 2 && video.currentTime > previous + 0.35) {
           return true;
@@ -243,7 +322,7 @@ async function main(): Promise<void> {
         video.dataset.refreshGateTime = String(video.currentTime);
         return false;
       },
-      undefined,
+      sessionTargetSourceId,
       { timeout: 90_000, polling: 500 }
     );
     const state = await page.locator("video").evaluate((video: HTMLVideoElement) => ({
@@ -368,6 +447,7 @@ async function main(): Promise<void> {
     at: new Date().toISOString(),
     base: BASE,
     failureStatus: FAILURE_STATUS,
+    sessionTargetSourceId,
     watchPath: WATCH_PATH,
     refreshRequests,
     refreshStatus,

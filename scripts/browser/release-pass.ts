@@ -71,6 +71,7 @@ const gates: Gate[] = [
           script: "scripts/browser/roster-refresh-pass.ts",
           env: {
             ROSTER_FAILURE_STATUS: "410",
+            ROSTER_REFRESH_WATCH_PATH: "/watch/movie/550",
             ROSTER_REFRESH_OUT_DIR: join(OUT_DIR, "session-refresh"),
           },
         },
