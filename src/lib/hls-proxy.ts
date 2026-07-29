@@ -1601,6 +1601,13 @@ function waitForUpstreamRetry(ms: number, signal: AbortSignal): Promise<void> {
  * `clientSignal` (optional) is the incoming client request's abort signal — wired
  * up so a seek/navigate-away stops the dead upstream transfer instead of leaking it.
  */
+async function discardUpstreamResponse(
+  response: Response,
+  reason: string
+): Promise<void> {
+  await response.body?.cancel(reason).catch(() => undefined);
+}
+
 async function fetchUpstreamSafely(
   url: string,
   headers: HeadersInit,
@@ -1624,8 +1631,9 @@ async function fetchUpstreamSafely(
         res.headers.get("retry-after"),
         rateLimitRetries
       );
-      await res.body?.cancel("retrying transient upstream rate limit").catch(
-        () => undefined
+      await discardUpstreamResponse(
+        res,
+        "retrying transient upstream rate limit"
       );
       rateLimitRetries += 1;
       await waitForUpstreamRetry(retryAfterMs, signal);
@@ -1635,7 +1643,7 @@ async function fetchUpstreamSafely(
     // Manual redirect responses can carry a body. Leaving it unread pins the
     // upstream socket until GC and exhausts connection reuse under
     // redirect-heavy segment traffic.
-    await res.body?.cancel("following upstream redirect").catch(() => undefined);
+    await discardUpstreamResponse(res, "following upstream redirect");
     if (!location) return res;
     let next: URL;
     try {
@@ -2075,6 +2083,10 @@ export async function fetchProxied(
       );
     }
     // Error bodies must not enter segment/manifest caches.
+    await discardUpstreamResponse(
+      upstreamRes,
+      `discarding upstream ${upstreamRes.status} response`
+    );
     return new Response(`Upstream ${upstreamRes.status}`, { status: upstreamRes.status });
   }
 

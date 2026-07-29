@@ -1,4 +1,5 @@
 import type { QualityLevel } from "@/stores/player-store";
+import type { QualityFloorPolicy } from "@/lib/player-preferences";
 
 export interface QualityOption {
   index: number;
@@ -48,6 +49,23 @@ export function effectiveLevelHeight(
 
 /** Product floor — default start prefers 1080p and up when the source has it. */
 export const MIN_QUALITY_OPTION_HEIGHT = 1080;
+export const ADAPTIVE_MIN_HEIGHT = 480;
+export const ADAPTIVE_STARVATION_BUFFER_SECONDS = 2;
+export const ADAPTIVE_CLIMB_BUFFER_SECONDS = 12;
+const ADAPTIVE_DOWN_STEP_RATIO = 0.6;
+
+export interface HlsRecoveryContext {
+  /** Seconds buffered ahead of the playhead; -1 means unknown. */
+  bufferAheadSeconds: number;
+  policy: QualityFloorPolicy;
+}
+
+export type HlsRecoveryPlan =
+  | { kind: "restart" }
+  | { kind: "fixed"; level: number }
+  | { kind: "adaptive-downshift"; level: number }
+  | { kind: "adaptive-climb"; level: number }
+  | { kind: "absolute-floor"; level: number };
 
 /**
  * Build the concrete (non-Auto) quality rungs for the picker.
@@ -281,4 +299,72 @@ export function isQualityMismatch(
   if (qualityIndex < 0) return false;
   if (selectedHeight <= 0 || playingHeight <= 0) return false;
   return playingHeight < selectedHeight * 0.9;
+}
+
+/**
+ * Decide stall recovery without mutating hls.js.
+ *
+ * Keeping policy separate from the actuator prevents the three recovery
+ * callers (engine error, media `waiting`, playhead watchdog) from drifting
+ * into different behavior. Auto/adaptive may temporarily step down only when
+ * the real forward buffer is starving, and may climb only after the buffer has
+ * rebuilt. A fixed profile/menu choice is never silently changed.
+ */
+export function planHlsRecovery(
+  levels: QualityLevel[],
+  currentLevel: number,
+  preferredHeight: number | "auto",
+  context: HlsRecoveryContext,
+  productFloor = MIN_QUALITY_OPTION_HEIGHT
+): HlsRecoveryPlan {
+  if (!levels.length) return { kind: "restart" };
+
+  if (preferredHeight !== "auto") {
+    const fixed = findBestLevelForTarget(levels, preferredHeight);
+    return fixed >= 0 ? { kind: "fixed", level: fixed } : { kind: "restart" };
+  }
+
+  const current = levels.find((level) => level.index === currentLevel);
+  const currentHeight = current ? effectiveLevelHeight(current) : 0;
+  const ladderMax = maxLevelHeight(levels);
+
+  if (context.policy === "adaptive") {
+    const starving =
+      context.bufferAheadSeconds >= 0 &&
+      context.bufferAheadSeconds < ADAPTIVE_STARVATION_BUFFER_SECONDS;
+    if (starving && currentHeight > ADAPTIVE_MIN_HEIGHT) {
+      const lowerLevels = levels.filter(
+        (level) => effectiveLevelHeight(level) < currentHeight
+      );
+      if (lowerLevels.length) {
+        const target = Math.max(
+          ADAPTIVE_MIN_HEIGHT,
+          Math.floor(currentHeight * ADAPTIVE_DOWN_STEP_RATIO)
+        );
+        const down = findMinLevelIndexForHeight(lowerLevels, target);
+        if (down >= 0) return { kind: "adaptive-downshift", level: down };
+      }
+    }
+
+    if (
+      context.bufferAheadSeconds >= ADAPTIVE_CLIMB_BUFFER_SECONDS &&
+      currentHeight > 0 &&
+      currentHeight < productFloor * 0.95 &&
+      ladderMax >= productFloor
+    ) {
+      const floor = findMinLevelIndexForHeight(levels, productFloor);
+      if (floor >= 0) return { kind: "adaptive-climb", level: floor };
+    }
+    return { kind: "restart" };
+  }
+
+  if (
+    currentHeight > 0 &&
+    currentHeight < productFloor * 0.95 &&
+    ladderMax >= productFloor
+  ) {
+    const floor = findMinLevelIndexForHeight(levels, productFloor);
+    if (floor >= 0) return { kind: "absolute-floor", level: floor };
+  }
+  return { kind: "restart" };
 }

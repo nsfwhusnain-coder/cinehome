@@ -2,9 +2,9 @@
 /**
  * Release gate for exhausted-roster recovery.
  *
- * The first generation of media requests is forced to HTTP 428. The player
- * must issue one authenticated `refresh=1` playback request, receive a
- * refreshNonce, adopt that fresh roster, and reach an advancing real frame.
+ * The first generation of media requests is forced to HTTP 428 (exhaustion)
+ * or 410 (signed-session expiry). The player must issue one authenticated
+ * `refresh=1` request, adopt a fresh generation, and reach a real frame.
  */
 import {
   chromium,
@@ -29,6 +29,11 @@ const OUT_DIR =
 const MAX_RECOVERY_LATENCY_MS = Number(
   process.env.ROSTER_REFRESH_MAX_LATENCY_MS || 45_000
 );
+const FAILURE_STATUS = Number(process.env.ROSTER_FAILURE_STATUS || 428);
+if (FAILURE_STATUS !== 410 && FAILURE_STATUS !== 428) {
+  throw new Error("ROSTER_FAILURE_STATUS must be 410 or 428");
+}
+const SESSION_EXPIRY_MODE = FAILURE_STATUS === 410;
 
 interface Check {
   name: string;
@@ -62,6 +67,7 @@ function isMediaRequest(route: Route): boolean {
 function isForbiddenReleaseStatus(status: number): boolean {
   return (
     status === 403 ||
+    status === 410 ||
     status === 428 ||
     status === 429 ||
     status >= 500
@@ -125,9 +131,9 @@ async function main(): Promise<void> {
       if (firstInjectedFailureAt == null) firstInjectedFailureAt = Date.now();
       injectedFailures += 1;
       await route.fulfill({
-        status: 428,
+        status: FAILURE_STATUS,
         contentType: "text/plain",
-        body: "roster-refresh release-gate injection",
+        body: `${FAILURE_STATUS} roster-refresh release-gate injection`,
       });
       return;
     }
@@ -272,12 +278,21 @@ async function main(): Promise<void> {
           Number.isInteger(failure.generation) && failure.generation > 0
       );
 
-    check(
-      "the initial roster was actually exhausted",
-      injectedFailures >= initialSourceIds.size && everyInitialSourceFailed,
-      `${injectedFailures} forced failure(s); initial=${[...initialSourceIds].join(",") || "none"}; ` +
-        `failed=${[...failedInitialIds].join(",") || "none"}`
-    );
+    if (SESSION_EXPIRY_MODE) {
+      check(
+        "session expiry is absorbed without failing the logical source",
+        injectedFailures >= 1 && playerFailureRecords.length === 0,
+        `${injectedFailures} forced 410 response(s); ` +
+          `${playerFailureRecords.length} source failure(s)`
+      );
+    } else {
+      check(
+        "the initial roster was actually exhausted",
+        injectedFailures >= initialSourceIds.size && everyInitialSourceFailed,
+        `${injectedFailures} forced failure(s); initial=${[...initialSourceIds].join(",") || "none"}; ` +
+          `failed=${[...failedInitialIds].join(",") || "none"}`
+      );
+    }
     check("the player requested one bounded recovery roster", refreshRequests === 1, `${refreshRequests} refresh request(s)`);
     check("the recovery API returned a fresh generation", refreshStatus === 200 && refreshNonce != null, `HTTP ${refreshStatus}, nonce=${refreshNonce != null}`);
     check("fresh sources reached an advancing decoded frame", state.width > 0 && state.currentTime > 0, `${state.width}x${state.height} via ${state.sourceId}`);
@@ -301,11 +316,19 @@ async function main(): Promise<void> {
         ),
       ].join(", ") || "none"
     );
-    check(
-      "the player surfaced generation-scoped failures during recovery",
-      generationScopedFailures,
-      `${playerFailureRecords.length}/${initialSourceIds.size} structured failure(s)`
-    );
+    if (SESSION_EXPIRY_MODE) {
+      check(
+        "the renewed generation resumes without a terminal failure claim",
+        playerFailureRecords.length === 0,
+        `${playerFailureRecords.length} structured failure(s)`
+      );
+    } else {
+      check(
+        "the player surfaced generation-scoped failures during recovery",
+        generationScopedFailures,
+        `${playerFailureRecords.length}/${initialSourceIds.size} structured failure(s)`
+      );
+    }
   } catch (error) {
     finalState = await page
       .evaluate(() => {
@@ -344,6 +367,7 @@ async function main(): Promise<void> {
   const report = {
     at: new Date().toISOString(),
     base: BASE,
+    failureStatus: FAILURE_STATUS,
     watchPath: WATCH_PATH,
     refreshRequests,
     refreshStatus,

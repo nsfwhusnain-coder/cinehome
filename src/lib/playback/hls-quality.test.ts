@@ -7,6 +7,7 @@ import {
   findBestLevelForTarget,
   findMinLevelIndexForHeight,
   hlsPromotionTargetHeight,
+  planHlsRecovery,
   isQualityMismatch,
   pickDefaultQualityIndex,
 } from "./hls-quality";
@@ -270,6 +271,59 @@ describe("hlsPromotionTargetHeight", () => {
 
   it("restores the exact fixed 4K preference rather than stopping at 1080p", () => {
     expect(hlsPromotionTargetHeight(hd, 2160)).toBe(2160);
+  });
+});
+
+describe("planHlsRecovery", () => {
+  const ladder = [
+    { index: 0, width: 854, height: 480, bitrate: 800_000 },
+    { index: 1, width: 1280, height: 720, bitrate: 1_800_000 },
+    { index: 2, width: 1920, height: 1080, bitrate: 4_500_000 },
+  ];
+
+  it("steps Auto down when the measured forward buffer is starving", () => {
+    expect(
+      planHlsRecovery(ladder, 2, "auto", {
+        policy: "adaptive",
+        bufferAheadSeconds: 0.5,
+      })
+    ).toEqual({ kind: "adaptive-downshift", level: 1 });
+  });
+
+  it("does not fight adaptive ABR before the buffer has recovered", () => {
+    expect(
+      planHlsRecovery(ladder, 0, "auto", {
+        policy: "adaptive",
+        bufferAheadSeconds: 5,
+      })
+    ).toEqual({ kind: "restart" });
+  });
+
+  it("nudges Auto back to the HD floor only after the buffer recovers", () => {
+    expect(
+      planHlsRecovery(ladder, 0, "auto", {
+        policy: "adaptive",
+        bufferAheadSeconds: 14,
+      })
+    ).toEqual({ kind: "adaptive-climb", level: 2 });
+  });
+
+  it("holds the absolute policy at the HD floor even while starving", () => {
+    expect(
+      planHlsRecovery(ladder, 1, "auto", {
+        policy: "absolute",
+        bufferAheadSeconds: 0,
+      })
+    ).toEqual({ kind: "absolute-floor", level: 2 });
+  });
+
+  it("preserves a fixed profile choice instead of adapting it", () => {
+    expect(
+      planHlsRecovery(ladder, 0, 720, {
+        policy: "adaptive",
+        bufferAheadSeconds: 0,
+      })
+    ).toEqual({ kind: "fixed", level: 1 });
   });
 });
 

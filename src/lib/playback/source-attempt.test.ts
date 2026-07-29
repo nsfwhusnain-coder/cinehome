@@ -56,6 +56,39 @@ describe("SourceAttemptController", () => {
     expect(controller.noteSilentStall(attempt)).toBe("recover");
   });
 
+  it("single-flights a signed-url refresh and suppresses competing failures", () => {
+    const controller = new SourceAttemptController();
+    const attempt = controller.begin("signed-source");
+
+    expect(controller.requestRefresh(attempt)).toBe("started");
+    expect(controller.requestRefresh(attempt)).toBe("pending");
+    expect(controller.noteHardTransportFailure(attempt)).toBe("ignored");
+    expect(controller.noteSilentStall(attempt)).toBe("ignored");
+    expect(controller.claimTerminal(attempt)).toBe(false);
+  });
+
+  it("allows terminal handling only after the active refresh explicitly ends", () => {
+    const controller = new SourceAttemptController(1);
+    const attempt = controller.begin("signed-source");
+
+    expect(controller.requestRefresh(attempt)).toBe("started");
+    expect(controller.finishRefresh(attempt)).toBe(true);
+    expect(controller.finishRefresh(attempt)).toBe(false);
+    expect(controller.noteHardTransportFailure(attempt)).toBe("terminal");
+    expect(controller.claimTerminal(attempt)).toBe(true);
+  });
+
+  it("ignores refresh completion from a superseded generation", () => {
+    const controller = new SourceAttemptController();
+    const oldAttempt = controller.begin("signed-source");
+    expect(controller.requestRefresh(oldAttempt)).toBe("started");
+    const currentAttempt = controller.begin("signed-source");
+
+    expect(controller.finishRefresh(oldAttempt)).toBe(false);
+    expect(controller.requestRefresh(oldAttempt)).toBe("ignored");
+    expect(controller.requestRefresh(currentAttempt)).toBe("started");
+  });
+
   it("invalidates before teardown so abort callbacks cannot claim failure", () => {
     const controller = new SourceAttemptController();
     const attempt = controller.begin("source-a");

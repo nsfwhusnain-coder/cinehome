@@ -66,6 +66,14 @@ const gates: Gate[] = [
             ROSTER_REFRESH_OUT_DIR: join(OUT_DIR, "roster-refresh"),
           },
         },
+        {
+          name: "session-refresh",
+          script: "scripts/browser/roster-refresh-pass.ts",
+          env: {
+            ROSTER_FAILURE_STATUS: "410",
+            ROSTER_REFRESH_OUT_DIR: join(OUT_DIR, "session-refresh"),
+          },
+        },
       ]
     : []),
 ];

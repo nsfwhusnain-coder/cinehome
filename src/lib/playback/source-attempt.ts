@@ -23,11 +23,13 @@ export interface SourceAttemptToken {
 }
 
 export type AttemptFailureSignal = "ignored" | "retry" | "recover" | "terminal";
+export type AttemptRefreshSignal = "ignored" | "started" | "pending";
 
 interface AttemptState {
   token: SourceAttemptToken;
   hardTransportFailures: number;
   stallRecoveries: number;
+  refreshing: boolean;
   terminalClaimed: boolean;
 }
 
@@ -56,6 +58,7 @@ export class SourceAttemptController {
       token,
       hardTransportFailures: 0,
       stallRecoveries: 0,
+      refreshing: false,
       terminalClaimed: false,
     };
     return token;
@@ -94,6 +97,10 @@ export class SourceAttemptController {
 
   noteHardTransportFailure(token: SourceAttemptToken): AttemptFailureSignal {
     if (!this.isCurrent(token) || !this.current) return "ignored";
+    // A signed-URL refresh owns this generation until it either produces a
+    // replacement attempt or explicitly times out. Duplicate transport events
+    // from the stopped engine must not race the refresh into source failover.
+    if (this.current.refreshing) return "ignored";
     this.current.hardTransportFailures += 1;
     return this.current.hardTransportFailures >= this.hardTransportFailureLimit
       ? "terminal"
@@ -105,6 +112,7 @@ export class SourceAttemptController {
     recoveryAvailable = true
   ): AttemptFailureSignal {
     if (!this.isCurrent(token) || !this.current) return "ignored";
+    if (this.current.refreshing) return "ignored";
     if (!recoveryAvailable) return "terminal";
     if (this.current.stallRecoveries < this.stallRecoveryLimit) {
       this.current.stallRecoveries += 1;
@@ -120,7 +128,31 @@ export class SourceAttemptController {
    */
   claimTerminal(token: SourceAttemptToken): boolean {
     if (!this.isCurrent(token) || !this.current) return false;
+    if (this.current.refreshing) return false;
     this.current.terminalClaimed = true;
+    return true;
+  }
+
+  /**
+   * Claim one in-flight signed-URL refresh for this exact source generation.
+   * Repeated HLS 410 callbacks are absorbed as `pending`; stale callbacks from
+   * a destroyed engine are ignored.
+   */
+  requestRefresh(token: SourceAttemptToken): AttemptRefreshSignal {
+    if (!this.isCurrent(token) || !this.current) return "ignored";
+    if (this.current.refreshing) return "pending";
+    this.current.refreshing = true;
+    return "started";
+  }
+
+  /**
+   * End refresh ownership after an explicit rejection/timeout. A successful
+   * refresh normally supersedes this generation via begin()/invalidate().
+   */
+  finishRefresh(token: SourceAttemptToken): boolean {
+    if (!this.current || !this.matches(token, this.current.token)) return false;
+    if (!this.current.refreshing || this.current.terminalClaimed) return false;
+    this.current.refreshing = false;
     return true;
   }
 

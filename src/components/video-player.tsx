@@ -37,6 +37,8 @@ import {
   hlsPromotionTargetHeight,
   maxLevelHeight,
   pickDefaultQualityIndex,
+  planHlsRecovery,
+  ADAPTIVE_CLIMB_BUFFER_SECONDS,
 } from "@/lib/playback/hls-quality";
 import {
   getPreferredProvider,
@@ -129,20 +131,16 @@ const HLS_AUTO_MAX_HEIGHT = 2160;
 // line recovers. The "absolute" policy keeps the old "never below 1080p,
 // buffer at the floor indefinitely" behavior.
 /** Lowest rung the adaptive policy will ever drop to (never below this). */
-const ADAPTIVE_FLOOR_MIN_HEIGHT = 480;
 /**
  * How low (relative to current) to drop per adaptive step. Each sustained stall
  * drops to the next rung at-or-below (current × 0.6), floor at ADAPTIVE_FLOOR_MIN_HEIGHT.
  */
-const ADAPTIVE_DOWN_STEP_RATIO = 0.6;
 /**
  * Buffer health (seconds ahead of playhead) above which we attempt to climb
  * back toward the floor / Auto after a downshift. Matches Netflix's
  * "buffer recovered, ramp quality up" heuristic.
  */
-const ADAPTIVE_CLIMB_BACK_BUFFER_S = 12;
 /** Buffer below this (seconds) while stalled is the trigger to downshift. */
-const ADAPTIVE_STARVATION_BUFFER_S = 2;
 /** Lowered from 20s — a single fragment hanging this long is already a strong
  * slow-CDN signal worth retrying/counting sooner (was masking real stalls). */
 const HLS_FRAG_LOADING_TIMEOUT_MS = 12_000;
@@ -156,6 +154,8 @@ const HLS_LEVEL_LOADING_TIMEOUT_MS = 30_000;
 const HLS_FRAG_LOADING_MAX_RETRY = 5;
 const HLS_STALL_RECOVER_DEBOUNCE_MS = 1500;
 const HLS_MAX_NETWORK_RECOVERIES = 3;
+/** A signed-URL refresh must either produce a new generation or fail over. */
+const HLS_SESSION_REFRESH_TIMEOUT_MS = 45_000;
 /** Engine-agnostic backstop: playhead-not-advancing-while-playing poll cadence. */
 const STALL_WATCHDOG_POLL_MS = 3_000;
 /** No forward progress for this long while "playing" counts as a real stall.
@@ -336,7 +336,7 @@ interface Props {
   sources: PlaybackSource[];
   sourcesLoading?: boolean;
   sourcesError?: string | null;
-  onRetrySources?: () => void;
+  onRetrySources?: () => void | Promise<void>;
   isDiscoveringSources?: boolean;
   /** Authenticated profile default from the playback response. */
   profileQuality?: PlayerQualityTarget;
@@ -581,141 +581,34 @@ function findAutoLevelCapIndex(levels: QualityLevel[], maxHeight: number): numbe
 }
 
 /**
- * Stall recovery. Two policies, switchable in Settings (quality-floor-policy):
- *
- *  - "absolute" (old brand behavior): re-affirm the 1080 floor unconditionally.
- *    Bandwidth starvation buffers at the floor rather than dropping a rung.
- *
- *  - "adaptive" (default, Netflix/YouTube): under sustained starvation (buffer
- *    < ADAPTIVE_STARVATION_BUFFER_S) drop one rung toward ADAPTIVE_FLOOR_MIN_HEIGHT
- *    to keep video playing; once buffer recovers past ADAPTIVE_CLIMB_BACK_BUFFER_S,
- *    hand control back to Auto ABR so it can climb to 1440/4K again. This is the
- *    "drop quality to avoid a stall, then ramp back up" behavior real streaming
- *    services use.
- *
- * Never force-pin `currentLevel` while Auto is active (`currentLevel === -1`) —
- * that would permanently disable ABR climb to 1440/4K. Auto gets load/nextLevel/
- * startLevel nudges; fixed prefs re-pin currentLevel.
+ * Apply one shared recovery policy to hls.js. Every caller passes the real
+ * video element, so adaptive decisions use measured forward buffer rather than
+ * an "unknown" sentinel that accidentally forced 1080p during starvation.
+ * Live recovery never writes currentLevel because hls.js documents that setter
+ * as a full forward-buffer flush.
  */
-export interface AdaptiveRecoverContext {
-  /** Seconds of video buffered ahead of the playhead (-1 = unknown). */
-  bufferAheadS: number;
-  /** "adaptive" allows downshift; "absolute" never does. */
-  policy: QualityFloorPolicy;
-}
-
-function pickAdaptiveDownshiftTarget(
-  levelList: QualityLevel[],
-  curH: number
-): number {
-  // Drop to the highest rung at-or-below (curH × step ratio), floored at minimum.
-  const target = Math.max(
-    ADAPTIVE_FLOOR_MIN_HEIGHT,
-    Math.floor(curH * ADAPTIVE_DOWN_STEP_RATIO)
-  );
-  const idx = findMinLevelIndexForHeight(levelList, target);
-  if (idx >= 0) return idx;
-  // Fall back to the absolute minimum rung available.
-  return findMinLevelIndexForHeight(levelList, 0);
-}
-
 function recoverHlsAdaptive(
   hls: Hls,
-  ctx: AdaptiveRecoverContext,
+  video: HTMLVideoElement,
   preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
 ): void {
   const levelList = mapHlsLevels(hls);
-  const floorIdx = findMinLevelIndexForHeight(levelList, HLS_MIN_HEIGHT);
-  const ladderMax = maxLevelHeight(levelList);
   const cur = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
-  const curLevel = levelList.find((l) => l.index === cur);
-  const curH = curLevel ? effectiveLevelHeight(curLevel) : 0;
-  if (preferredHeight !== "auto") {
-    const fixedIdx = findBestLevelForTarget(levelList, preferredHeight);
-    if (fixedIdx >= 0 && fixedIdx !== cur) {
-      hls.capLevelToPlayerSize = false;
-      hls.autoLevelCapping = -1;
-      hls.nextLevel = fixedIdx;
-      hls.loadLevel = fixedIdx;
-      hls.nextLoadLevel = fixedIdx;
-    }
-    try {
-      hls.startLoad();
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-  // A fixed menu choice is contractual: recovery may reload it, but must not
-  // silently turn it back into Auto or move to another rung.
-  const adaptive = ctx.policy === "adaptive" && preferredHeight === "auto";
-  const starving =
-    ctx.bufferAheadS >= 0 && ctx.bufferAheadS < ADAPTIVE_STARVATION_BUFFER_S;
+  const plan = planHlsRecovery(levelList, cur, preferredHeight, {
+    bufferAheadSeconds: bufferedAheadSeconds(video),
+    policy: getQualityFloorPolicySafe(),
+  });
 
-  // CLIMB-BACK: buffer recovered and we're below floor/locked low → release to
-  // Auto ABR so it can climb toward the floor / 1440 / 4K again. Only under adaptive.
-  if (
-    adaptive &&
-    curH > 0 &&
-    curH < HLS_MIN_HEIGHT &&
-    ctx.bufferAheadS >= ADAPTIVE_CLIMB_BACK_BUFFER_S
+  hls.capLevelToPlayerSize = false;
+  hls.autoLevelCapping = -1;
+  if (plan.kind === "fixed" || plan.kind === "absolute-floor") {
+    hls.nextLevel = plan.level;
+  } else if (
+    plan.kind === "adaptive-downshift" ||
+    plan.kind === "adaptive-climb"
   ) {
-    hls.capLevelToPlayerSize = false;
-    hls.autoLevelCapping = -1;
-    if (hls.currentLevel < 0) {
-      // Already Auto — nudge start toward floor so climb is floor-anchored.
-      if (floorIdx >= 0) hls.startLevel = floorIdx;
-    } else if (floorIdx >= 0) {
-      // Was pinned low by a downshift; release to Auto at the floor.
-      hls.currentLevel = -1;
-      hls.nextLevel = -1;
-      hls.startLevel = floorIdx;
-    }
-    try {
-      hls.startLoad();
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-
-  // DOWNSHIFT: adaptive + genuinely starving + a lower rung exists → drop one.
-  if (
-    adaptive &&
-    starving &&
-    curH > ADAPTIVE_FLOOR_MIN_HEIGHT &&
-    curH > 0
-  ) {
-    const downIdx = pickAdaptiveDownshiftTarget(levelList, curH);
-    if (downIdx >= 0 && downIdx !== cur) {
-      hls.capLevelToPlayerSize = false;
-      hls.nextLevel = downIdx;
-      hls.loadLevel = downIdx;
-      hls.nextLoadLevel = downIdx;
-      if (hls.currentLevel >= 0) hls.currentLevel = downIdx;
-      try {
-        hls.startLoad();
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
-  }
-
-  // FLOOR-AFFIRM (absolute policy, or adaptive-but-not-starving): if we are
-  // decoding below the floor and a ≥1080 rung exists, snap back to it. This is
-  // the original absolute-floor behavior — kept for the "absolute" policy and
-  // as the adaptive idle state (no starvation → hold the floor).
-  if (floorIdx >= 0 && ladderMax >= HLS_MIN_HEIGHT && curH > 0 && curH < HLS_MIN_HEIGHT * 0.95) {
-    hls.capLevelToPlayerSize = false;
-    hls.nextLevel = floorIdx;
-    hls.loadLevel = floorIdx;
-    hls.nextLoadLevel = floorIdx;
-    if (hls.currentLevel >= 0) {
-      hls.currentLevel = floorIdx;
-    } else {
-      hls.startLevel = floorIdx;
-    }
+    hls.loadLevel = -1;
+    hls.nextLoadLevel = plan.level;
   }
 
   try {
@@ -723,22 +616,6 @@ function recoverHlsAdaptive(
   } catch {
     /* ignore */
   }
-}
-
-/**
- * Legacy no-context entry point — callers that don't have buffer/policy handy.
- * Defaults to the current saved policy with unknown buffer (−1), which routes
- * to FLOOR-AFFIRM (the original absolute-floor behavior) unless the saved
- * policy is adaptive AND the caller later upgrades to the context-aware path.
- */
-function recoverHlsWithoutDownshift(
-  hls: Hls,
-  preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
-): void {
-  recoverHlsAdaptive(hls, {
-    bufferAheadS: -1,
-    policy: getQualityFloorPolicySafe(),
-  }, preferredHeight);
 }
 
 /** SSR-safe read of the floor policy (defaults to adaptive on the server). */
@@ -772,11 +649,12 @@ function forceHlsLevel(hls: Hls, levelIndex: number): number {
   if (levelIndex < 0) return -1;
   hls.capLevelToPlayerSize = false;
   hls.autoLevelCapping = -1;
+  // Startup-only selection: hls.js has not loaded a media fragment yet.
+  // loadLevel owns the fixed preference without the full-buffer flush caused
+  // by currentLevel. Live switches use switchHlsLevelSmooth instead.
   hls.startLevel = levelIndex;
-  hls.nextLevel = levelIndex;
   hls.loadLevel = levelIndex;
   hls.nextLoadLevel = levelIndex;
-  hls.currentLevel = levelIndex;
   return levelIndex;
 }
 
@@ -822,8 +700,8 @@ function applyPreferredHlsQuality(
   hls.capLevelToPlayerSize = false;
 
   if (prefRaw === "auto") {
-    // currentLevel/nextLevel stay -1 so ABR can climb to 1440/4K. Seed only
-    // startLevel/loadLevel at lowest >=1080 (never absolute max / 4K default).
+    // Manual level stays -1 so ABR can climb to 1440/4K. Seed only the first
+    // Auto fragment at the lowest >=1080 (never absolute max / 4K default).
     // Floor enforcement mid-play uses nextLevel in LEVEL_SWITCHING (smooth,
     // non-flushing) — never currentLevel unless a fixed user pick requires it.
     hls.autoLevelCapping = -1;
@@ -832,10 +710,8 @@ function applyPreferredHlsQuality(
     const idx = defaultIdx >= 0 ? defaultIdx : findBestLevelForTarget(levels, HLS_MIN_HEIGHT);
     if (idx >= 0) {
       hls.startLevel = idx;
-      hls.loadLevel = idx;
+      hls.nextLoadLevel = idx;
     }
-    hls.nextLevel = -1;
-    hls.currentLevel = -1;
     return -1;
   }
 
@@ -851,8 +727,8 @@ function applyPreferredHlsQuality(
  * If playback ever dips below 1080 (e.g. a brief ABR misfire before the
  * LEVEL_SWITCHING/LEVEL_SWITCHED guards catch it), snap back to the floor —
  * UNLESS the adaptive policy is active AND we're currently starving (buffer
- * < ADAPTIVE_STARVATION_BUFFER_S), in which case the downshift is intentional
- * and we let it hold until buffer recovers (recoverHlsAdaptive handles climb).
+ * until the forward buffer has recovered, in which case the downshift is
+ * intentional and we let it hold (recoverHlsAdaptive handles the climb).
  *
  * For the "absolute" policy this always snaps back unconditionally (the old
  * brand behavior). bufferAheadS < 0 (unknown) is treated as not-starving so the
@@ -862,7 +738,6 @@ function maybePromoteHlsQuality(
   hls: Hls,
   levels: QualityLevel[],
   video: HTMLVideoElement,
-  ctx?: AdaptiveRecoverContext,
   preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
 ): number | null {
   if (!levels.length) return null;
@@ -879,13 +754,12 @@ function maybePromoteHlsQuality(
   if (curH >= targetH * 0.95) return null;
 
   // Adaptive + actively starving → let the downshift breathe (don't snap back).
-  const policy = ctx?.policy ?? getQualityFloorPolicySafe();
-  const bufferAheadS =
-    ctx?.bufferAheadS ?? (video ? bufferedAheadSeconds(video) : -1);
+  const policy = getQualityFloorPolicySafe();
+  const bufferAheadS = bufferedAheadSeconds(video);
   if (
+    preferredHeight === "auto" &&
     policy === "adaptive" &&
-    bufferAheadS >= 0 &&
-    bufferAheadS < ADAPTIVE_STARVATION_BUFFER_S
+    bufferAheadS < ADAPTIVE_CLIMB_BUFFER_SECONDS
   ) {
     return null;
   }
@@ -893,7 +767,14 @@ function maybePromoteHlsQuality(
   const idx = findBestLevelForTarget(levels, targetH);
   if (idx < 0 || idx === curIdx) return null;
   hls.autoLevelCapping = -1;
-  return forceHlsLevel(hls, idx);
+  if (preferredHeight === "auto") {
+    // One-fragment Auto hint: no manual pin and no currentLevel flush. hls.js
+    // clears forcedAutoLevel after that fragment is loaded.
+    hls.loadLevel = -1;
+    hls.nextLoadLevel = idx;
+    return idx;
+  }
+  return switchHlsLevelSmooth(hls, idx);
 }
 
 /** Forward-buffer health in seconds from the <video> element's buffered ranges. */
@@ -1034,6 +915,8 @@ export function VideoPlayer({
   const [everPlayed, setEverPlayed] = useState(false);
   /** True only after intentional user pause — do not auto-resume after underrun. */
   const userPausedRef = useRef(false);
+  /** Terminal UI blocks delayed canplay/play events until an explicit retry. */
+  const terminalBlockedRef = useRef(false);
   /** Mid-watch source switch / failover — compact chip only, keep last frame. */
   const [isSwitchingServer, setIsSwitchingServer] = useState(false);
   /** One-shot status after hard-error auto-failover (not silent stalls). */
@@ -1262,6 +1145,7 @@ export function VideoPlayer({
   dockOpenRef.current = dockOpen;
   shortcutsOpenRef.current = shortcutsOpen;
   const networkRecoveriesRef = useRef(0);
+  const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStallRecoverAtRef = useRef(0);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
@@ -1329,6 +1213,7 @@ export function VideoPlayer({
       if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
       if (newSourceNoticeTimerRef.current) clearTimeout(newSourceNoticeTimerRef.current);
       if (resumeNoticeTimerRef.current) clearTimeout(resumeNoticeTimerRef.current);
+      if (sessionRefreshTimerRef.current) clearTimeout(sessionRefreshTimerRef.current);
     };
   }, []);
 
@@ -1345,6 +1230,7 @@ export function VideoPlayer({
     everPlayedRef.current = false;
     firstProgressSavedRef.current = false;
     userPausedRef.current = false;
+    terminalBlockedRef.current = false;
     initialTimeAppliedRef.current = false;
     subtitleIntentRef.current = { on: false, lang: null };
     seenSourceIdsRef.current = new Set();
@@ -1368,6 +1254,10 @@ export function VideoPlayer({
     probeInFlightRef.current.clear();
     pendingUrlRefreshRef.current = false;
     automaticRosterRefreshRef.current = false;
+    if (sessionRefreshTimerRef.current) {
+      clearTimeout(sessionRefreshTimerRef.current);
+      sessionRefreshTimerRef.current = null;
+    }
     if (failoverNoticeTimerRef.current) {
       clearTimeout(failoverNoticeTimerRef.current);
       failoverNoticeTimerRef.current = null;
@@ -1385,6 +1275,14 @@ export function VideoPlayer({
 
   useEffect(() => {
     if (refreshNonce == null) return;
+    if (sessionRefreshTimerRef.current) {
+      clearTimeout(sessionRefreshTimerRef.current);
+      sessionRefreshTimerRef.current = null;
+    }
+    const refreshingAttempt = sourceAttemptControllerRef.current.currentToken();
+    if (refreshingAttempt) {
+      sourceAttemptControllerRef.current.finishRefresh(refreshingAttempt);
+    }
     // The response is a newly scraped roster. Re-arm every logical source ID
     // because its signed URL may have changed even when the stable ID did not.
     failedSourceIdsRef.current.clear();
@@ -1967,6 +1865,8 @@ export function VideoPlayer({
     // Same source id may come back from the re-fetch with a renewed URL
     // (expired token, transient scrape miss) — see pendingUrlRefreshRef.
     pendingUrlRefreshRef.current = true;
+    userPausedRef.current = false;
+    terminalBlockedRef.current = false;
     setError(null);
     setBuffering(true);
     if (everPlayedRef.current) setIsSwitchingServer(true);
@@ -2174,6 +2074,10 @@ export function VideoPlayer({
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
       }
+      if (sessionRefreshTimerRef.current) {
+        clearTimeout(sessionRefreshTimerRef.current);
+        sessionRefreshTimerRef.current = null;
+      }
       failActiveSource("media_element_error", sourceAttempt);
     };
     video.addEventListener("error", onBoundMediaElementError);
@@ -2243,7 +2147,7 @@ export function VideoPlayer({
       const now = Date.now();
       if (now - lastStallRecoverAtRef.current < HLS_STALL_RECOVER_DEBOUNCE_MS) return;
       lastStallRecoverAtRef.current = now;
-      recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
+      recoverHlsAdaptive(hls, video, qualityTargetRef.current);
     };
 
     if (useDash) {
@@ -2411,6 +2315,11 @@ export function VideoPlayer({
       if (Hls.isSupported()) {
         const startPos = resumeAtRef.current > 1 ? resumeAtRef.current : -1;
         const hls = new Hls({
+          // Manifest parsing must not race the profile quality selection. With
+          // auto-start enabled, hls.js's internal MANIFEST_PARSED listener can
+          // request a low first fragment before our listener applies a fixed
+          // 720/1080/4K preference. Start explicitly after selection instead.
+          autoStartLoad: false,
           // Workers break on some Chromium forks (Opera Air / GX) and stall on multi-audio masters.
           enableWorker: false,
           // VOD only (no live edge to chase) — verified false; low-latency mode
@@ -2497,7 +2406,6 @@ export function VideoPlayer({
                 hls,
                 levelList,
                 videoRef.current,
-                undefined,
                 qualityTargetRef.current
               );
               if (promoted != null && promoted >= 0) setQuality(promoted);
@@ -2553,28 +2461,22 @@ export function VideoPlayer({
           const savedSpeed = getSavedPlaybackSpeed();
           if (savedSpeed !== 1) video.playbackRate = savedSpeed;
           applyResumeSeekAndRearm(video);
+          try {
+            hls.startLoad(startPos);
+          } catch {
+            failActiveSource("hls_start_error", sourceAttempt);
+            return;
+          }
           if (!userPausedRef.current) {
             attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
           }
         });
 
-        /**
-         * Apply a floor-promotion result. In Auto mode, re-release currentLevel
-         * back to -1 right after the nudge instead of leaving it pinned —
-         * otherwise every promotion silently re-disabled ABR (task 3), which
-         * would freeze Auto exactly at 1080 after its first dip instead of
-         * continuing to adapt/climb.
-         */
+        /** Reflect a promotion without mutating engine state a second time. */
         const applyPromotionResult = (promoted: number | null) => {
           if (promoted == null || promoted < 0) return;
           const wasAuto = usePlayerStore.getState().quality === -1;
-          if (wasAuto) {
-            hls.currentLevel = -1;
-            hls.nextLevel = -1;
-            setQuality(-1);
-          } else {
-            setQuality(promoted);
-          }
+          setQuality(wasAuto ? -1 : promoted);
         };
 
         hls.on(Hls.Events.LEVELS_UPDATED, refreshHlsLevels);
@@ -2587,7 +2489,6 @@ export function VideoPlayer({
                 hls,
                 levelList,
                 videoRef.current,
-                undefined,
                 qualityTargetRef.current
               )
             );
@@ -2664,7 +2565,6 @@ export function VideoPlayer({
                 hls,
                 list,
                 videoRef.current,
-                undefined,
                 qualityTargetRef.current
               )
             );
@@ -2708,6 +2608,50 @@ export function VideoPlayer({
             typeof data.response?.code === "number" ? data.response.code : 0;
           const isHardHttp = HLS_HARD_HTTP_CODES.has(httpCode);
 
+          // Signed media URLs expire during long watches. Refresh owns this
+          // exact source generation before generic hard-HTTP retry/failover:
+          // repeated 410 callbacks are single-flighted, the dying engine is
+          // stopped, and only rejection/timeout may release terminal handling.
+          if (isSessionExpiredError(data) && onRetrySourcesRef.current) {
+            const refreshSignal =
+              sourceAttemptControllerRef.current.requestRefresh(sourceAttempt);
+            if (refreshSignal === "ignored" || refreshSignal === "pending") return;
+
+            try {
+              hls.stopLoad();
+            } catch {
+              /* the generation token still owns refresh arbitration */
+            }
+            pendingUrlRefreshRef.current = true;
+            setBuffering(true);
+            if (everPlayedRef.current) setIsSwitchingServer(true);
+            if (sessionRefreshTimerRef.current) {
+              clearTimeout(sessionRefreshTimerRef.current);
+            }
+            sessionRefreshTimerRef.current = setTimeout(() => {
+              sessionRefreshTimerRef.current = null;
+              if (
+                sourceAttemptControllerRef.current.finishRefresh(sourceAttempt)
+              ) {
+                failActiveSource("hls_session_refresh_timeout", sourceAttempt);
+              }
+            }, HLS_SESSION_REFRESH_TIMEOUT_MS);
+            void Promise.resolve()
+              .then(() => onRetrySourcesRef.current?.())
+              .catch(() => {
+                if (sessionRefreshTimerRef.current) {
+                  clearTimeout(sessionRefreshTimerRef.current);
+                  sessionRefreshTimerRef.current = null;
+                }
+                if (
+                  sourceAttemptControllerRef.current.finishRefresh(sourceAttempt)
+                ) {
+                  failActiveSource("hls_session_refresh_failed", sourceAttempt);
+                }
+              });
+            return;
+          }
+
           // Non-fatal hard HTTP (403/502 segment denials) — storm → failover once.
           if (!data.fatal && isHardHttp) {
             noteHardTransportFailure(sourceAttempt, `hls_http_${httpCode}`);
@@ -2717,9 +2661,9 @@ export function VideoPlayer({
           if (!data.fatal) {
             // Bandwidth/buffer signals (not hard HTTP denials, handled
             // above): buffer stalls and fragment-load timeouts are NOT hard
-            // errors — they never increment a failover strike. Keep
-            // buffering at the 1080 floor indefinitely (owner's absolute
-            // policy) instead of downshifting or failing the source over.
+            // errors — they never increment a failover strike. Adaptive Auto
+            // may step down using measured buffer; fixed/absolute quality is
+            // retained. Neither path falsely marks the source dead.
             if (
               data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||
               data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT
@@ -2750,17 +2694,6 @@ export function VideoPlayer({
                 /* fall through */
               }
             }
-          }
-          if (isSessionExpiredError(data) && onRetrySourcesRef.current) {
-            // Re-fetch will hand back this same source id with a renewed URL —
-            // without arming this, the reconciliation effect refuses to touch
-            // `activeSource` post-first-play and the player keeps silently
-            // reloading the now-dead (410) URL forever. See pendingUrlRefreshRef.
-            pendingUrlRefreshRef.current = true;
-            setBuffering(true);
-            if (everPlayedRef.current) setIsSwitchingServer(true);
-            onRetrySourcesRef.current();
-            return;
           }
           failActiveSource("hls_fatal_error", sourceAttempt);
         });
@@ -3026,24 +2959,21 @@ export function VideoPlayer({
     if (!video) return;
 
     const onPlay = () => {
+      if (terminalBlockedRef.current) {
+        userPausedRef.current = true;
+        video.pause();
+        setIsPlaying(false);
+        return;
+      }
       userPausedRef.current = false;
       setIsPlaying(true);
       setAutoplayHint(null);
     };
     const onPause = () => {
-      // Distinguish intentional pause from browser pause-on-stall (readyState drops).
-      // If we still have little buffer, treat as underrun (not user pause).
-      let ahead = 0;
-      try {
-        if (video.buffered.length > 0) {
-          ahead = video.buffered.end(video.buffered.length - 1) - video.currentTime;
-        }
-      } catch {
-        /* ignore */
-      }
-      if (ahead >= 1.5 && video.readyState >= 3) {
-        userPausedRef.current = true;
-      }
+      // Playback intent is set by the command that called pause (user, sleep,
+      // or terminal). Buffer arithmetic cannot distinguish a low-buffer user
+      // pause from an underrun and previously allowed delayed `canplay` to
+      // resume behind the terminal/sleep overlay.
       setIsPlaying(false);
     };
     const onTimeUpdate = () => {
@@ -3122,7 +3052,7 @@ export function VideoPlayer({
         const now = Date.now();
         if (now - lastStallRecoverAtRef.current < HLS_STALL_RECOVER_DEBOUNCE_MS) return;
         lastStallRecoverAtRef.current = now;
-        recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
+        recoverHlsAdaptive(hls, video, qualityTargetRef.current);
       }, HLS_STALL_RECOVER_DEBOUNCE_MS);
     };
     const onPlaying = () => {
@@ -3161,6 +3091,7 @@ export function VideoPlayer({
       if (
         video.paused &&
         !userPausedRef.current &&
+        !terminalBlockedRef.current &&
         !video.ended &&
         everPlayedRef.current &&
         video.readyState >= 3
@@ -3239,7 +3170,7 @@ export function VideoPlayer({
       // First full no-progress window: one engine-specific recovery nudge.
       const hls = hlsRef.current;
       if (hls) {
-        recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
+        recoverHlsAdaptive(hls, video, qualityTargetRef.current);
       } else if (dashRef.current) {
         try {
           dashRef.current.play();
@@ -3327,7 +3258,9 @@ export function VideoPlayer({
   );
 
   useEffect(() => {
+    terminalBlockedRef.current = terminalError;
     if (!terminalError) return;
+    userPausedRef.current = true;
     videoRef.current?.pause();
     setIsPlaying(false);
     setBuffering(false);
@@ -3354,6 +3287,7 @@ export function VideoPlayer({
     sleepTimerRef.current = setTimeout(() => {
       sleepTimerRef.current = null;
       const v = videoRef.current;
+      userPausedRef.current = true;
       if (v && !v.paused) v.pause();
       setSleepMinutes(null);
       setAutoplayHint(SLEEP_TIMER_PAUSED_MSG);

@@ -196,12 +196,23 @@ describe("HLS proxy failure-cache hardening", () => {
     const upstream =
       `https://rate-limit-bound-${originalDateNow()}.invalid/video/segment.ts`;
     let calls = 0;
+    let cancellations = 0;
     globalThis.fetch = (async () => {
       calls++;
-      return new Response("slow down", {
-        status: 429,
-        headers: { "Retry-After": "0" },
-      });
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1]));
+          },
+          cancel() {
+            cancellations++;
+          },
+        }),
+        {
+          status: 429,
+          headers: { "Retry-After": "0" },
+        }
+      );
     }) as unknown as typeof fetch;
 
     const response = await fetchProxied(
@@ -212,5 +223,33 @@ describe("HLS proxy failure-cache hardening", () => {
 
     expect(response.status).toBe(429);
     expect(calls).toBe(4);
+    expect(cancellations).toBe(4);
+  });
+
+  it("cancels a final upstream 4xx body before replacing the response", async () => {
+    const upstream =
+      `https://discard-4xx-${originalDateNow()}.invalid/video/segment.ts`;
+    let cancelled = false;
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1]));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { status: 403 }
+      )) as unknown as typeof fetch;
+
+    const response = await fetchProxied(
+      session("discard-final-4xx", upstream),
+      upstream,
+      null
+    );
+
+    expect(response.status).toBe(403);
+    expect(cancelled).toBe(true);
   });
 });
