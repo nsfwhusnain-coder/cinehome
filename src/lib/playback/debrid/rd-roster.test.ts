@@ -96,6 +96,7 @@ const MKV_1080_HASH = "f".repeat(40);
 const SMALL_CLIP_HASH = "1".repeat(40);
 const FALLBACK_720_HASH = "7".repeat(40);
 const UNSUPPORTED_CONTAINER_HASH = "8".repeat(40);
+const SAFARI_MKV_HASH = "9".repeat(40);
 
 function isoBmffBytes(): Uint8Array {
   const bytes = new Uint8Array(32);
@@ -121,7 +122,11 @@ describe("Real-Debrid roster — full + fast paths", () => {
         if (m) {
           const hash = (m[1] ?? "").toLowerCase();
           const extension =
-            hash === UNSUPPORTED_CONTAINER_HASH ? "m2ts" : "mp4";
+            hash === UNSUPPORTED_CONTAINER_HASH
+              ? "m2ts"
+              : hash === SAFARI_MKV_HASH
+                ? "mkv"
+                : "mp4";
           return new Response(null, {
             status: 302,
             headers: { Location: `/cdn/${hash}.${extension}` },
@@ -350,7 +355,6 @@ describe("Real-Debrid roster — full + fast paths", () => {
    * displaced by a lower-seeded non-MKV candidate.
    */
   it("full path: a top-ranked 4K MKV/HEVC release wins the safari-2160 slot, honestly tagged container:mkv", async () => {
-    const MKV_2160_HASH = "9".repeat(40);
     mockTorrentioStreams([
       {
         title: "Movie.2024.2160p.WEB-DL.H264-GRP\n👤 40 💾 20 GB ⚙️ X",
@@ -370,9 +374,9 @@ describe("Real-Debrid roster — full + fast paths", () => {
         // Top-seeded, streaming-fit 4K HEVC encode packaged as MKV — it must
         // survive selection and win the safari-2160 slot (previously dropped).
         title: "Movie.2024.2160p.UHD.BluRay.x265.HDR.mkv\n👤 500 💾 12 GB ⚙️ X",
-        infoHash: MKV_2160_HASH,
+        infoHash: SAFARI_MKV_HASH,
         fileIdx: 0,
-        url: resolveProxyUrl(MKV_2160_HASH, 0, "movie.2160p.hevc.hdr.mkv"),
+        url: resolveProxyUrl(SAFARI_MKV_HASH, 0, "movie.2160p.hevc.hdr.mkv"),
       },
     ]);
 
@@ -380,7 +384,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
     const safari2160 = sources.filter((s) => s.compat === "safari" && s.maxHeight === 2160);
 
     expect(safari2160.length).toBe(1);
-    expect(safari2160[0]?.url).toContain(MKV_2160_HASH);
+    expect(safari2160[0]?.url).toContain(SAFARI_MKV_HASH);
     expect(safari2160[0]?.container).toBe("mkv");
     expect(safari2160[0]?.codec).toBe("hevc");
   });
