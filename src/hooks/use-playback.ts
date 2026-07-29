@@ -47,12 +47,28 @@ export function playbackQueryKey(
 const CLIENT_FAST_TIMEOUT_MS = 8_000;
 const CLIENT_FULL_TIMEOUT_MS = 30_000;
 
+/** Consume TanStack's cancellation signal without giving up the request wall. */
+function playbackRequestSignal(
+  timeoutMs: number,
+  querySignal?: AbortSignal
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!querySignal) return timeoutSignal;
+  if (querySignal.aborted) return querySignal;
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  timeoutSignal.addEventListener("abort", abort, { once: true });
+  querySignal.addEventListener("abort", abort, { once: true });
+  return controller.signal;
+}
+
 async function fetchPlayback(
   mediaType: MediaType,
   tmdbId: number,
   season?: number,
   episode?: number,
   fast?: boolean,
+  querySignal?: AbortSignal,
   recoveryRefresh?: boolean
 ): Promise<PlaybackResponse> {
   const params = new URLSearchParams();
@@ -73,7 +89,10 @@ async function fetchPlayback(
 
   const res = await fetch(`/api/playback/${mediaType}/${tmdbId}?${params.toString()}`, {
     cache: "no-store",
-    signal: AbortSignal.timeout(fast ? CLIENT_FAST_TIMEOUT_MS : CLIENT_FULL_TIMEOUT_MS),
+    signal: playbackRequestSignal(
+      fast ? CLIENT_FAST_TIMEOUT_MS : CLIENT_FULL_TIMEOUT_MS,
+      querySignal
+    ),
   });
   const json = (await res.json()) as PlaybackResponse & {
     error?: string;
@@ -188,7 +207,8 @@ export function usePlayback({ tmdbId, mediaType, season, episode, enabled = true
 
   const query = useQuery({
     queryKey: playbackQueryKey(mediaType, tmdbId, season, episode, prefetch),
-    queryFn: () => fetchPlayback(mediaType, tmdbId, season, episode, prefetch),
+    queryFn: ({ signal }) =>
+      fetchPlayback(mediaType, tmdbId, season, episode, prefetch, signal),
     enabled: canFetch,
     retry: prefetch ? 1 : false,
     staleTime: prefetch ? 5 * 60 * 1000 : 60 * 1000,
@@ -201,7 +221,8 @@ export function usePlayback({ tmdbId, mediaType, season, episode, enabled = true
     const timer = setTimeout(() => {
       qc.prefetchQuery({
         queryKey: fullKey,
-        queryFn: () => fetchPlayback(mediaType, tmdbId, season, episode, false),
+        queryFn: ({ signal }) =>
+          fetchPlayback(mediaType, tmdbId, season, episode, false, signal),
         staleTime: 10 * 60 * 1000,
       });
     }, 5000);
@@ -218,7 +239,6 @@ export function usePrefetchPlayback(args: Omit<Args, "enabled" | "prefetch">) {
 /** Watch page: fast sources first, full scrape in background with gentle source polling. */
 export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { enabled?: boolean }) {
   const { data: session } = useSession();
-  const qc = useQueryClient();
   const canFetch = (args.enabled ?? true) && !!session;
   /** Only `retryFull()` may force a bounded recovery refresh. */
   const forceRefreshRef = useRef(false);
@@ -236,7 +256,15 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
 
   const fast = useQuery({
     queryKey: playbackQueryKey(args.mediaType, args.tmdbId, args.season, args.episode, true),
-    queryFn: () => fetchPlayback(args.mediaType, args.tmdbId, args.season, args.episode, true),
+    queryFn: ({ signal }) =>
+      fetchPlayback(
+        args.mediaType,
+        args.tmdbId,
+        args.season,
+        args.episode,
+        true,
+        signal
+      ),
     enabled: canFetch,
     // No retry: full now fires in parallel (not gated on fast settling), so a slow/
     // failed fast pass no longer delays full — retrying it here would only add up
@@ -251,7 +279,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
 
   const full = useQuery({
     queryKey: playbackQueryKey(args.mediaType, args.tmdbId, args.season, args.episode, false),
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       const recoveryRefresh = forceRefreshRef.current;
       forceRefreshRef.current = false;
       return fetchPlayback(
@@ -260,6 +288,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
         args.season,
         args.episode,
         false,
+        signal,
         recoveryRefresh
       );
     },
@@ -404,23 +433,21 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
       ? null
       : (fast.error ?? full.error);
 
-  /** Full recovery resolve. Keep fast data visible while fresh URLs arrive. */
+  /**
+   * Full recovery resolve. Refetch keeps the last full roster visible while
+   * fresh signed URLs arrive; resetting the query used to erase the selected
+   * source and silently switch servers before recovery owned the outcome.
+   */
   const retryFull = useCallback(async () => {
     forceRefreshRef.current = true;
     pollStartedAtRef.current = null;
     setDiscoveryWallHit(false);
     setSoftMissWallHit(false);
-    await qc.resetQueries({
-      queryKey: playbackQueryKey(
-        args.mediaType,
-        args.tmdbId,
-        args.season,
-        args.episode,
-        false
-      ),
-      exact: true,
+    await full.refetch({
+      cancelRefetch: true,
+      throwOnError: true,
     });
-  }, [qc, args.mediaType, args.tmdbId, args.season, args.episode]);
+  }, [full.refetch]);
 
   return {
     data,

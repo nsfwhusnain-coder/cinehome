@@ -145,6 +145,7 @@ async function main(): Promise<void> {
   let recoveryLatencyMs: number | null = null;
   let faultInjectionEnabled = !SESSION_EXPIRY_MODE;
   let sessionTargetSourceId: string | null = null;
+  const prematureSessionSourceSwitches = new Set<string>();
   const injectedRequests = new WeakSet<Request>();
   const initialSourceById = new Map<
     string,
@@ -168,42 +169,69 @@ async function main(): Promise<void> {
   }> = [];
   const startedAt = Date.now();
 
+  const fulfillPlaybackResponse = async (
+    route: Route,
+    staleMode: "always" | "after-refresh"
+  ): Promise<void> => {
+    const upstream = await route.fetch();
+    const forceStaleTarget =
+      staleMode === "always" ||
+      (staleMode === "after-refresh" && refreshRequests > 0);
+    if (!forceStaleTarget || !sessionTargetSourceId) {
+      await route.fulfill({ response: upstream });
+      return;
+    }
+    const staleTarget = initialSourceById.get(sessionTargetSourceId);
+    const payload = (await upstream.json().catch(() => null)) as
+      | (Record<string, unknown> & {
+          sources?: Array<Record<string, unknown> & { id?: unknown }>;
+        })
+      | null;
+    if (!staleTarget || !payload) {
+      await route.fulfill({ response: upstream });
+      return;
+    }
+    const peerSources = (payload.sources ?? []).filter(
+      (source) => source.id !== sessionTargetSourceId
+    );
+    await route.fulfill({
+      response: upstream,
+      json: {
+        ...payload,
+        streamUrl:
+          typeof staleTarget.url === "string"
+            ? staleTarget.url
+            : payload.streamUrl,
+        sources: [staleTarget, ...peerSources],
+      },
+    });
+  };
+
   await context.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
-    if (
-      requestUrl.pathname.includes("/api/playback/") &&
-      requestUrl.searchParams.get("refresh") === "1"
-    ) {
+    const isPlaybackRequest =
+      requestUrl.pathname.includes("/api/playback/");
+    const isRefreshRequest =
+      isPlaybackRequest &&
+      requestUrl.searchParams.get("refresh") === "1";
+    if (isRefreshRequest) {
       refreshRequests += 1;
       if (SESSION_EXHAUSTION_MODE && sessionTargetSourceId) {
-        const staleTarget = initialSourceById.get(sessionTargetSourceId);
-        const upstream = await route.fetch();
-        const payload = (await upstream.json().catch(() => null)) as
-          | (Record<string, unknown> & {
-              sources?: Array<Record<string, unknown> & { id?: unknown }>;
-            })
-          | null;
-        if (staleTarget && payload) {
-          const peerSources = (payload.sources ?? []).filter(
-            (source) => source.id !== sessionTargetSourceId
-          );
-          await route.fulfill({
-            response: upstream,
-            json: {
-              ...payload,
-              streamUrl:
-                typeof staleTarget.url === "string"
-                  ? staleTarget.url
-                  : payload.streamUrl,
-              sources: [staleTarget, ...peerSources],
-            },
-          });
-          return;
-        }
-        await route.fulfill({ response: upstream });
+        await fulfillPlaybackResponse(route, "always");
         return;
       }
       await route.continue();
+      return;
+    }
+    if (isPlaybackRequest && SESSION_EXHAUSTION_MODE) {
+      // A slow full resolve can begin before the injected 410, then settle
+      // after the explicit refresh. If that late response carries a live URL
+      // it accidentally rescues the target and the gate never exercises the
+      // second-expiry path. Fetch every playback response under this isolated
+      // mode and decide when its response arrives: once refresh has started,
+      // every overlapping/polled roster must retain the deliberately stale
+      // target until the player proves bounded exhaustion and peer failover.
+      await fulfillPlaybackResponse(route, "after-refresh");
       return;
     }
     const mediaRequest = isMediaRequest(route);
@@ -368,6 +396,17 @@ async function main(): Promise<void> {
       });
       const refreshDeadline = Date.now() + 45_000;
       while (!refreshCompleted && Date.now() < refreshDeadline) {
+        const activeSourceId = await page
+          .locator("video")
+          .getAttribute("data-playback-source-id")
+          .catch(() => null);
+        if (
+          sessionTargetSourceId &&
+          activeSourceId &&
+          activeSourceId !== sessionTargetSourceId
+        ) {
+          prematureSessionSourceSwitches.add(activeSourceId);
+        }
         await page.waitForTimeout(250);
       }
       if (!refreshCompleted) {
@@ -456,6 +495,15 @@ async function main(): Promise<void> {
           `failed=${[...failedInitialIds].join(",") || "none"}`
       );
     }
+    if (SESSION_EXPIRY_MODE) {
+      check(
+        "the selected session source remains owned until refresh resolves",
+        prematureSessionSourceSwitches.size === 0,
+        prematureSessionSourceSwitches.size === 0
+          ? sessionTargetSourceId ?? "no target"
+          : `switched early to ${[...prematureSessionSourceSwitches].join(",")}`
+      );
+    }
     check("the player requested one bounded recovery roster", refreshRequests === 1, `${refreshRequests} refresh request(s)`);
     check("the recovery API returned a fresh generation", refreshStatus === 200 && refreshNonce != null, `HTTP ${refreshStatus}, nonce=${refreshNonce != null}`);
     check("fresh sources reached an advancing decoded frame", state.width > 0 && state.currentTime > 0, `${state.width}x${state.height} via ${state.sourceId}`);
@@ -541,6 +589,7 @@ async function main(): Promise<void> {
     sessionExpiryMode: SESSION_EXPIRY_MODE,
     sessionExhaustionMode: SESSION_EXHAUSTION_MODE,
     sessionTargetSourceId,
+    prematureSessionSourceSwitches: [...prematureSessionSourceSwitches],
     watchPath: WATCH_PATH,
     refreshRequests,
     refreshStatus,
