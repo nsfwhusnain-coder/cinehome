@@ -1536,11 +1536,11 @@ export function isAllowedUpstreamUrl(upstream: string, session: HlsSession): boo
 }
 
 const MAX_UPSTREAM_REDIRECTS = 5;
-/** One protocol-aware retry for a CDN's transient 429 during quality/source churn. */
-const MAX_UPSTREAM_RATE_LIMIT_RETRIES = 1;
-const UPSTREAM_RATE_LIMIT_RETRY_DEFAULT_MS = 350;
-const UPSTREAM_RATE_LIMIT_RETRY_MIN_MS = 100;
-const UPSTREAM_RATE_LIMIT_RETRY_MAX_MS = 1_500;
+/** Bounded cooldown ladder for a CDN's transient 429 during quality/source churn. */
+const UPSTREAM_RATE_LIMIT_BACKOFF_MS = [250, 750, 1_500] as const;
+const MAX_UPSTREAM_RATE_LIMIT_RETRIES =
+  UPSTREAM_RATE_LIMIT_BACKOFF_MS.length;
+const UPSTREAM_RATE_LIMIT_RETRY_MAX_MS = 2_500;
 
 /** Aborts when EITHER input signal aborts (Node/Bun-portable — no AbortSignal.any dependency). */
 function combineAbortSignals(a: AbortSignal, b?: AbortSignal): AbortSignal {
@@ -1554,21 +1554,24 @@ function combineAbortSignals(a: AbortSignal, b?: AbortSignal): AbortSignal {
   return controller.signal;
 }
 
-function upstreamRetryAfterMs(value: string | null): number {
-  let requested = UPSTREAM_RATE_LIMIT_RETRY_DEFAULT_MS;
+function upstreamRetryAfterMs(value: string | null, retryIndex: number): number {
+  const scheduled =
+    UPSTREAM_RATE_LIMIT_BACKOFF_MS[
+      Math.min(retryIndex, UPSTREAM_RATE_LIMIT_BACKOFF_MS.length - 1)
+    ] ?? UPSTREAM_RATE_LIMIT_BACKOFF_MS[0];
+  let requested = scheduled;
   if (value) {
     const seconds = Number(value);
     if (Number.isFinite(seconds) && seconds >= 0) {
-      requested = seconds * 1_000;
+      requested = Math.max(scheduled, seconds * 1_000);
     } else {
       const at = Date.parse(value);
-      if (Number.isFinite(at)) requested = Math.max(0, at - Date.now());
+      if (Number.isFinite(at)) {
+        requested = Math.max(scheduled, at - Date.now());
+      }
     }
   }
-  return Math.max(
-    UPSTREAM_RATE_LIMIT_RETRY_MIN_MS,
-    Math.min(UPSTREAM_RATE_LIMIT_RETRY_MAX_MS, requested)
-  );
+  return Math.max(scheduled, Math.min(UPSTREAM_RATE_LIMIT_RETRY_MAX_MS, requested));
 }
 
 function waitForUpstreamRetry(ms: number, signal: AbortSignal): Promise<void> {
@@ -1617,7 +1620,10 @@ async function fetchUpstreamSafely(
       ) {
         break;
       }
-      const retryAfterMs = upstreamRetryAfterMs(res.headers.get("retry-after"));
+      const retryAfterMs = upstreamRetryAfterMs(
+        res.headers.get("retry-after"),
+        rateLimitRetries
+      );
       await res.body?.cancel("retrying transient upstream rate limit").catch(
         () => undefined
       );

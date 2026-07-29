@@ -192,7 +192,7 @@ describe("HLS proxy failure-cache hardening", () => {
     await response.body?.cancel();
   });
 
-  it("bounds upstream 429 recovery to one retry", async () => {
+  it("bounds upstream 429 recovery to the cooldown ladder", async () => {
     const upstream =
       `https://rate-limit-bound-${originalDateNow()}.invalid/video/segment.ts`;
     let calls = 0;
@@ -211,6 +211,6 @@ describe("HLS proxy failure-cache hardening", () => {
     );
 
     expect(response.status).toBe(429);
-    expect(calls).toBe(2);
+    expect(calls).toBe(4);
   });
 });
