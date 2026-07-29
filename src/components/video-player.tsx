@@ -2462,8 +2462,6 @@ export function VideoPlayer({
           },
         });
         hlsRef.current = hls;
-        hls.loadSource(effectiveSrc);
-        hls.attachMedia(video);
 
         // Stuck at 0:00 watchdog — MANIFEST_PARSED alone is not success (Aether PNG segments).
         // Mid-title resume uses a longer window so slow seeks are not failed over early.
@@ -2763,6 +2761,14 @@ export function VideoPlayer({
           }
           failActiveSource("hls_fatal_error", sourceAttempt);
         });
+
+        // A cached local manifest can parse in the same task as loadSource().
+        // Register every lifecycle/quality/error listener first; otherwise a
+        // fast cross-server quality switch can miss MANIFEST_PARSED entirely,
+        // skip the requested fixed rung, and let hls.js start on an arbitrary
+        // ABR level (the observed 480p -> 720p race).
+        hls.loadSource(effectiveSrc);
+        hls.attachMedia(video);
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         // Native HLS (Safari/AVFoundation) — documented limitation (task 3):
         // there is no JS-level API to select or floor a specific rendition
