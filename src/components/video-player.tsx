@@ -1212,18 +1212,17 @@ export function VideoPlayer({
     setIsSwitchingServer(false);
   }, []);
 
-  const requestAutomaticRosterRefresh = useCallback((): boolean => {
+  const launchAutomaticRosterRefresh = useCallback((): boolean => {
     const retrySources = onRetrySourcesRef.current;
-    if (!retrySources) return false;
-    const decision = rosterRecoveryArbiterRef.current.requestAutomatic();
-    if (decision === "exhausted") return false;
+    if (!retrySources) {
+      setIsSwitchingServer(false);
+      setBuffering(false);
+      setError(ALL_SOURCES_FAILED_MSG);
+      return false;
+    }
     setError(null);
     setBuffering(true);
     if (everPlayedRef.current) setIsSwitchingServer(true);
-    // Session renewal still owns this title. A healthy generation drops this
-    // deferred rescue; a terminal claim releases ownership and re-enters this
-    // function to start the one real automatic request.
-    if (decision === "defer") return true;
     void Promise.resolve()
       .then(() => retrySources())
       .catch(() => {
@@ -1233,6 +1232,23 @@ export function VideoPlayer({
       });
     return true;
   }, [setBuffering, setError]);
+
+  const requestAutomaticRosterRefresh = useCallback((): boolean => {
+    if (!onRetrySourcesRef.current) return false;
+    const decision = rosterRecoveryArbiterRef.current.requestAutomatic();
+    if (decision === "exhausted") return false;
+    // Session renewal still owns this title. A healthy generation drops this
+    // deferred rescue; a terminal claim releases ownership and re-enters this
+    // function to start the one real automatic request. Keep the current
+    // recovery UI visible without consuming or duplicating its transport.
+    if (decision === "defer") {
+      setError(null);
+      setBuffering(true);
+      if (everPlayedRef.current) setIsSwitchingServer(true);
+      return true;
+    }
+    return launchAutomaticRosterRefresh();
+  }, [launchAutomaticRosterRefresh, setBuffering, setError]);
 
   useEffect(() => {
     return () => {
@@ -1331,8 +1347,19 @@ export function VideoPlayer({
 
   useEffect(() => {
     if (!orderedSources.length) {
+      const emptyRecoveryRoster = pendingUrlRefreshRef.current;
+      if (emptyRecoveryRoster) {
+        pendingUrlRefreshRef.current = false;
+        rosterRecoveryArbiterRef.current.noteNoReplacement();
+      }
       invalidateSourceAttempt();
       setActiveSource(null);
+      if (
+        emptyRecoveryRoster &&
+        requestAutomaticRosterRefresh()
+      ) {
+        return;
+      }
       setBuffering(false);
       return;
     }
@@ -1431,6 +1458,7 @@ export function VideoPlayer({
     setError,
     invalidateSourceAttempt,
     markEverPlayed,
+    requestAutomaticRosterRefresh,
   ]);
 
   /**
@@ -1738,8 +1766,14 @@ export function VideoPlayer({
 
   const tryNextSource = useCallback(() => {
     if (activeSource) markSourceFailed(activeSource.id);
+    const inFlightSessionOwner =
+      rosterRecoveryArbiterRef.current.sessionOwnerSourceId();
     const available = eligiblePlaybackSources(
-      orderedSources,
+      inFlightSessionOwner
+        ? orderedSources.filter(
+            (source) => source.id !== inFlightSessionOwner
+          )
+        : orderedSources,
       failedSourceIdsRef.current
     );
     const next = pickDefaultSource(
@@ -1938,7 +1972,7 @@ export function VideoPlayer({
       if (!source || source.id !== attempt.sourceId) {
         return false;
       }
-      rosterRecoveryArbiterRef.current.endSession(attempt.sourceId);
+      rosterRecoveryArbiterRef.current.noteTerminal(attempt);
       markSourceFailed(attempt.sourceId);
       console.info(
         "[playback-failure]",
@@ -2108,9 +2142,7 @@ export function VideoPlayer({
     const sourceAttempt = sourceAttemptControllerRef.current.begin(
       activeSourceRef.current?.id ?? effectiveSrc
     );
-    rosterRecoveryArbiterRef.current.cancelSessionUnless(
-      sourceAttempt.sourceId
-    );
+    rosterRecoveryArbiterRef.current.observeAttempt(sourceAttempt);
     // Bind the HTMLMediaElement error to this exact source generation. A
     // component-wide listener that looked up "currentToken" at callback time
     // could miss a progressive MP4 failure during a source/effect transition,
@@ -2669,9 +2701,7 @@ export function VideoPlayer({
               );
               return;
             }
-            rosterRecoveryArbiterRef.current.beginSession(
-              sourceAttempt.sourceId
-            );
+            rosterRecoveryArbiterRef.current.beginSession(sourceAttempt);
 
             try {
               hls.stopLoad();
@@ -2701,6 +2731,15 @@ export function VideoPlayer({
                   sourceAttemptControllerRef.current.finishRefresh(sourceAttempt)
                 ) {
                   failActiveSource("hls_session_refresh_failed", sourceAttempt);
+                }
+              })
+              .finally(() => {
+                const transition =
+                  rosterRecoveryArbiterRef.current.completeSessionRequest(
+                    sourceAttempt
+                  );
+                if (transition === "start-deferred") {
+                  launchAutomaticRosterRefresh();
                 }
               });
             return;
@@ -2930,6 +2969,7 @@ export function VideoPlayer({
     syncHlsTracks,
     syncNativeTracks,
     failActiveSource,
+    launchAutomaticRosterRefresh,
     noteHardTransportFailure,
     recordDetectedHeight,
   ]);
@@ -3226,8 +3266,12 @@ export function VideoPlayer({
       if (advanced > STALL_WATCHDOG_MIN_ADVANCE_S) {
         const attempt = sourceAttemptControllerRef.current.currentToken();
         if (attempt) {
-          sourceAttemptControllerRef.current.noteHealthyPlayback(attempt);
-          rosterRecoveryArbiterRef.current.endSession(attempt.sourceId);
+          const isBufferedSessionOwner =
+            rosterRecoveryArbiterRef.current.isInitiatingGeneration(attempt);
+          if (!isBufferedSessionOwner) {
+            sourceAttemptControllerRef.current.noteHealthyPlayback(attempt);
+          }
+          rosterRecoveryArbiterRef.current.noteHealthy(attempt);
         }
         stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
         return;

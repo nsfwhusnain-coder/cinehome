@@ -3,8 +3,9 @@
  * Release gate for exhausted-roster recovery.
  *
  * The first generation of media requests is forced to HTTP 428 (exhaustion)
- * or 410 (signed-session expiry). The player must issue one authenticated
- * `refresh=1` request, adopt a fresh generation, and reach a real frame.
+ * or 410 (signed-session expiry). The player must issue only the bounded
+ * authenticated `refresh=1` requests warranted by the selected failure mode,
+ * adopt a fresh generation, and reach a real frame.
  */
 import {
   chromium,
@@ -39,6 +40,14 @@ const SESSION_EXPIRY_MODE = FAILURE_STATUS === 410;
 const SESSION_EXHAUSTION_MODE =
   SESSION_EXPIRY_MODE &&
   process.env.ROSTER_SESSION_EXHAUSTION === "1";
+const EMPTY_RECOVERY_MODE =
+  SESSION_EXPIRY_MODE &&
+  process.env.ROSTER_EMPTY_RECOVERY === "1";
+if (SESSION_EXHAUSTION_MODE && EMPTY_RECOVERY_MODE) {
+  throw new Error(
+    "ROSTER_SESSION_EXHAUSTION and ROSTER_EMPTY_RECOVERY are mutually exclusive"
+  );
+}
 
 interface Check {
   name: string;
@@ -135,6 +144,8 @@ async function main(): Promise<void> {
 
   let refreshRequests = 0;
   const refreshRequestStartedAts: number[] = [];
+  const refreshResponseSourceCounts: number[] = [];
+  let emptyRecoveryFulfilledAt: number | null = null;
   let refreshStatus: number | null = null;
   let refreshNonce: number | null = null;
   let refreshCompleted = false;
@@ -148,6 +159,7 @@ async function main(): Promise<void> {
   let sessionTargetSourceId: string | null = null;
   const prematureSessionSourceSwitches = new Set<string>();
   const injectedRequests = new WeakSet<Request>();
+  const refreshRequestOrdinals = new WeakMap<Request, number>();
   const initialSourceById = new Map<
     string,
     Record<string, unknown> & { id: string; url?: unknown }
@@ -218,7 +230,28 @@ async function main(): Promise<void> {
       requestUrl.searchParams.get("refresh") === "1";
     if (isRefreshRequest) {
       refreshRequests += 1;
+      refreshRequestOrdinals.set(route.request(), refreshRequests - 1);
       refreshRequestStartedAts.push(Date.now());
+      if (EMPTY_RECOVERY_MODE && refreshRequests === 1) {
+        const upstream = await route.fetch();
+        const payload = (await upstream.json()) as Record<string, unknown>;
+        // Timestamp the instant the authoritative empty response is released
+        // to the browser. The player cannot issue its follow-up before this
+        // fulfill begins; waiting for Playwright's acknowledgement is later
+        // than the browser-visible response and would create a false race.
+        emptyRecoveryFulfilledAt = Date.now();
+        await route.fulfill({
+          response: upstream,
+          json: {
+            ...payload,
+            status: "error",
+            message: "Injected empty signed-session recovery roster",
+            sources: [],
+            streamUrl: undefined,
+          },
+        });
+        return;
+      }
       if (SESSION_EXHAUSTION_MODE && sessionTargetSourceId) {
         await fulfillPlaybackResponse(route, "always");
         return;
@@ -330,6 +363,10 @@ async function main(): Promise<void> {
       refreshNonce = payload.refreshNonce;
     }
     refreshSourceCount = payload?.sources?.length ?? 0;
+    const ordinal = refreshRequestOrdinals.get(response.request());
+    if (ordinal != null) {
+      refreshResponseSourceCounts[ordinal] = refreshSourceCount;
+    }
     const firstSourceId = payload?.sources?.find(
       (source) => typeof source.id === "string"
     )?.id;
@@ -519,22 +556,43 @@ async function main(): Promise<void> {
     // one-per-title automatic roster rescue. The latter can discover a late
     // provider absent from a partial first recovery; it must never become a
     // third request/loop.
-    const refreshRequestBudget = SESSION_EXHAUSTION_MODE ? 2 : 1;
+    const refreshRequestBudget =
+      SESSION_EXHAUSTION_MODE || EMPTY_RECOVERY_MODE ? 2 : 1;
     const exhaustionClaimAt = sessionTargetFailures.find(
       (failure) => failure.reason === "hls_session_refresh_exhausted"
     )?.at;
-    const secondRequestIsPostExhaustion =
+    const secondRequestIsCausallyReleased =
       refreshRequests < 2 ||
-      (exhaustionClaimAt != null &&
-        (refreshRequestStartedAts[1] ?? 0) >= exhaustionClaimAt);
+      (SESSION_EXHAUSTION_MODE
+        ? exhaustionClaimAt != null &&
+          (refreshRequestStartedAts[1] ?? 0) >= exhaustionClaimAt
+        : EMPTY_RECOVERY_MODE
+          ? emptyRecoveryFulfilledAt != null &&
+            (refreshRequestStartedAts[1] ?? 0) >= emptyRecoveryFulfilledAt
+          : false);
     check(
       "the player kept recovery roster requests inside the bounded budget",
       refreshRequests >= 1 &&
         refreshRequests <= refreshRequestBudget &&
-        secondRequestIsPostExhaustion,
+        secondRequestIsCausallyReleased,
       `${refreshRequests}/${refreshRequestBudget} refresh request(s); ` +
-        `second-after-exhaustion=${secondRequestIsPostExhaustion}`
+        `second-after-owner-outcome=${secondRequestIsCausallyReleased}`
     );
+    if (EMPTY_RECOVERY_MODE) {
+      check(
+        "an empty signed-session roster hands off to one fresh title rescue",
+        refreshRequests === 2 &&
+          refreshResponseSourceCounts[0] === 0 &&
+          refreshResponseSourceCounts[1] > 0 &&
+          emptyRecoveryFulfilledAt != null &&
+          (refreshRequestStartedAts[1] ?? 0) >= emptyRecoveryFulfilledAt,
+        `sources=${refreshResponseSourceCounts.join(",") || "none"}; ` +
+          `second-after-empty=${
+            emptyRecoveryFulfilledAt != null &&
+            (refreshRequestStartedAts[1] ?? 0) >= emptyRecoveryFulfilledAt
+          }`
+      );
+    }
     check("the recovery API returned a fresh generation", refreshStatus === 200 && refreshNonce != null, `HTTP ${refreshStatus}, nonce=${refreshNonce != null}`);
     check("fresh sources reached an advancing decoded frame", state.width > 0 && state.currentTime > 0, `${state.width}x${state.height} via ${state.sourceId}`);
     check(
@@ -618,11 +676,14 @@ async function main(): Promise<void> {
     failureStatus: FAILURE_STATUS,
     sessionExpiryMode: SESSION_EXPIRY_MODE,
     sessionExhaustionMode: SESSION_EXHAUSTION_MODE,
+    emptyRecoveryMode: EMPTY_RECOVERY_MODE,
     sessionTargetSourceId,
     prematureSessionSourceSwitches: [...prematureSessionSourceSwitches],
     watchPath: WATCH_PATH,
     refreshRequests,
     refreshRequestStartedAts,
+    refreshResponseSourceCounts,
+    emptyRecoveryFulfilledAt,
     refreshStatus,
     refreshNoncePresent: refreshNonce != null,
     refreshSourceCount,
