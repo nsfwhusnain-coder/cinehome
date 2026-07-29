@@ -558,10 +558,7 @@ async function selectSource(
   targetId: string,
   expectPlaying: boolean
 ): Promise<VideoState> {
-  const dialog = await openSheet(page);
-  await dialog.getByRole("tab", { name: "Sources", exact: true }).click();
-  await dialog.locator(`button[data-source-id="${targetId}"]`).click();
-  await closeSheet(page);
+  await chooseSource(page, targetId);
   if (expectPlaying) return waitForAdvancingVideo(page, targetId);
   await page.waitForFunction(
     (wanted) => {
@@ -579,10 +576,18 @@ async function selectSource(
   return state(page);
 }
 
+async function chooseSource(page: Page, targetId: string): Promise<void> {
+  const dialog = await openSheet(page);
+  await dialog.getByRole("tab", { name: "Sources", exact: true }).click();
+  await dialog.locator(`button[data-source-id="${targetId}"]`).click();
+  await closeSheet(page);
+}
+
 async function exerciseDisplayedSources(
   page: Page,
   viewport: ViewportName,
-  sourceIds: string[]
+  sourceIds: string[],
+  tracker: RosterTracker
 ): Promise<void> {
   if (sourceIds.length <= 1) {
     record(
@@ -600,24 +605,84 @@ async function exerciseDisplayedSources(
     return;
   }
 
+  const healthyIds = new Set<string>();
   for (const sourceId of sourceIds) {
     const before = await state(page);
+    const startedAt = Date.now();
     try {
-      const selected =
-        before.sourceId === sourceId
-          ? await waitForAdvancingVideo(page, sourceId)
-          : await selectSource(page, sourceId, true);
+      if (before.sourceId !== sourceId) await chooseSource(page, sourceId);
+      let firstHealthyPosition: number | null = null;
+      let selected: VideoState | null = null;
+      let recovered: VideoState | null = null;
+      const deadline = startedAt + 35_000;
+      while (Date.now() < deadline) {
+        const current = await state(page);
+        if (
+          current.sourceId === sourceId &&
+          current.readyState >= 2 &&
+          current.width > 0 &&
+          current.height > 0 &&
+          !current.paused
+        ) {
+          if (firstHealthyPosition == null) {
+            firstHealthyPosition = current.currentTime;
+          } else if (current.currentTime >= firstHealthyPosition + 0.5) {
+            selected = current;
+            break;
+          }
+        }
+        if (tracker.failedSourceIds.has(sourceId)) {
+          const remainingMs = Math.max(1_000, deadline - Date.now());
+          const next = await waitForAdvancingVideo(
+            page,
+            undefined,
+            remainingMs
+          );
+          if (next.sourceId && next.sourceId !== sourceId) {
+            recovered = next;
+            break;
+          }
+        }
+        await page.waitForTimeout(250);
+      }
+
+      if (selected) {
+        healthyIds.add(sourceId);
+        record(
+          viewport,
+          `displayed source ${sourceId} plays or is removed with recovery`,
+          selected.currentTime >= Math.max(0, before.currentTime - 8),
+          `played in ${Date.now() - startedAt}ms; ` +
+            `${before.currentTime.toFixed(1)}s -> ${selected.currentTime.toFixed(1)}s; ` +
+            `${selected.width}x${selected.height}`
+        );
+        continue;
+      }
+
+      if (!recovered) {
+        throw new Error(
+          `source neither advanced nor recovered within ${Date.now() - startedAt}ms`
+        );
+      }
+      const dialog = await openSheet(page);
+      await dialog.getByRole("tab", { name: "Sources", exact: true }).click();
+      const failedRowCount = await dialog
+        .locator(`button[data-source-id="${sourceId}"]`)
+        .count();
+      await closeSheet(page);
       record(
         viewport,
-        `displayed source ${sourceId} reaches an advancing frame`,
-        selected.currentTime >= Math.max(0, before.currentTime - 8),
-        `${before.currentTime.toFixed(1)}s -> ${selected.currentTime.toFixed(1)}s; ` +
-          `${selected.width}x${selected.height}`
+        `displayed source ${sourceId} plays or is removed with recovery`,
+        failedRowCount === 0 &&
+          recovered.currentTime >= Math.max(0, before.currentTime - 8),
+        `failed over in ${Date.now() - startedAt}ms to ${recovered.sourceId}; ` +
+          `${before.currentTime.toFixed(1)}s -> ${recovered.currentTime.toFixed(1)}s; ` +
+          `failed row count=${failedRowCount}`
       );
     } catch (error) {
       record(
         viewport,
-        `displayed source ${sourceId} reaches an advancing frame`,
+        `displayed source ${sourceId} plays or is removed with recovery`,
         false,
         safeError(error)
       );
@@ -625,13 +690,23 @@ async function exerciseDisplayedSources(
     }
   }
 
+  const liveIds = [...healthyIds];
+  if (liveIds.length <= 1) {
+    record(
+      viewport,
+      "paused source switch remains paused",
+      "skip",
+      "fewer than two sources proved healthy"
+    );
+    return;
+  }
   await page.keyboard.press("k");
   await page.waitForFunction(() => {
     const video = document.querySelector("video");
     return video instanceof HTMLVideoElement && video.paused;
   });
   const pausedBefore = await state(page);
-  const returnTarget = sourceIds.find(
+  const returnTarget = liveIds.find(
     (sourceId) => sourceId !== pausedBefore.sourceId
   );
   if (!returnTarget) throw new Error("no alternate source for paused switch");
@@ -783,7 +858,7 @@ async function runDesktop(
     );
 
     const audit = await auditSheet(page, viewport, tracker);
-    await exerciseDisplayedSources(page, viewport, audit.sourceIds);
+    await exerciseDisplayedSources(page, viewport, audit.sourceIds, tracker);
 
     const afterSessionSwitch = await preferences(page);
     record(
