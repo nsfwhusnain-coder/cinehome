@@ -690,7 +690,26 @@ async function exerciseDisplayedSources(
     }
   }
 
-  const liveIds = [...healthyIds];
+  // A source that proved healthy earlier in this deliberately long exercise
+  // can still fail after we switch away from it. The product correctly removes
+  // session-failed rows, so re-read the live roster instead of trying to click
+  // a stale ID captured before the failure.
+  const liveDialog = await openSheet(page);
+  await liveDialog.getByRole("tab", { name: "Sources", exact: true }).click();
+  const displayedNow = new Set(
+    await liveDialog
+      .locator("button[data-source-id]")
+      .evaluateAll((buttons) =>
+        buttons
+          .map((button) => button.getAttribute("data-source-id"))
+          .filter((id): id is string => Boolean(id))
+      )
+  );
+  await closeSheet(page);
+  const liveIds = [...healthyIds].filter(
+    (sourceId) =>
+      displayedNow.has(sourceId) && !tracker.failedSourceIds.has(sourceId)
+  );
   if (liveIds.length <= 1) {
     record(
       viewport,
