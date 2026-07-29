@@ -159,4 +159,74 @@ describe("watch playback recovery transport", () => {
       qc.clear();
     }
   });
+
+  it("cancels late fast and full fetches before publishing recovery", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const fullKey = playbackQueryKey("movie", 550, undefined, undefined, false);
+    const fastKey = playbackQueryKey("movie", 550, undefined, undefined, true);
+    let releaseRecovery!: () => void;
+    const recoveryCanFinish = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: RequestInfo | URL) => {
+      await recoveryCanFinish;
+      return new Response(
+        JSON.stringify({
+          status: "available",
+          sources: [source("https://authoritative.invalid/video.mp4")],
+          refreshNonce: 791,
+        } satisfies PlaybackResponse),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+
+    const aborted: string[] = [];
+    const deferredOrdinary = (name: string) => ({ signal }: { signal: AbortSignal }) =>
+      new Promise<PlaybackResponse>((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted.push(name);
+            reject(new DOMException("cancelled", "AbortError"));
+          },
+          { once: true }
+        );
+      });
+
+    try {
+      const recovery = recoverPlaybackRoster(qc, {
+        mediaType: "movie",
+        tmdbId: 550,
+      });
+      // Let recovery pass its initial cancellation boundary, then model both
+      // ordinary observers starting again while the resolver is still open.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const lateFast = qc.fetchQuery({
+        queryKey: fastKey,
+        queryFn: deferredOrdinary("fast"),
+      });
+      const lateFull = qc.fetchQuery({
+        queryKey: fullKey,
+        queryFn: deferredOrdinary("full"),
+      });
+      void lateFast.catch(() => undefined);
+      void lateFull.catch(() => undefined);
+
+      releaseRecovery();
+      const recovered = await recovery;
+
+      expect(aborted.sort()).toEqual(["fast", "full"]);
+      expect(qc.getQueryData<PlaybackResponse>(fullKey)).toEqual(recovered);
+      expect(qc.getQueryData<PlaybackResponse>(fastKey)).toEqual(recovered);
+      expect(recovered.sources?.[0]?.url).toBe(
+        "https://authoritative.invalid/video.mp4"
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      qc.clear();
+    }
+  });
 });

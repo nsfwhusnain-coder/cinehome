@@ -165,9 +165,13 @@ export async function recoverPlaybackRoster(
     episode
   );
 
-  // Abort an older ordinary resolve before recovery starts. fetchPlayback
-  // consumes TanStack's signal, so that request cannot land after recovery.
-  await qc.cancelQueries({ queryKey: fullKey, exact: true });
+  // Abort older ordinary resolves before recovery starts. fetchPlayback
+  // consumes TanStack's signal, so those requests cannot land while recovery
+  // is acquiring ownership.
+  await Promise.all([
+    qc.cancelQueries({ queryKey: fullKey, exact: true }),
+    qc.cancelQueries({ queryKey: fastKey, exact: true }),
+  ]);
 
   try {
     const recovered = await qc.fetchQuery({
@@ -188,6 +192,14 @@ export async function recoverPlaybackRoster(
       gcTime: 0,
     });
 
+    // An interval/observer may have started another ordinary request during a
+    // long resolver call. Revoke both once more at the publication boundary;
+    // after these awaited cancellations, the synchronous writes below are the
+    // sole authoritative generation.
+    await Promise.all([
+      qc.cancelQueries({ queryKey: fullKey, exact: true }),
+      qc.cancelQueries({ queryKey: fastKey, exact: true }),
+    ]);
     qc.setQueryData(fullKey, recovered);
     qc.setQueryData(fastKey, recovered);
     return recovered;
