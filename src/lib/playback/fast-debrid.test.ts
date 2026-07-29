@@ -42,4 +42,18 @@ describe("buildFastDebridResponse", () => {
     ]);
     expect(response).toBeNull();
   });
+
+  it("honors a fixed quality only when that exact rung is cached", () => {
+    const sources = [
+      debrid({ id: "native-2160", quality: "2160p", maxHeight: 2160 }),
+      debrid({ id: "native-1080", quality: "1080p", maxHeight: 1080 }),
+      debrid({ id: "native-720", quality: "720p", maxHeight: 720 }),
+    ];
+
+    expect(buildFastDebridResponse(sources, 1080)?.sources.map((source) => source.id))
+      .toEqual(["native-1080"]);
+    expect(buildFastDebridResponse(sources, 720)?.sources.map((source) => source.id))
+      .toEqual(["native-720"]);
+    expect(buildFastDebridResponse(sources, 320)).toBeNull();
+  });
 });

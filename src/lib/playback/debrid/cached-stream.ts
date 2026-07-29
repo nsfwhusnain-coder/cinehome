@@ -50,6 +50,18 @@ export type DebridSlot =
   | "native-720";
 /** "realdebrid" is the original/default tier; "torbox" is the new sibling. */
 export type DebridProvider = "realdebrid" | "torbox";
+const RD_FAST_TRUST_VERSION = 1;
+const RD_FAST_TRUST_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Fast trust is deliberately stored in a versioned provider namespace rather
+ * than new columns. The old production image ignores these rows on rollback,
+ * while the TMDB id embedded in the namespace enables a direct DB lookup with
+ * no TMDB/provider/network work.
+ */
+export function realDebridFastTrustProvider(tmdbId: number): string {
+  return `realdebrid-fast-v${RD_FAST_TRUST_VERSION}:${tmdbId}`;
+}
 
 /** RD/TorBox direct links are usually good well under this, but expire eventually — re-resolve past this point. */
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -61,7 +73,7 @@ export interface CachedStreamKey {
   episode?: number;
   /** A `DebridQuality` for TorBox rows, a `DebridSlot` for Real-Debrid rows — see the module header. */
   quality: DebridQuality | DebridSlot;
-  provider: DebridProvider;
+  provider: DebridProvider | string;
 }
 
 export interface CachedStreamRecord {
@@ -76,6 +88,11 @@ export interface CachedStreamRecord {
   codec?: "h264" | "hevc" | "av1" | "unknown";
   /** Parsed container format. */
   container?: "mp4" | "mkv" | "webm" | "mov" | "unknown";
+}
+
+export interface TrustedFastCachedStream extends CachedStreamRecord {
+  imdbId: string;
+  quality: DebridSlot;
 }
 
 function whereFor(key: CachedStreamKey) {
@@ -122,6 +139,92 @@ export async function invalidateCachedStream(key: CachedStreamKey): Promise<void
     });
   } catch {
     // Missing row or DB failure: caller already excluded it from this response.
+  }
+}
+
+/** Expire one fast-trust row without deleting its diagnostic history. */
+export async function invalidateTrustedFastCachedStream(
+  key: Omit<CachedStreamKey, "provider"> & { tmdbId: number }
+): Promise<void> {
+  await invalidateCachedStream({
+    imdbId: key.imdbId,
+    mediaType: key.mediaType,
+    season: key.season,
+    episode: key.episode,
+    quality: key.quality,
+    provider: realDebridFastTrustProvider(key.tmdbId),
+  });
+}
+
+/**
+ * Persist the short-lived proof used by the latency-critical fast path. Call
+ * this only after the final token-free URL has passed both a conclusive size
+ * probe and an ISO-BMFF signature probe.
+ */
+export async function upsertTrustedFastCachedStream(
+  key: Omit<CachedStreamKey, "provider"> & { tmdbId: number },
+  record: CachedStreamRecord
+): Promise<void> {
+  await upsertCachedStream(
+    {
+      imdbId: key.imdbId,
+      mediaType: key.mediaType,
+      season: key.season,
+      episode: key.episode,
+      quality: key.quality,
+      provider: realDebridFastTrustProvider(key.tmdbId),
+    },
+    record,
+    RD_FAST_TRUST_TTL_MS
+  );
+}
+
+/**
+ * One bounded SQLite query keyed directly by the request's TMDB identity.
+ * No IMDb lookup, provider construction, HTTP validation, or background work
+ * is permitted on this path.
+ */
+export async function getTrustedFastCachedStreams(input: {
+  tmdbId: number;
+  mediaType: MediaType;
+  season?: number;
+  episode?: number;
+}): Promise<TrustedFastCachedStream[]> {
+  try {
+    const rows = await db.cachedStream.findMany({
+      where: {
+        mediaType: input.mediaType,
+        season: input.season ?? 0,
+        episode: input.episode ?? 0,
+        provider: realDebridFastTrustProvider(input.tmdbId),
+        expiresAt: { gt: new Date() },
+      },
+    });
+    return rows.flatMap((row) => {
+      if (
+        row.quality !== "native-2160" &&
+        row.quality !== "native-1080-1" &&
+        row.quality !== "native-1080-2" &&
+        row.quality !== "native-1080-3" &&
+        row.quality !== "native-720"
+      ) {
+        return [];
+      }
+      return [{
+        imdbId: row.imdbId,
+        quality: row.quality,
+        title: row.title,
+        source: row.source,
+        url: row.url,
+        compat: row.compat === "native" ? "native" as const : "safari" as const,
+        ...(row.codec ? { codec: row.codec as CachedStreamRecord["codec"] } : {}),
+        ...(row.container
+          ? { container: row.container as CachedStreamRecord["container"] }
+          : {}),
+      }];
+    });
+  } catch {
+    return [];
   }
 }
 

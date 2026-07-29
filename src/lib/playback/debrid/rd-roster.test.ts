@@ -11,9 +11,9 @@ import { clearMediaValidationCache } from "./media-validation";
  * in its class, wins a slot honestly tagged `container: "mkv"` so the
  * client's `isSourcePlayableHere` (source-quality.ts) can route it through
  * /api/transcode rather than ever claiming it plays natively. Also covers
- * the fast/prefetch path: a cold cache returns immediately and backgrounds
- * the live work; a warm, already-validated native MP4/MOV cache row returns
- * near-instantly without placing a CDN probe on the awaited path.
+ * the fast/prefetch path: a cold trust cache returns immediately with no
+ * background work; a short-lived row written only after size + ISO-BMFF proof
+ * returns near-instantly with zero network activity.
  *
  * Two boundaries are exercised for real, mirroring the existing conventions
  * in this folder: a genuine local HTTP server (`Bun.serve`, same technique as
@@ -27,6 +27,7 @@ const FAKE_TOKEN = "test-rd-token";
 const IMDB = "tt9999999";
 
 const cacheStore = new Map<string, unknown>();
+const fastTrustProvider = (tmdbId: number) => `realdebrid-fast-v1:${tmdbId}`;
 function cacheKey(key: {
   imdbId: string;
   mediaType: string;
@@ -43,11 +44,45 @@ mock.module("@/lib/tmdb", () => ({
 }));
 mock.module("./cached-stream", () => ({
   getFreshCachedStream: async (key: Parameters<typeof cacheKey>[0]) => cacheStore.get(cacheKey(key)) ?? null,
+  getTrustedFastCachedStreams: async (input: {
+    tmdbId: number;
+    mediaType: string;
+    season?: number;
+    episode?: number;
+  }) => {
+    const rows: unknown[] = [];
+    for (const [key, value] of cacheStore) {
+      const [imdbId, mediaType, season, episode, quality, provider] = key.split("|");
+      if (
+        mediaType === input.mediaType &&
+        Number(season) === (input.season ?? 0) &&
+        Number(episode) === (input.episode ?? 0) &&
+        provider === fastTrustProvider(input.tmdbId)
+      ) {
+        rows.push({ ...(value as object), imdbId, quality });
+      }
+    }
+    return rows;
+  },
   invalidateCachedStream: async (key: Parameters<typeof cacheKey>[0]) => {
     cacheStore.delete(cacheKey(key));
   },
+  invalidateTrustedFastCachedStream: async (
+    key: Parameters<typeof cacheKey>[0] & { tmdbId: number }
+  ) => {
+    cacheStore.delete(cacheKey({ ...key, provider: fastTrustProvider(key.tmdbId) }));
+  },
   upsertCachedStream: async (key: Parameters<typeof cacheKey>[0], record: unknown) => {
     cacheStore.set(cacheKey(key), { ...(record as object) });
+  },
+  upsertTrustedFastCachedStream: async (
+    key: Parameters<typeof cacheKey>[0] & { tmdbId: number },
+    record: unknown
+  ) => {
+    cacheStore.set(
+      cacheKey({ ...key, provider: fastTrustProvider(key.tmdbId) }),
+      { ...(record as object) }
+    );
   },
 }));
 
@@ -61,6 +96,12 @@ const MKV_1080_HASH = "f".repeat(40);
 const SMALL_CLIP_HASH = "1".repeat(40);
 const FALLBACK_720_HASH = "7".repeat(40);
 const UNSUPPORTED_CONTAINER_HASH = "8".repeat(40);
+
+function isoBmffBytes(): Uint8Array {
+  const bytes = new Uint8Array(32);
+  bytes.set([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]);
+  return bytes;
+}
 
 describe("Real-Debrid roster — full + fast paths", () => {
   const originalFetch = globalThis.fetch;
@@ -91,11 +132,14 @@ describe("Real-Debrid roster — full + fast paths", () => {
             const totalBytes = pathname.includes(SMALL_CLIP_HASH)
               ? 1_184_727
               : 2 * 1024 * 1024 * 1024;
-            return new Response(new Uint8Array([0]), {
+            const body = pathname.includes(UNSUPPORTED_CONTAINER_HASH)
+              ? new Uint8Array(32)
+              : isoBmffBytes();
+            return new Response(body, {
               status: 206,
               headers: {
-                "Content-Range": `bytes 0-0/${totalBytes}`,
-                "Content-Length": "1",
+                "Content-Range": `bytes 0-${body.length - 1}/${totalBytes}`,
+                "Content-Length": String(body.length),
               },
             });
           }
@@ -148,11 +192,12 @@ describe("Real-Debrid roster — full + fast paths", () => {
         });
       }
       if (url.includes("download.real-debrid.com") && init?.headers) {
-        return new Response(new Uint8Array([0]), {
+        const body = isoBmffBytes();
+        return new Response(body, {
           status: 206,
           headers: {
-            "Content-Range": `bytes 0-0/${2 * 1024 * 1024 * 1024}`,
-            "Content-Length": "1",
+            "Content-Range": `bytes 0-${body.length - 1}/${2 * 1024 * 1024 * 1024}`,
+            "Content-Length": String(body.length),
           },
         });
       }
@@ -375,6 +420,37 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(refreshed.length).toBe(5);
   });
 
+  it("full recovery expires the separate fast-trust namespace before resolving", async () => {
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
+      title: "Normal cached row",
+      source: NATIVE_1080_HASHES[0],
+      url: "https://51.download.real-debrid.com/d/cached1080/movie.mp4",
+      compat: "native",
+      codec: "h264",
+      container: "mp4",
+    });
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|${fastTrustProvider(1)}`, {
+      title: "Trusted cached row",
+      source: NATIVE_1080_HASHES[0],
+      url: "https://51.download.real-debrid.com/d/cached1080/movie.mp4",
+      compat: "native",
+      codec: "h264",
+      container: "mp4",
+    });
+    mockTorrentioStreams([]);
+
+    const refreshed = await resolveDebridSources({
+      tmdbId: 1,
+      mediaType: "movie",
+      forceRefresh: true,
+    });
+
+    expect(refreshed).toEqual([]);
+    expect(
+      cacheStore.has(`${IMDB}|movie|0|0|native-1080-1|${fastTrustProvider(1)}`)
+    ).toBe(false);
+  });
+
   it("fast path: legacy MKV cache URL is classified locally and withheld from native playback", async () => {
     mockTorrentioStreams([]);
     cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
@@ -581,76 +657,37 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(refilled?.source).not.toBe(NATIVE_1080_HASHES[0]);
   });
 
-  it("fast path: cold cache is CACHE-ONLY — returns [] immediately (no live network in the awaited path), then backgrounds the full roster resolve", async () => {
-    mockTorrentioStreams(buildStreams());
+  it("fast path: cold trust cache returns [] with zero network or background work", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      throw new Error("fast miss must not fetch");
+    }) as unknown as typeof fetch;
     const started = Date.now();
     const sources = await resolveFastDebridSources({ tmdbId: 1, mediaType: "movie" });
     const elapsedMs = Date.now() - started;
 
-    // The whole point of this fix: a cold cache must NEVER spend time on a
-    // live Torrentio/RD resolve inside the awaited fast-path call — it
-    // returns nothing for THIS request rather than block on network.
     expect(sources).toEqual([]);
     expect(elapsedMs).toBeLessThan(300);
-
-    // The full live roster resolve still happens — entirely in the
-    // background (fire-and-forget, not awaited by the fast call itself) —
-    // so poll briefly for all 5 slots to land in cache.
-    const pollDeadline = Date.now() + 2_000;
-    let rdRowCount = 0;
-    while (Date.now() < pollDeadline) {
-      rdRowCount = Array.from(cacheStore.keys()).filter((k) => k.endsWith("|realdebrid")).length;
-      if (rdRowCount >= 5) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    expect(rdRowCount).toBe(5);
+    expect(fetchCalls).toBe(0);
+    expect(cacheStore.size).toBe(0);
   });
 
-  it("fast path: warm cache hit returns near-instantly with the cached source, well under the fast deadline", async () => {
-    mockTorrentioStreams([]); // background fill (fires regardless of the cache hit) finds nothing further — harmless.
-    cacheStore.set(`${IMDB}|movie|0|0|native-2160|realdebrid`, {
+  it("fast path: returns every trusted native rung near-instantly", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      throw new Error("trusted fast hit must not fetch");
+    }) as unknown as typeof fetch;
+    cacheStore.set(`${IMDB}|movie|0|0|native-2160|${fastTrustProvider(1)}`, {
       title: "Movie.2024.2160p.WEB-DL.H264-GRP",
       source: NATIVE_2160_HASH,
       url: "https://51.download.real-debrid.com/d/cached4k/movie.mp4",
       compat: "native",
+      codec: "h264",
+      container: "mp4",
     });
-
-    const started = Date.now();
-    const sources = await resolveFastDebridSources({ tmdbId: 1, mediaType: "movie" });
-    const elapsedMs = Date.now() - started;
-
-    expect(sources.length).toBe(1);
-    expect(sources[0]?.url).toBe("https://51.download.real-debrid.com/d/cached4k/movie.mp4");
-    expect(sources[0]?.maxHeight).toBe(2160);
-    expect(elapsedMs).toBeLessThan(500);
-  });
-
-  it("fast path: warm native cache hit does not await a live CDN probe", async () => {
-    let releaseSlowProbe: () => void = () => {};
-    const slowProbe = new Promise<void>((resolve) => {
-      releaseSlowProbe = resolve;
-    });
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input instanceof Request ? input.url : input);
-      if (url.includes("download.real-debrid.com")) {
-        await slowProbe;
-        return new Response(new Uint8Array([0]), {
-          status: 206,
-          headers: {
-            "Content-Range": `bytes 0-0/${2 * 1024 * 1024 * 1024}`,
-            "Content-Length": "1",
-          },
-        });
-      }
-      if (url.includes("torrentio") && url.includes("/stream/")) {
-        return new Response(JSON.stringify({ streams: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return originalFetch(input as never, init);
-    }) as unknown as typeof fetch;
-    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|${fastTrustProvider(1)}`, {
       title: "Movie.2024.1080p.WEB-DL.H264-GRP",
       source: NATIVE_1080_HASHES[0],
       url: "https://51.download.real-debrid.com/d/cached1080/movie.mp4",
@@ -663,11 +700,90 @@ describe("Real-Debrid roster — full + fast paths", () => {
     const sources = await resolveFastDebridSources({ tmdbId: 1, mediaType: "movie" });
     const elapsedMs = Date.now() - started;
 
+    expect(sources.length).toBe(2);
+    expect(sources[0]?.url).toBe("https://51.download.real-debrid.com/d/cached4k/movie.mp4");
+    expect(sources[0]?.maxHeight).toBe(2160);
+    expect(sources[1]?.maxHeight).toBe(1080);
+    expect(elapsedMs).toBeLessThan(500);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("fast path: rejects conflicting, unknown-codec, and old-version trust rows locally", async () => {
+    cacheStore.set(`${IMDB}|movie|0|0|native-2160|${fastTrustProvider(1)}`, {
+      title: "Conflicting container",
+      source: NATIVE_2160_HASH,
+      url: "https://51.download.real-debrid.com/d/conflict/movie.mkv",
+      compat: "native",
+      codec: "h264",
+      container: "mp4",
+    });
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|${fastTrustProvider(1)}`, {
+      title: "Unknown codec",
+      source: NATIVE_1080_HASHES[0],
+      url: "https://51.download.real-debrid.com/d/unknown/movie.mp4",
+      compat: "native",
+      codec: "unknown",
+      container: "mp4",
+    });
+    cacheStore.set(`${IMDB}|movie|0|0|native-720|realdebrid-fast-v0:1`, {
+      title: "Old trust version",
+      source: FALLBACK_720_HASH,
+      url: "https://51.download.real-debrid.com/d/old/movie.mp4",
+      compat: "native",
+      codec: "h264",
+      container: "mp4",
+    });
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      throw new Error("rejected trust rows must not fetch");
+    }) as unknown as typeof fetch;
+
+    const sources = await resolveFastDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(sources).toEqual([]);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("full path writes conclusive native proof for a later zero-network fast hit", async () => {
+    mockTorrentioStreams(buildStreams());
+    const full = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(full.length).toBe(5);
+    expect(
+      Array.from(cacheStore.keys()).filter((key) =>
+        key.endsWith(`|${fastTrustProvider(1)}`)
+      ).length
+    ).toBe(4);
+
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      throw new Error("fast trust read must not fetch");
+    }) as unknown as typeof fetch;
+    const fast = await resolveFastDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(fast.map((source) => source.maxHeight)).toEqual([2160, 1080, 1080, 1080]);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("fast path: a trusted native cache hit survives cleared process validation state", async () => {
+    clearMediaValidationCache();
+    cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|${fastTrustProvider(1)}`, {
+      title: "Movie.2024.1080p.WEB-DL.H264-GRP",
+      source: NATIVE_1080_HASHES[0],
+      url: "https://51.download.real-debrid.com/d/cached1080/movie.mp4",
+      compat: "native",
+      codec: "h264",
+      container: "mp4",
+    });
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      throw new Error("process validation cache must be irrelevant");
+    }) as unknown as typeof fetch;
+
+    const sources = await resolveFastDebridSources({ tmdbId: 1, mediaType: "movie" });
     expect(sources).toHaveLength(1);
     expect(sources[0]?.container).toBe("mp4");
-    expect(elapsedMs).toBeLessThan(500);
-    releaseSlowProbe();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetchCalls).toBe(0);
   });
 
   it("fast path: no token configured -> [] immediately, no network", async () => {

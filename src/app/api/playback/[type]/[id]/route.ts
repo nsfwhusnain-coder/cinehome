@@ -337,95 +337,80 @@ export async function GET(
   }
 
   try {
-    const provider = await getProvider();
+    let result: PlaybackResponse | null = null;
 
-  // PREMIUM debrid tier (owner's Real-Debrid + Torrentio, primary/fast/
-  // high-volume source) — kicked off in PARALLEL with the base embed resolve
-  // on both paths:
-  //   - fast/prefetch: `resolveFastDebridSourcesSafely` is CACHE-ONLY — it
-  //     checks the single best browser-safe (native H.264/MP4) cached source
-  //     with a bounded DB read and NEVER performs a live Torrentio/RD network
-  //     resolve on this path (that would spend seconds on every cold-cache
-  //     request for ~no benefit, since the client already fires a parallel
-  //     `full` request that resolves the entire roster live). A cache hit
-  //     returns near-instantly; a cache miss returns [] immediately and the
-  //     embed sources serve alone — RD can never delay this response. The
-  //     full live roster resolve (Safari-4K, additional native 1080p
-  //     releases, and the cold-cache pick itself if there was one) always
-  //     still happens, entirely in the background, so a follow-up full
-  //     resolve or the next repeat view finds a warm, richer cache.
-  //   - full: `resolveDebridSourcesSafely` resolves (or reads from cache)
-  //     the entire RD roster + the TorBox sibling tier, live if needed.
-  // No-ops to [] when neither REAL_DEBRID_API_TOKEN nor TORBOX_API_KEY is
-  // set, or anything in the tier fails.
-  const debridPromise = fast
-    ? resolveFastDebridSourcesSafely({
-        tmdbId,
-        mediaType: type as MediaType,
-        season,
-        episode,
-      })
-    : resolveDebridSourcesSafely({
-        tmdbId,
-        mediaType: type as MediaType,
-        season,
-        episode,
-        forceRefresh: noCache,
-      });
-
-  const providerPromise = provider.resolve({
-    tmdbId,
-    mediaType: type as MediaType,
-    season,
-    episode,
-    userId,
-    fast,
-    noCache,
-    qualityHint,
-  });
-
-  let result: PlaybackResponse;
-  if (fast) {
-    const debridSources = prepareDebridSourcesForBrowser(
-      userId,
-      await debridPromise
-    );
-    const debridOnly = buildFastDebridResponse(
-      debridSources,
-      qualityHint ?? "auto"
-    );
-    if (debridOnly) {
-      result = debridOnly;
-      // Provider discovery was already started in parallel. Let it populate
-      // its own scraper cache for the full request without gating first frame.
-      void providerPromise.catch(() => undefined);
-      console.info(
-        JSON.stringify({
-          event: "playback_fast_debrid_hit",
-          requestId,
-          mediaType: type,
+    // A proven fast-cache hit is a complete first-frame answer. Check it
+    // before constructing or starting any embed provider so the path is one
+    // bounded SQLite read plus local ranking, with zero hidden background
+    // discovery. The client already starts an independent full request.
+    if (fast) {
+      const fastDebridSources = prepareDebridSourcesForBrowser(
+        userId,
+        await resolveFastDebridSourcesSafely({
           tmdbId,
-          sourceCount: debridSources.length,
-          elapsedMs: Date.now() - startedAt,
+          mediaType: type as MediaType,
+          season,
+          episode,
         })
       );
-    } else {
-      result = await providerPromise;
-      mergeDebridSources(result, debridSources, qualityHint);
+      result = buildFastDebridResponse(
+        fastDebridSources,
+        qualityHint ?? "auto"
+      );
+      if (result) {
+        console.info(
+          JSON.stringify({
+            event: "playback_fast_debrid_hit",
+            requestId,
+            mediaType: type,
+            tmdbId,
+            sourceCount: fastDebridSources.length,
+            elapsedMs: Date.now() - startedAt,
+          })
+        );
+      }
     }
-  } else {
-    const [providerResult, resolvedDebridSources] = await Promise.all([
-      providerPromise,
-      debridPromise,
-    ]);
-    const debridSources = prepareDebridSourcesForBrowser(
-      userId,
-      resolvedDebridSources,
-      refreshMode === "recovery" ? refreshNonce : undefined
-    );
-    result = providerResult;
-    mergeDebridSources(result, debridSources, qualityHint);
-  }
+
+    if (!result) {
+      const provider = await getProvider();
+      const providerPromise = provider.resolve({
+        tmdbId,
+        mediaType: type as MediaType,
+        season,
+        episode,
+        userId,
+        fast,
+        noCache,
+        qualityHint,
+      });
+
+      if (fast) {
+        result = await providerPromise;
+      } else {
+        const debridPromise = resolveDebridSourcesSafely({
+          tmdbId,
+          mediaType: type as MediaType,
+          season,
+          episode,
+          forceRefresh: noCache,
+        });
+        const [providerResult, resolvedDebridSources] = await Promise.all([
+          providerPromise,
+          debridPromise,
+        ]);
+        const debridSources = prepareDebridSourcesForBrowser(
+          userId,
+          resolvedDebridSources,
+          refreshMode === "recovery" ? refreshNonce : undefined
+        );
+        result = providerResult;
+        mergeDebridSources(result, debridSources, qualityHint);
+      }
+    }
+
+    if (!result) {
+      throw new Error("Playback resolver produced no response");
+    }
 
   // Cache available resolves for warm Play. Partial → short TTL so poll advances.
   if (result && result.status !== "error") {

@@ -29,20 +29,12 @@
  * Blu-ray M2TS objects from masquerading as browser-native sources.
  *
  * FAST PATH (see `resolveFastDebridSources`, called from route.ts's `fast`/
- * `prefetch` branch): CACHE-ONLY — checks the two best-native slots with a
- * bounded `CachedStream` DB read (a cache hit is near-instant) and NEVER
- * performs a live Torrentio/RD network resolve in the awaited path. The
- * whole thing is still wrapped in a `RD_FAST_DEADLINE_MS` `Promise.race` as a
- * defensive backstop (covers the imdbId lookup + the DB reads), but that
- * bound is no longer hiding a live network round trip: on a cold cache this
- * returns `[]` immediately rather than spending seconds on a live resolve —
- * the client already fires a parallel `full` request that resolves the
- * entire roster live (see use-playback.ts), so blocking the fast/TTFF
- * response on a redundant live resolve would buy ~nothing while directly
- * hurting every first-time view. The full live roster resolve ALWAYS still
- * happens — cache hit or miss — just entirely in the BACKGROUND
- * (fire-and-forget, see `backgroundFillRemainingSlots`) so a follow-up `full`
- * request or the next repeat view finds a warm, richer cache.
+ * `prefetch` branch): CACHE-ONLY — one direct TMDB-keyed SQLite query against
+ * a short-lived, versioned trust namespace. Full resolution writes that
+ * namespace only after conclusive size + ISO-BMFF proof. It never performs an
+ * IMDb lookup, live validation, provider construction, Torrentio/RD request,
+ * or background enrichment. On a miss it returns `[]`; the client's separate
+ * full request owns all live discovery and roster enrichment.
  *
  * FULL PATH (`resolveDebridSources`, unchanged export used by
  * src/app/api/playback/[type]/[id]/route.ts's non-fast branch): resolves
@@ -98,8 +90,11 @@ import {
 } from "./torbox";
 import {
   getFreshCachedStream,
+  getTrustedFastCachedStreams,
   invalidateCachedStream,
+  invalidateTrustedFastCachedStream,
   upsertCachedStream,
+  upsertTrustedFastCachedStream,
   type DebridQuality,
   type DebridSlot,
   type DebridProvider,
@@ -133,13 +128,10 @@ const RD_SLOTS: DebridSlot[] = [
 /**
  * Fast/prefetch path bound — a DEFENSIVE backstop only, not a live-network
  * budget: the fast path is cache-only (see `resolveFastBestNativeFromCache`),
- * so this only ever has to cover an imdbId lookup + up to two bounded
- * `CachedStream` DB reads. A cache hit resolves in low single-digit ms; this
- * ceiling exists purely so a pathological slow DB/lookup can never hold up
- * the fast TTFF response beyond it (see route.ts: embeds still serve on a
- * miss). The full LIVE roster resolve is never on this path — it always runs
- * in the background instead (`backgroundFillRemainingSlots`), unbounded by
- * this constant.
+ * so this only ever has to cover one bounded `CachedStream` DB query. A cache
+ * hit resolves in low single-digit ms; this ceiling exists purely so a
+ * pathological slow DB read can never hold up the fast TTFF response. The
+ * client's independent full request owns all live provider work.
  */
 const RD_FAST_DEADLINE_MS = 1_500;
 /** Full-resolve path bound — shared across every missing RD slot's resolve attempts (including any per-slot fallback to the next-ranked candidate). */
@@ -171,6 +163,8 @@ export interface ResolveDebridSourcesRequest {
 
 interface ResolvedCandidate extends DebridCandidate {
   directUrl: string;
+  /** Eligible for the short, zero-network fast cache after conclusive proof. */
+  fastTrusted?: boolean;
 }
 
 interface KeyBase {
@@ -259,11 +253,7 @@ function slotQuality(slot: DebridSlot): RdQuality {
 /** Infer only an explicit media extension from a token-free direct URL.
  * Legacy cache rows may predate persisted container metadata; without this
  * bridge an H.264-in-MKV URL is mislabeled native and handed to `<video>`. */
-function effectiveReleaseContainer(
-  url: string,
-  parsed?: ReleaseContainer
-): ReleaseContainer | undefined {
-  if (parsed && parsed !== "unknown") return parsed;
+function explicitUrlContainer(url: string): ReleaseContainer | undefined {
   try {
     const pathname = decodeURIComponent(new URL(url).pathname).toLowerCase();
     if (/\.mkv$/.test(pathname)) return "mkv";
@@ -273,6 +263,17 @@ function effectiveReleaseContainer(
   } catch {
     // An opaque but already-sanitized URL remains unknown, never fabricated.
   }
+  return undefined;
+}
+
+function effectiveReleaseContainer(
+  url: string,
+  parsed?: ReleaseContainer
+): ReleaseContainer | undefined {
+  // The final CDN object's explicit extension is more authoritative than
+  // release-title metadata persisted before a redirect.
+  const explicit = explicitUrlContainer(url);
+  if (explicit) return explicit;
   return parsed;
 }
 
@@ -467,14 +468,60 @@ async function resolveSlotCandidate(
       resolved.directUrl,
       resolved.container
     );
-    if (resolved.compat === "native" && effectiveContainer === "unknown") {
+    if (resolved.compat === "native") {
+      const explicitContainer = explicitUrlContainer(resolved.directUrl);
+      const parsedContainer =
+        resolved.container && resolved.container !== "unknown"
+          ? resolved.container
+          : undefined;
+      const metadataConflict =
+        explicitContainer &&
+        parsedContainer &&
+        explicitContainer !== parsedContainer;
+      if (
+        metadataConflict ||
+        effectiveContainer === "mkv" ||
+        effectiveContainer === "webm"
+      ) {
+        logRejectedRdMedia(
+          candidate,
+          {
+            acceptable: false,
+            reason: "unsupported_container",
+            totalBytes: validation.totalBytes,
+            status: validation.status,
+            elapsedMs: validation.elapsedMs,
+          },
+          mediaType,
+          "fresh"
+        );
+        continue;
+      }
+
       const containerRemaining = deadline - Date.now();
       if (containerRemaining <= 0) return null;
       const containerValidation = await validateNativeBrowserContainer(
         resolved.directUrl,
         Math.min(RD_MEDIA_VALIDATION_TIMEOUT_MS, containerRemaining)
       );
-      if (!containerValidation.acceptable || !containerValidation.container) {
+      if (containerValidation.acceptable && containerValidation.container) {
+        return {
+          ...resolved,
+          container: containerValidation.container,
+          fastTrusted:
+            validation.reason === "plausible_size" &&
+            resolved.codec === "h264",
+        };
+      }
+
+      // A known MP4/MOV may remain available to the full roster when a
+      // signature probe merely timed out, but it is never written to the
+      // zero-network trust namespace. Unknown containers and conclusive
+      // signature/HTTP failures fail closed.
+      if (
+        containerValidation.reason !== "network_indeterminate" ||
+        (effectiveContainer !== "mp4" && effectiveContainer !== "mov")
+      ) {
         logRejectedRdMedia(
           candidate,
           {
@@ -489,7 +536,6 @@ async function resolveSlotCandidate(
         );
         continue;
       }
-      return { ...resolved, container: containerValidation.container };
     }
 
     return resolved;
@@ -599,6 +645,7 @@ function logRejectedRdMedia(
 async function readCachedRdSlots(
   keyBase: KeyBase,
   rdToken: string,
+  tmdbId: number,
   validationTimeoutMs: number = RD_MEDIA_VALIDATION_TIMEOUT_MS
 ): Promise<{ hits: PlaybackSource[]; missing: DebridSlot[]; occupiedIdentities: Set<string> }> {
   const cachedBySlot = await Promise.all(
@@ -606,8 +653,17 @@ async function readCachedRdSlots(
   );
   const validatedBySlot = await Promise.all(
     cachedBySlot.map(async (hit, index) => {
+      const slot = RD_SLOTS[index]!;
       const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;
-      if (!hit || !safeUrl) return { hit, safeUrl: null, validation: null };
+      const trustKey = {
+        ...keyBase,
+        tmdbId,
+        quality: slot,
+      };
+      if (!hit || !safeUrl) {
+        if (hit) await invalidateTrustedFastCachedStream(trustKey);
+        return { hit, safeUrl: null, validation: null };
+      }
       const validation = await validateDebridMediaLink(
         safeUrl,
         keyBase.mediaType,
@@ -617,16 +673,69 @@ async function readCachedRdSlots(
         safeUrl,
         hit.container
       );
-      if (
-        validation.acceptable &&
-        hit.compat === "native" &&
-        effectiveContainer === "unknown"
-      ) {
+      if (validation.acceptable && hit.compat === "native") {
+        const explicitContainer = explicitUrlContainer(safeUrl);
+        const parsedContainer =
+          hit.container && hit.container !== "unknown"
+            ? hit.container
+            : undefined;
+        const metadataConflict =
+          explicitContainer &&
+          parsedContainer &&
+          explicitContainer !== parsedContainer;
+        if (
+          metadataConflict ||
+          effectiveContainer === "mkv" ||
+          effectiveContainer === "webm"
+        ) {
+          await invalidateTrustedFastCachedStream(trustKey);
+          return {
+            hit,
+            safeUrl,
+            validation: {
+              acceptable: false,
+              reason: "unsupported_container" as const,
+              totalBytes: validation.totalBytes,
+              status: validation.status,
+              elapsedMs: validation.elapsedMs,
+            },
+          };
+        }
+
         const containerValidation = await validateNativeBrowserContainer(
           safeUrl,
           validationTimeoutMs
         );
-        if (!containerValidation.acceptable || !containerValidation.container) {
+        if (containerValidation.acceptable && containerValidation.container) {
+          const normalizedHit: CachedStreamRecord = {
+            ...hit,
+            url: safeUrl,
+            container: containerValidation.container,
+          };
+          await upsertCachedStream(
+            {
+              ...keyBase,
+              quality: slot,
+              provider: "realdebrid",
+            },
+            normalizedHit
+          );
+          if (
+            validation.reason === "plausible_size" &&
+            normalizedHit.codec === "h264"
+          ) {
+            await upsertTrustedFastCachedStream(trustKey, normalizedHit);
+          } else {
+            await invalidateTrustedFastCachedStream(trustKey);
+          }
+          return { hit: normalizedHit, safeUrl, validation };
+        }
+
+        await invalidateTrustedFastCachedStream(trustKey);
+        if (
+          containerValidation.reason !== "network_indeterminate" ||
+          (effectiveContainer !== "mp4" && effectiveContainer !== "mov")
+        ) {
           return {
             hit,
             safeUrl,
@@ -640,21 +749,8 @@ async function readCachedRdSlots(
             },
           };
         }
-
-        const normalizedHit: CachedStreamRecord = {
-          ...hit,
-          url: safeUrl,
-          container: containerValidation.container,
-        };
-        await upsertCachedStream(
-          {
-            ...keyBase,
-            quality: RD_SLOTS[index]!,
-            provider: "realdebrid",
-          },
-          normalizedHit
-        );
-        return { hit: normalizedHit, safeUrl, validation };
+      } else {
+        await invalidateTrustedFastCachedStream(trustKey);
       }
       return { hit, safeUrl, validation };
     })
@@ -686,7 +782,10 @@ async function readCachedRdSlots(
       if (hit && validation && !validation.acceptable) {
         logRejectedRdMedia(hit, validation, keyBase.mediaType, "cache", keyBase.imdbId, slot);
         invalidations.push(
-          invalidateCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" })
+          Promise.all([
+            invalidateCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" }),
+            invalidateTrustedFastCachedStream({ ...keyBase, tmdbId, quality: slot }),
+          ]).then(() => undefined)
         );
       }
       if (hit && validation?.acceptable && duplicatesExistingHit) {
@@ -701,7 +800,10 @@ async function readCachedRdSlots(
           })
         );
         invalidations.push(
-          invalidateCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" })
+          Promise.all([
+            invalidateCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" }),
+            invalidateTrustedFastCachedStream({ ...keyBase, tmdbId, quality: slot }),
+          ]).then(() => undefined)
         );
       }
     }
@@ -740,7 +842,11 @@ async function resolveRealDebridSlots(
   rdToken: string,
   preFetchedCandidates?: DebridCandidate[]
 ): Promise<{ sources: PlaybackSource[]; candidates: DebridCandidate[] }> {
-  const { hits, missing, occupiedIdentities } = await readCachedRdSlots(keyBase, rdToken);
+  const { hits, missing, occupiedIdentities } = await readCachedRdSlots(
+    keyBase,
+    rdToken,
+    req.tmdbId
+  );
   if (!missing.length) return { sources: hits, candidates: preFetchedCandidates ?? [] };
 
   const deadline = Date.now() + RD_FULL_DEADLINE_MS;
@@ -845,6 +951,12 @@ async function resolveRealDebridSlots(
       ...(effectiveContainer ? { container: effectiveContainer } : {}),
     };
     await upsertCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" }, record);
+    const trustKey = { ...keyBase, tmdbId: req.tmdbId, quality: slot };
+    if (resolved.fastTrusted) {
+      await upsertTrustedFastCachedStream(trustKey, record);
+    } else {
+      await invalidateTrustedFastCachedStream(trustKey);
+    }
     newSources.push(
       toRdPlaybackSource(
         slot,
@@ -863,110 +975,77 @@ async function resolveRealDebridSlots(
 }
 
 /**
- * Fire-and-forget: resolves whatever RD slots are still missing (the fast
- * path itself never resolves anything live — it only ever reads the cache,
- * see `resolveFastBestNativeFromCache` — so on a cold cache this is doing
- * the ENTIRE roster's live work, not just "the rest") into the cache, so a
- * follow-up `full` request (the client already fires one in parallel — see
- * use-playback.ts) or the next repeat view finds a warm, richer roster.
- * NEVER awaited by the fast path — this is precisely the live network work
- * that must not be on the fast path's awaited return, at all. Errors are
- * swallowed: a failed background fill just means the next request
- * re-attempts it from scratch.
- */
-function backgroundFillRemainingSlots(
-  keyBase: KeyBase,
-  req: ResolveDebridSourcesRequest,
-  rdToken: string,
-  preFetchedCandidates?: DebridCandidate[]
-): void {
-  void (async () => {
-    try {
-      await resolveRealDebridSlots(keyBase, req, rdToken, preFetchedCandidates);
-    } catch {
-      // Swallow — the fast path already returned; next request re-resolves.
-    }
-  })();
-}
-
-/**
- * FAST PATH — CACHE-ONLY. Checks the two best-native slots with a bounded DB
- * read; NEVER performs a live Torrentio/RD network resolve in this awaited
- * path (that's what blew the TTFF budget before this fix — up to
- * `RD_FAST_DEADLINE_MS`'s full worth of live network on every cold-cache
- * fast/prefetch request, even though the client already fires a parallel
- * `full` request that resolves the entire roster live — see
- * use-playback.ts). On a cache MISS (either because there's genuinely
- * nothing cached yet, or the read itself ran out of budget), this returns
- * `[]` immediately and, in EITHER case, kicks the full live roster resolve to
- * the background so the next request (or that parallel `full` request) finds
- * a warm cache. Never awaited beyond the outer `Promise.race` in
- * `resolveFastDebridSources`.
+ * FAST PATH — one versioned, short-lived SQLite trust lookup keyed directly
+ * by TMDB id. Full resolution writes this separate namespace only after the
+ * final token-free object proves plausible size + ISO-BMFF and is explicitly
+ * H.264/native. Legacy normal-cache rows can therefore never become fast hits.
+ *
+ * This function must remain pure DB/local computation: no TMDB lookup, CDN
+ * probe, provider construction, Torrentio/RD request, or background work.
+ * The client already starts a separate full request which owns enrichment.
  */
 async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest): Promise<PlaybackSource[]> {
-  const imdbId = await resolveImdbId(req.tmdbId, req.mediaType);
-  if (!imdbId) return [];
-
   const season = req.season ?? 0;
   const episode = req.episode ?? 0;
-  const keyBase: KeyBase = { imdbId, mediaType: req.mediaType, season, episode };
   const rdToken = process.env.REAL_DEBRID_API_TOKEN as string;
+  const hits = await getTrustedFastCachedStreams({
+    tmdbId: req.tmdbId,
+    mediaType: req.mediaType,
+    season,
+    episode,
+  });
+  const slotOrder = new Map(RD_SLOTS.map((slot, index) => [slot, index]));
+  const seenUrls = new Set<string>();
+  const sources: PlaybackSource[] = [];
 
-  // Background the full live roster resolve regardless of what the cache
-  // read below finds — a cache HIT still wants the other 3-4 slots filled;
-  // a cache MISS needs the whole roster resolved from scratch. Either way
-  // this never touches the awaited return path.
-  backgroundFillRemainingSlots(keyBase, req, rdToken);
-
-  const bestNativeSlots: DebridSlot[] = [
-    "native-2160",
-    "native-1080-1",
-    "native-720",
-  ];
-  for (const slot of bestNativeSlots) {
-    const hit = await getFreshCachedStream({ ...keyBase, quality: slot, provider: "realdebrid" });
-    const safeUrl = hit ? sanitizeStreamUrl(hit.url, rdToken) : null;
-    const effectiveContainer =
-      hit && safeUrl ? effectiveReleaseContainer(safeUrl, hit.container) : undefined;
-
-    // These rows were range-probed before insertion by the full resolver and
-    // getFreshCachedStream already enforced their TTL. Trust only the subset
-    // that can be classified locally as browser-native; a network probe here
-    // would turn a "fast cache hit" into a one-second CDN round trip. Unknown,
-    // MKV and WebM legacy rows are deliberately left to the validating full
-    // resolver running in the background.
-    const trustedNativeCacheHit =
-      hit?.compat === "native" &&
-      (effectiveContainer === "mp4" || effectiveContainer === "mov");
-    if (hit && safeUrl && trustedNativeCacheHit) {
-      return [
-        toRdPlaybackSource(
-          slot,
-          imdbId,
-          req.mediaType,
-          season,
-          episode,
-          { ...hit, url: safeUrl },
-          hit.codec,
-          effectiveContainer
-        ),
-      ];
+  for (const hit of hits.sort(
+    (a, b) =>
+      (slotOrder.get(a.quality) ?? Number.MAX_SAFE_INTEGER) -
+      (slotOrder.get(b.quality) ?? Number.MAX_SAFE_INTEGER)
+  )) {
+    const safeUrl = sanitizeStreamUrl(hit.url, rdToken);
+    if (!safeUrl || seenUrls.has(safeUrl)) continue;
+    const explicitContainer = explicitUrlContainer(safeUrl);
+    const effectiveContainer = effectiveReleaseContainer(safeUrl, hit.container);
+    const containerConflict =
+      explicitContainer &&
+      hit.container &&
+      hit.container !== "unknown" &&
+      explicitContainer !== hit.container;
+    if (
+      containerConflict ||
+      hit.compat !== "native" ||
+      hit.codec !== "h264" ||
+      (effectiveContainer !== "mp4" && effectiveContainer !== "mov")
+    ) {
+      continue;
     }
+    seenUrls.add(safeUrl);
+    sources.push(
+      toRdPlaybackSource(
+        hit.quality,
+        hit.imdbId,
+        req.mediaType,
+        season,
+        episode,
+        { ...hit, url: safeUrl },
+        hit.codec,
+        effectiveContainer
+      )
+    );
   }
-
-  return [];
+  return sources;
 }
 
 /**
  * Fast/prefetch-path entry point — see the module header and
  * `resolveFastBestNativeFromCache`. Cache-only: the awaited path is bounded
- * to `RD_FAST_DEADLINE_MS` (a defensive backstop over an imdbId lookup + two
- * bounded `CachedStream` DB reads — no live Torrentio/RD network call is ever
- * on this path) via `Promise.race`, so RD can NEVER delay the fast TTFF
+ * to `RD_FAST_DEADLINE_MS` (a defensive backstop over one bounded
+ * `CachedStream` DB query — no live network call is ever on this path) via
+ * `Promise.race`, so RD can NEVER delay the fast TTFF
  * response — on a cache miss (or the read somehow missing even that budget)
- * this resolves to `[]` and route.ts's embed race is entirely unaffected. The
- * live resolve (Torrentio fetch + RD resolve for the whole roster) always
- * still happens, just backgrounded — see `backgroundFillRemainingSlots`.
+ * this resolves to `[]` and route.ts falls through to its normal provider
+ * path. The client's independent full request owns roster enrichment.
  * TorBox is intentionally NOT attempted on the fast path at all — its
  * add/poll/requestdl flow is both too slow for a TTFF budget and too quota-
  * constrained to spend on a request that may be a discarded prefetch.
@@ -1076,13 +1155,18 @@ export async function resolveDebridSources(
         // fails in the browser. Roster exhaustion is stronger evidence than
         // cache age, so expire every RD slot and obtain fresh unrestrict links.
         await Promise.all(
-          RD_SLOTS.map((slot) =>
+          RD_SLOTS.flatMap((slot) => [
             invalidateCachedStream({
               ...keyBase,
               quality: slot,
               provider: "realdebrid",
-            })
-          )
+            }),
+            invalidateTrustedFastCachedStream({
+              ...keyBase,
+              tmdbId: req.tmdbId,
+              quality: slot,
+            }),
+          ])
         );
       }
       const rdToken = process.env.REAL_DEBRID_API_TOKEN as string;
