@@ -3703,7 +3703,6 @@ export function VideoPlayer({
       const isEditable =
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable;
       if (isEditable) return;
-      if (isInteractivePlayerTarget(target)) return;
       if (shortcutsOpenRef.current) {
         if (e.key === "Escape" || e.key === "?" || (e.key === "/" && e.shiftKey)) {
           e.preventDefault();
@@ -3713,6 +3712,21 @@ export function VideoPlayer({
         return;
       }
       if (dockOpenRef.current) return;
+      // Focus restoration after a modal commonly lands on a player button.
+      // Keep activation and D-pad arrows owned by that control, but do not
+      // disable global media/fullscreen/help shortcuts merely because a
+      // button currently has focus.
+      if (
+        isInteractivePlayerTarget(target) &&
+        (e.key === " " ||
+          e.key === "Enter" ||
+          e.key === "ArrowLeft" ||
+          e.key === "ArrowRight" ||
+          e.key === "ArrowUp" ||
+          e.key === "ArrowDown")
+      ) {
+        return;
+      }
       if (!hasStream) return;
 
       switch (e.key) {
