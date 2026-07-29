@@ -14,6 +14,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        # Immutable source identity stamped into the OCI image by deploy.sh.
+        CINEHOME_REVISION: ${CINEHOME_REVISION:-unknown}
         # Optional builder DNS escape hatch. scripts/deploy.sh resolves this
         # through CineHome's explicit DNS when the host overlay resolver fails.
         NODE_DOWNLOAD_IP: ${NODE_DOWNLOAD_IP:-}
