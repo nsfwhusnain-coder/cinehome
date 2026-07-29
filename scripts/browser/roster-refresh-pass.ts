@@ -134,6 +134,7 @@ async function main(): Promise<void> {
   await ensureBaseCookieScope(context);
 
   let refreshRequests = 0;
+  const refreshRequestStartedAts: number[] = [];
   let refreshStatus: number | null = null;
   let refreshNonce: number | null = null;
   let refreshCompleted = false;
@@ -156,6 +157,7 @@ async function main(): Promise<void> {
     sourceId: string;
     generation: number;
     reason: string;
+    at: number;
   }> = [];
   const initialSourceIds = new Set<string>();
   const postRefreshMediaStatuses: number[] = [];
@@ -216,6 +218,7 @@ async function main(): Promise<void> {
       requestUrl.searchParams.get("refresh") === "1";
     if (isRefreshRequest) {
       refreshRequests += 1;
+      refreshRequestStartedAts.push(Date.now());
       if (SESSION_EXHAUSTION_MODE && sessionTargetSourceId) {
         await fulfillPlaybackResponse(route, "always");
         return;
@@ -286,16 +289,19 @@ async function main(): Promise<void> {
         sourceId?: unknown;
         generation?: unknown;
         reason?: unknown;
+        at?: unknown;
       };
       if (
         typeof payload.sourceId === "string" &&
         typeof payload.generation === "number" &&
-        typeof payload.reason === "string"
+        typeof payload.reason === "string" &&
+        typeof payload.at === "number"
       ) {
         playerFailureRecords.push({
           sourceId: payload.sourceId,
           generation: payload.generation,
           reason: payload.reason,
+          at: payload.at,
         });
       }
     } catch {
@@ -506,7 +512,29 @@ async function main(): Promise<void> {
           : `switched early to ${[...prematureSessionSourceSwitches].join(",")}`
       );
     }
-    check("the player requested one bounded recovery roster", refreshRequests === 1, `${refreshRequests} refresh request(s)`);
+    // Normal expiry and generic exhaustion own exactly one cache-bypassing
+    // resolve. Repeated-expiry mode has two deliberately separate bounded
+    // stages: one renewal for the signed target, then (only if that renewed
+    // target is proven dead and no current peer is usable) the player's
+    // one-per-title automatic roster rescue. The latter can discover a late
+    // provider absent from a partial first recovery; it must never become a
+    // third request/loop.
+    const refreshRequestBudget = SESSION_EXHAUSTION_MODE ? 2 : 1;
+    const exhaustionClaimAt = sessionTargetFailures.find(
+      (failure) => failure.reason === "hls_session_refresh_exhausted"
+    )?.at;
+    const secondRequestIsPostExhaustion =
+      refreshRequests < 2 ||
+      (exhaustionClaimAt != null &&
+        (refreshRequestStartedAts[1] ?? 0) >= exhaustionClaimAt);
+    check(
+      "the player kept recovery roster requests inside the bounded budget",
+      refreshRequests >= 1 &&
+        refreshRequests <= refreshRequestBudget &&
+        secondRequestIsPostExhaustion,
+      `${refreshRequests}/${refreshRequestBudget} refresh request(s); ` +
+        `second-after-exhaustion=${secondRequestIsPostExhaustion}`
+    );
     check("the recovery API returned a fresh generation", refreshStatus === 200 && refreshNonce != null, `HTTP ${refreshStatus}, nonce=${refreshNonce != null}`);
     check("fresh sources reached an advancing decoded frame", state.width > 0 && state.currentTime > 0, `${state.width}x${state.height} via ${state.sourceId}`);
     check(
@@ -594,6 +622,7 @@ async function main(): Promise<void> {
     prematureSessionSourceSwitches: [...prematureSessionSourceSwitches],
     watchPath: WATCH_PATH,
     refreshRequests,
+    refreshRequestStartedAts,
     refreshStatus,
     refreshNoncePresent: refreshNonce != null,
     refreshSourceCount,

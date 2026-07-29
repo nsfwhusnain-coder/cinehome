@@ -29,6 +29,7 @@ import {
   type SourceAttemptToken,
 } from "@/lib/playback/source-attempt";
 import { MediaPauseIntentController } from "@/lib/playback/pause-intent";
+import { RosterRecoveryArbiter } from "@/lib/playback/roster-recovery";
 import { preresolvePlayback } from "@/lib/playback-preresolve";
 import {
   annotateLevelHeights,
@@ -903,8 +904,12 @@ export function VideoPlayer({
    * the same id is observed; otherwise stays armed and harmless.
    */
   const pendingUrlRefreshRef = useRef(false);
-  /** One automatic cache-bypassing roster refresh per title session. */
-  const automaticRosterRefreshRef = useRef(false);
+  /**
+   * Coordinates signed-session renewal with the separate one-per-title
+   * automatic roster rescue. Discovery-close effects defer while a renewed
+   * generation is still settling.
+   */
+  const rosterRecoveryArbiterRef = useRef(new RosterRecoveryArbiter());
   /**
    * First healthy decode landed — full-screen hunting overlay never returns.
    * Pre-play CDN auto-upgrade is also frozen after this.
@@ -1209,16 +1214,16 @@ export function VideoPlayer({
 
   const requestAutomaticRosterRefresh = useCallback((): boolean => {
     const retrySources = onRetrySourcesRef.current;
-    if (
-      automaticRosterRefreshRef.current ||
-      !retrySources
-    ) {
-      return false;
-    }
-    automaticRosterRefreshRef.current = true;
+    if (!retrySources) return false;
+    const decision = rosterRecoveryArbiterRef.current.requestAutomatic();
+    if (decision === "exhausted") return false;
     setError(null);
     setBuffering(true);
     if (everPlayedRef.current) setIsSwitchingServer(true);
+    // Session renewal still owns this title. A healthy generation drops this
+    // deferred rescue; a terminal claim releases ownership and re-enters this
+    // function to start the one real automatic request.
+    if (decision === "defer") return true;
     void Promise.resolve()
       .then(() => retrySources())
       .catch(() => {
@@ -1280,7 +1285,7 @@ export function VideoPlayer({
     setProbedHealth({});
     probeInFlightRef.current.clear();
     pendingUrlRefreshRef.current = false;
-    automaticRosterRefreshRef.current = false;
+    rosterRecoveryArbiterRef.current.reset();
     clearSessionRefresh();
     if (failoverNoticeTimerRef.current) {
       clearTimeout(failoverNoticeTimerRef.current);
@@ -1933,6 +1938,7 @@ export function VideoPlayer({
       if (!source || source.id !== attempt.sourceId) {
         return false;
       }
+      rosterRecoveryArbiterRef.current.endSession(attempt.sourceId);
       markSourceFailed(attempt.sourceId);
       console.info(
         "[playback-failure]",
@@ -2101,6 +2107,9 @@ export function VideoPlayer({
 
     const sourceAttempt = sourceAttemptControllerRef.current.begin(
       activeSourceRef.current?.id ?? effectiveSrc
+    );
+    rosterRecoveryArbiterRef.current.cancelSessionUnless(
+      sourceAttempt.sourceId
     );
     // Bind the HTMLMediaElement error to this exact source generation. A
     // component-wide listener that looked up "currentToken" at callback time
@@ -2660,6 +2669,9 @@ export function VideoPlayer({
               );
               return;
             }
+            rosterRecoveryArbiterRef.current.beginSession(
+              sourceAttempt.sourceId
+            );
 
             try {
               hls.stopLoad();
@@ -3215,6 +3227,7 @@ export function VideoPlayer({
         const attempt = sourceAttemptControllerRef.current.currentToken();
         if (attempt) {
           sourceAttemptControllerRef.current.noteHealthyPlayback(attempt);
+          rosterRecoveryArbiterRef.current.endSession(attempt.sourceId);
         }
         stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
         return;
