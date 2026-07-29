@@ -1559,7 +1559,7 @@ function upstreamRetryAfterMs(value: string | null, retryIndex: number): number 
     UPSTREAM_RATE_LIMIT_BACKOFF_MS[
       Math.min(retryIndex, UPSTREAM_RATE_LIMIT_BACKOFF_MS.length - 1)
     ] ?? UPSTREAM_RATE_LIMIT_BACKOFF_MS[0];
-  let requested = scheduled;
+  let requested: number = scheduled;
   if (value) {
     const seconds = Number(value);
     if (Number.isFinite(seconds) && seconds >= 0) {
