@@ -32,12 +32,28 @@ describe("buildFastDebridResponse", () => {
     });
   });
 
-  it("returns null when the cache contains only browser-incompatible media", () => {
+  it("still answers from an MKV-only cache hit — the container is remuxed, not rejected", () => {
+    const mkv = debrid({
+      id: "mkv",
+      url: "https://download.real-debrid.example/movie.mkv",
+      container: "mkv",
+    });
+    const response = buildFastDebridResponse([mkv]);
+    // `streamUrl` stays the raw source URL: it is the fast path's hint, and the
+    // player derives the real /api/transcode?mode=remux URL from the source it
+    // selects (see sourceDelivery in video-player.tsx). What matters here is
+    // that an MKV-only hit is no longer discarded as unplayable.
+    expect(response?.status).toBe("available");
+    expect(response?.sources).toEqual([mkv]);
+  });
+
+  it("returns null when the cache holds only media this browser cannot decode", () => {
     const response = buildFastDebridResponse([
       debrid({
-        id: "mkv",
+        id: "hevc",
         url: "https://download.real-debrid.example/movie.mkv",
         container: "mkv",
+        codec: "hevc",
       }),
     ]);
     expect(response).toBeNull();

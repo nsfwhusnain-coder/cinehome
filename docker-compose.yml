@@ -29,6 +29,13 @@ services:
       # during a cold HEVC/MKV start. Keep it opt-in until the worker is
       # redesigned as a bounded, segment-on-demand pipeline.
       - TRANSCODER_ENABLED=${TRANSCODER_ENABLED:-0}
+      # Remuxing is the OTHER mode of the same worker and is default ON. It is
+      # a container rewrite with `-c copy`: no decode, no encode, measured 60s
+      # of 4K AV1 rewrapped in 6s wall. MKV opens in no browser, Safari
+      # included, so without this every MKV release - which is where nearly all
+      # real 4K lives - is dead inventory. Disk is bounded separately
+      # (TRANSCODER_REMUX_MIN_FREE_BYTES / _MAX_JOB_BYTES); set to 0 to disable.
+      - REMUX_ENABLED=${REMUX_ENABLED:-1}
       # Lordflix-class multi-source API (cinepro-core on embedin_default network):
       - CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}
       # Shared warm Chromium worker. The active primary wave has one measured

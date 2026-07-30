@@ -32,9 +32,18 @@ export async function GET(req: NextRequest) {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (process.env.TRANSCODER_ENABLED !== "1") {
+  /**
+   * Serves segments for BOTH modes. The key is an opaque hash and carries no
+   * mode, so this cannot tell a remux segment from a transcode one - gate on
+   * "is either mode enabled" and let /api/transcode itself refuse the mode it
+   * does not allow. Gating on TRANSCODER_ENABLED alone would have made every
+   * remux playlist resolve and then 503 on its first segment.
+   */
+  const anyModeEnabled =
+    process.env.REMUX_ENABLED !== "0" || process.env.TRANSCODER_ENABLED === "1";
+  if (!anyModeEnabled) {
     return NextResponse.json(
-      { error: "Server transcoding is unavailable" },
+      { error: "Server media processing is unavailable" },
       { status: 503 }
     );
   }
@@ -76,10 +85,15 @@ export async function GET(req: NextRequest) {
   }
 
   const body = await tcRes.arrayBuffer();
+  // The two output shapes have different segment containers and must not be
+  // mislabelled: the re-encode ladder emits MPEG-TS (.ts), the remux path emits
+  // fMP4 (init.mp4 + seg_*.m4s). Safari's native HLS in particular rejects an
+  // fMP4 init segment served as video/mp2t.
+  const isFmp4 = f.endsWith(".m4s") || f.endsWith(".mp4");
   return new NextResponse(body, {
     status: 200,
     headers: {
-      "Content-Type": "video/mp2t",
+      "Content-Type": isFmp4 ? "video/mp4" : "video/mp2t",
       // Segments are immutable once written (filename is segment index).
       "Cache-Control": "public, max-age=3600",
     },

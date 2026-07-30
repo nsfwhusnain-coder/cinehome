@@ -66,3 +66,7 @@ db/*.db-*
 # Agent browser QA (screenshots + session cookies)
 .browser-qa/
 .env.browser
+
+# Remuxed/transcoded HLS output — regenerable, and a single 4K remux is
+# tens of GB. Bind-mounted into the container; never versioned.
+transcode-cache/

@@ -4,11 +4,12 @@
  * string transform so it can be unit-tested without spinning up Next.js or
  * the transcoder mini-service.
  *
- * Rewrites every non-comment line — a segment (.ts) reference OR a variant
- * sub-playlist (.m3u8) reference; the master-vs-media distinction doesn't
- * matter, both are "take the basename, point it at the seg proxy route" — to
- * `/api/transcode/seg?key=<key>&f=<basename>`, so the browser never talks to
- * the transcoder's internal :3040 port directly.
+ * Rewrites every non-comment line — a segment (.ts/.m4s) reference OR a
+ * variant sub-playlist (.m3u8) reference; the master-vs-media distinction
+ * doesn't matter, both are "take the basename, point it at the seg proxy
+ * route" — to `/api/transcode/seg?key=<key>&f=<basename>`, so the browser
+ * never talks to the transcoder's internal :3040 port directly. Plus the one
+ * comment line that carries a URL, `#EXT-X-MAP` (see below).
  *
  * Applied TWICE per playback session for a multi-rung ladder:
  *   1. The route's top-level GET rewrites the fetched master.m3u8, turning
@@ -26,12 +27,30 @@
 
 const SEG_ROUTE_PREFIX = "/api/transcode/seg";
 
+/**
+ * The one tag whose payload is a URL rather than metadata.
+ *
+ * fMP4 output (the remux path — `-hls_segment_type fmp4`) puts the
+ * initialization segment in `#EXT-X-MAP:URI="init.mp4"`, and a comment-line
+ * skip leaves it pointing at a bare filename the browser resolves against
+ * `/api/transcode`, i.e. `/api/init.mp4` — a 404, and with no init segment
+ * NOTHING in an fMP4 stream decodes. The MPEG-TS ladder never hit this because
+ * TS segments are self-initializing and emit no EXT-X-MAP at all.
+ */
+const EXT_X_MAP_URI_RE = /(#EXT-X-MAP:[^\n]*?URI=")([^"]+)(")/i;
+
 export function rewritePlaylist(playlist: string, key: string): string {
   const base = `${SEG_ROUTE_PREFIX}?key=${key}&f=`;
   return playlist
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
+      if (trimmed.toUpperCase().startsWith("#EXT-X-MAP:")) {
+        return line.replace(EXT_X_MAP_URI_RE, (_m, head, uri, tail) => {
+          const file = String(uri).split("/").pop() || String(uri);
+          return `${head}${base}${encodeURIComponent(file)}${tail}`;
+        });
+      }
       if (!trimmed || trimmed.startsWith("#")) return line;
       // Defensively reduce to a basename before building the URL — the
       // transcoder only ever emits flat filenames (no subdirectories), but

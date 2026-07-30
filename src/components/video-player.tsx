@@ -17,6 +17,7 @@ import {
   speedScoreFromLatencyMs,
   isMultiRendition,
   isSourcePlayableHere,
+  sourceDelivery,
   HD_FLOOR_HEIGHT,
   TRANSCODE_MAX_HEIGHT,
 } from "@/lib/playback/source-quality";
@@ -1100,13 +1101,21 @@ export function VideoPlayer({
   );
   const src = activeSource?.url ?? "";
   const streamType = activeSource?.type ?? "hls";
-  // Transcode routing: if the active source can't play natively in THIS
-  // browser (HEVC/AV1 it can't decode, or ANY MKV/WebM container — no
-  // browser plays those directly), hand it to the in-container transcoder
-  // (AMD VAAPI h264_vaapi → H.264 HLS) so it plays anyway. Natively-playable
-  // sources play direct (zero transcode cost). Safari/HW-Chrome never hit this
-  // for HEVC/AV1; MKV/WebM ALWAYS hits it, on every browser.
-  const needsTranscode = !!activeSource && !isSourcePlayableHere(activeSource);
+  /**
+   * Delivery routing — three outcomes, see `sourceDelivery`:
+   *
+   *  direct  play the URL as-is (zero server cost).
+   *  remux   container-only problem. MKV/WebM open in no browser, but many hold
+   *          streams this browser decodes natively (AV1, H.264, Opus), so the
+   *          server rewraps to fMP4 with `-c copy` — no decode, no encode.
+   *          This is what lets a 4K AV1 MKV play at its real 4K, because
+   *          nothing is being re-encoded and so nothing is being downscaled.
+   *  transcode  the codec itself is undecodable here. Genuine re-encode, still
+   *          production-disabled, so these remain visible-but-unselectable.
+   */
+  const delivery = activeSource ? sourceDelivery(activeSource) : "unavailable";
+  const needsRemux = !!activeSource && delivery === "remux";
+  const needsTranscode = !!activeSource && delivery === "unavailable";
   // Transcode target policy: live 4K transcoding on the shared VAAPI encoder
   // is too slow-starting to be viable (see mini-services/transcoder header —
   // measured ~0.9x realtime at 4K vs ~3.3x at 1080p) — always cap the
@@ -1119,17 +1128,25 @@ export function VideoPlayer({
     needsTranscode && activeSource
       ? Math.min(activeSource.maxHeight || TRANSCODE_MAX_HEIGHT, TRANSCODE_MAX_HEIGHT)
       : TRANSCODE_MAX_HEIGHT;
-  const transcodeUrl =
-    needsTranscode && tmdbId && activeSource
+  /**
+   * Remux deliberately does NOT pass a height cap. TRANSCODE_MAX_HEIGHT exists
+   * because re-encoding 4K on the shared VAAPI encoder is too slow to be
+   * viable; a stream copy re-encodes nothing, so capping it would throw away
+   * the source's real resolution for no saving at all. This is the path that
+   * finally delivers true 4K.
+   */
+  const serverPath = needsRemux || needsTranscode;
+  const serverUrl =
+    serverPath && tmdbId && activeSource
       ? `/api/transcode?type=${mediaType ?? "movie"}&id=${tmdbId}` +
         `&sourceId=${encodeURIComponent(activeSource.id)}` +
-        `&maxHeight=${transcodeMaxHeight}` +
+        (needsRemux ? `&mode=remux` : `&maxHeight=${transcodeMaxHeight}`) +
         (mediaType === "tv" && tvSeason && tvEpisode
           ? `&season=${tvSeason}&episode=${tvEpisode}`
           : "")
       : "";
-  const effectiveSrc = needsTranscode && transcodeUrl ? transcodeUrl : src;
-  const effectiveStreamType = needsTranscode && transcodeUrl ? "hls" : streamType;
+  const effectiveSrc = serverPath && serverUrl ? serverUrl : src;
+  const effectiveStreamType = serverPath && serverUrl ? "hls" : streamType;
   // Play as soon as we have a source URL — never wait for scrape enrichment.
   const hasStream = !!src;
 
@@ -1217,7 +1234,7 @@ export function VideoPlayer({
       ? `Found ${totalSourceCount} source${totalSourceCount === 1 ? "" : "s"} — choosing the best…`
       : null // no sources yet: let LoadingScreen run its "Finding sources…" rotation
     : needsTranscode
-      ? "Preparing stream — this can take a few seconds…"
+      ? (needsRemux ? "Repackaging for your browser…" : "Preparing stream — this can take a few seconds…")
       : levelsPending
         ? activeSourceIndex > 0 && totalSourceCount > 1
           ? `Connecting… (source ${activeSourceIndex} of ${totalSourceCount})`
@@ -2184,6 +2201,9 @@ export function VideoPlayer({
 
     // Home `/api/hls` (same-origin cookies) or Cloudflare Worker (signed token, no cookies).
     const isHomeHlsProxy = effectiveSrc.startsWith("/api/hls/");
+    // Covers remux too: both are served as HLS from /api/transcode and both
+    // deserve the longer manifest/zero-progress windows while the first segment
+    // is produced.
     const isTranscoded = effectiveSrc.startsWith("/api/transcode");
     const isWorkerProxy =
       effectiveSrc.includes("workers.dev") ||
@@ -3977,7 +3997,7 @@ export function VideoPlayer({
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-white/80" />
           <span>
             Switching…
-            {needsTranscode ? " Preparing stream, this can take a few seconds." : ""}
+            {needsRemux ? " Repackaging for your browser." : needsTranscode ? " Preparing stream, this can take a few seconds." : ""}
           </span>
         </div>
       )}

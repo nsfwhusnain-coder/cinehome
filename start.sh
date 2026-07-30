@@ -24,10 +24,21 @@ start_scraper() {
 # request can consume unbounded CPU/RAM. Explicit opt-in only while retained
 # for isolated development; it never blocks app boot.
 start_transcoder() {
-  if [ "${TRANSCODER_ENABLED:-0}" != "1" ]; then
-    echo "[start.sh] transcoder disabled (set TRANSCODER_ENABLED=1 to opt in)"
+  # The worker serves TWO modes with very different resource profiles, so it
+  # starts if EITHER is enabled and the app-side routes decide which mode a
+  # request may use:
+  #
+  #   transcode (TRANSCODER_ENABLED) - decodes and re-encodes. Production
+  #     default OFF: a cold 4K HEVC job measured 17.4 GiB and 1378% CPU.
+  #   remux     (REMUX_ENABLED)      - stream copy, container rewrite only.
+  #     Default ON: measured 60s of 4K AV1 rewrapped in 6s wall (~10x realtime),
+  #     I/O bound rather than CPU bound. This is what makes MKV releases
+  #     playable at all, since MKV plays in no browser.
+  if [ "${TRANSCODER_ENABLED:-0}" != "1" ] && [ "${REMUX_ENABLED:-1}" != "1" ]; then
+    echo "[start.sh] media worker disabled (TRANSCODER_ENABLED=1 and/or REMUX_ENABLED=1 to opt in)"
     return 0
   fi
+  echo "[start.sh] media worker: transcode=${TRANSCODER_ENABLED:-0} remux=${REMUX_ENABLED:-1}"
   if [ -f /app/mini-services/transcoder/index.ts ]; then
     cd /app/mini-services/transcoder
     bun run index.ts &

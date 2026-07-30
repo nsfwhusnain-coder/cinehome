@@ -107,3 +107,44 @@ describe("isMasterPlaylist", () => {
     expect(isMasterPlaylist(["#EXTM3U", "#EXT-X-ENDLIST"].join("\n"))).toBe(false);
   });
 });
+
+/**
+ * fMP4 output (remux path). The init segment lives in a COMMENT line, which the
+ * original rewriter skipped wholesale — leaving `init.mp4` to resolve against
+ * /api/transcode as /api/init.mp4. An fMP4 stream decodes nothing without its
+ * init segment, so this was a total-failure bug, invisible on the TS ladder.
+ */
+describe("rewritePlaylist — fMP4 / EXT-X-MAP", () => {
+  const key = "a".repeat(24);
+
+  it("rewrites the EXT-X-MAP init segment URI through the seg proxy", () => {
+    const playlist = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:7",
+      "#EXT-X-TARGETDURATION:6",
+      '#EXT-X-MAP:URI="init.mp4"',
+      "#EXTINF:6.000000,",
+      "seg_00000.m4s",
+    ].join("\n");
+    const out = rewritePlaylist(playlist, key);
+    expect(out).toContain(`#EXT-X-MAP:URI="/api/transcode/seg?key=${key}&f=init.mp4"`);
+    expect(out).toContain(`/api/transcode/seg?key=${key}&f=seg_00000.m4s`);
+  });
+
+  it("keeps other EXT-X-MAP attributes intact", () => {
+    const out = rewritePlaylist('#EXT-X-MAP:URI="init.mp4",BYTERANGE="720@0"', key);
+    expect(out).toBe(
+      `#EXT-X-MAP:URI="/api/transcode/seg?key=${key}&f=init.mp4",BYTERANGE="720@0"`
+    );
+  });
+
+  it("reduces an EXT-X-MAP URI to its basename, like every other rewritten line", () => {
+    const out = rewritePlaylist('#EXT-X-MAP:URI="../../etc/init.mp4"', key);
+    expect(out).toBe(`#EXT-X-MAP:URI="/api/transcode/seg?key=${key}&f=init.mp4"`);
+  });
+
+  it("leaves comment tags that carry no URI untouched", () => {
+    const playlist = "#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS";
+    expect(rewritePlaylist(playlist, key)).toBe(playlist);
+  });
+});

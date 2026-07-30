@@ -76,6 +76,67 @@ export function rungLabel(height: number): string {
 }
 
 /**
+ * REMUX: rewrap an MKV/WebM into fMP4 HLS without touching the bitstream.
+ *
+ * This is a fundamentally different operation from everything else in this file
+ * and must not be confused with it. Transcoding DECODES and RE-ENCODES, which is
+ * why the worker is production-disabled (a cold 4K HEVC job measured 17.4 GiB
+ * and 1378% CPU). A remux copies the encoded streams byte-for-byte and only
+ * rewrites the container, so it costs essentially nothing: measured on this box,
+ * 60s of 3840x2160 10-bit AV1 remuxed in 6s wall — roughly 10x realtime, I/O
+ * bound on the download rather than the CPU.
+ *
+ * Why it is worth having: MKV plays in NO browser, not even Safari, so every
+ * MKV release is currently unusable regardless of what is inside it. But a large
+ * share of them hold codecs the browser CAN decode — notably AV1 (Chrome and
+ * Firefox decode it natively) and H.264. Interstellar's cached 4K, for example,
+ * is `AV1 Main 3840x2160 yuv420p10le` with Opus audio in an MKV: both streams
+ * are natively decodable by Chrome, and only the container blocks playback.
+ * Rewrapping it delivers genuine 4K with no encoding at all.
+ *
+ * fMP4 segments (`-hls_segment_type fmp4`) are required, not a preference:
+ * MPEG-TS cannot carry AV1 or HEVC. That also means an `#EXT-X-MAP` init
+ * segment and `#EXT-X-VERSION:7`, both of which hls.js handles natively.
+ *
+ * Audio is copied too. Opus/AAC/FLAC ride along fine in fMP4; a source whose
+ * audio the browser cannot decode is a failover case, exactly as it is today,
+ * and is not worth an encode pass on the shared host.
+ */
+export function buildRemuxArgs(input: {
+  inputUrl: string;
+  outDir: string;
+  segmentDurationS?: number;
+}): string[] {
+  const seg = input.segmentDurationS ?? DEFAULT_SEGMENT_DURATION_S;
+  return [
+    "-hide_banner",
+    "-loglevel", "error",
+    // Keep the reconnect behaviour the transcode path relies on: these are long
+    // reads from a remote CDN and a dropped socket must not kill the job.
+    "-reconnect", "1",
+    "-reconnect_streamed", "1",
+    "-reconnect_delay_max", "5",
+    "-i", input.inputUrl,
+    // The whole point: copy, never encode.
+    "-c:v", "copy",
+    "-c:a", "copy",
+    // First audio + first video only. Multi-track MKVs are common and a stray
+    // subtitle/attachment stream will otherwise fail the mux into fMP4.
+    "-map", "0:v:0",
+    "-map", "0:a:0?",
+    "-f", "hls",
+    "-hls_time", String(seg),
+    "-hls_playlist_type", "event",
+    "-hls_segment_type", "fmp4",
+    "-hls_list_size", "0",
+    "-hls_flags", "independent_segments",
+    "-hls_fmp4_init_filename", "init.mp4",
+    "-hls_segment_filename", join(input.outDir, "seg_%05d.m4s"),
+    join(input.outDir, "master.m3u8"),
+  ];
+}
+
+/**
  * Ladder rungs for a source, filtered to min(sourceHeight, maxHeight) so we
  * never upscale and never exceed the caller's requested ceiling. Highest
  * rung first (matches LADDER's order). Falls back to a single synthetic rung

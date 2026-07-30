@@ -34,17 +34,36 @@ export async function GET(req: NextRequest) {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (process.env.TRANSCODER_ENABLED !== "1") {
+  const url = new URL(req.url);
+  /**
+   * Two modes, gated independently because their cost is not remotely
+   * comparable.
+   *
+   * `remux` is a container rewrite with `-c copy`: no decode, no encode.
+   * Measured on this host, 60s of 3840x2160 10-bit AV1 rewrapped in 6s wall.
+   * It is what makes MKV releases playable at all - MKV opens in no browser,
+   * Safari included, even when the streams inside (AV1, H.264, Opus) are ones
+   * the browser decodes natively. Default ON.
+   *
+   * `transcode` decodes and re-encodes and stays default OFF: a cold 4K HEVC
+   * job measured 17.4 GiB and 1378% CPU on this shared box.
+   */
+  const mode = url.searchParams.get("mode") === "remux" ? "remux" : "transcode";
+  const modeEnabled =
+    mode === "remux"
+      ? process.env.REMUX_ENABLED !== "0"
+      : process.env.TRANSCODER_ENABLED === "1";
+  if (!modeEnabled) {
     return NextResponse.json(
       {
         error:
-          "Server transcoding is unavailable; choose a browser-compatible source",
+          mode === "remux"
+            ? "Remuxing is disabled; choose a browser-compatible source"
+            : "Server transcoding is unavailable; choose a browser-compatible source",
       },
       { status: 503 }
     );
   }
-
-  const url = new URL(req.url);
 
   // NOTE: segment serving lives in /api/transcode/seg/route.ts — Next.js App
   // Router requires sub-paths to have their own route.ts, so the seg handler
@@ -92,7 +111,7 @@ export async function GET(req: NextRequest) {
   // the master.m3u8 once the first segment exists (live), not after full encode.
   const tcUrl = `${TRANSCODER_URL}/transcode?u=${encodeURIComponent(
     source.url
-  )}&maxHeight=${maxHeight}`;
+  )}&maxHeight=${maxHeight}&mode=${mode}`;
   const tcRes = await fetch(tcUrl, {
     signal: AbortSignal.timeout(TRANSCODER_TIMEOUT_MS),
     headers: { Accept: "application/vnd.apple.mpegurl" },
@@ -114,7 +133,7 @@ export async function GET(req: NextRequest) {
   // We also need the cache key for the seg route — ask the transcoder for it.
   const rawPlaylist = await tcRes.text();
   const keyResp = await fetch(
-    `${TRANSCODER_URL}/key?u=${encodeURIComponent(source.url)}&maxHeight=${maxHeight}`,
+    `${TRANSCODER_URL}/key?u=${encodeURIComponent(source.url)}&maxHeight=${maxHeight}&mode=${mode}`,
     { signal: AbortSignal.timeout(5_000) }
   ).catch(() => null);
   let cacheKey = "";

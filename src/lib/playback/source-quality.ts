@@ -12,14 +12,15 @@ import { isBrowserPlayableContainer } from "./debrid/torrentio";
  * transcoding on the owner's single shared VAAPI encoder is slow-starting
  * (~0.9x realtime — see mini-services/transcoder/index.ts) so anything
  * routed through /api/transcode is capped to this height regardless of the
- * source's real ceiling: a 4K HEVC/MKV source becomes a smooth, universal
- * 1080p H.264 ABR ladder that starts reasonably fast. Real 4K playback only
- * ever happens on the native-decode path (e.g. Safari playing a 4K
- * HEVC-in-MP4 source directly — HEVC is native there, no transcode needed at
- * all); MKV/WebM never has a native path on ANY browser, so a 4K MKV source
- * is always delivered at this cap, never the source's true 4K. Shared with
- * video-player.tsx so the actual encode height and the badge/UI claim can
- * never drift apart.
+ * source's real ceiling: a 4K source that must be RE-ENCODED becomes a
+ * smooth, universal 1080p H.264 ABR ladder that starts reasonably fast.
+ *
+ * Scope note: this cap applies to re-encoding only. It does NOT apply to the
+ * remux route (`sourceDelivery` -> "remux"), which is a stream copy — no
+ * decoder, no encoder, so there is nothing to be slow and nothing to gain by
+ * downscaling. That is why a 4K MKV now plays at its real 4K where it
+ * previously could only ever arrive at this cap. Shared with video-player.tsx
+ * so the actual encode height and the badge/UI claim can never drift apart.
  */
 export const TRANSCODE_MAX_HEIGHT = 1080;
 
@@ -279,14 +280,14 @@ function baseQualityBadge(source: PlaybackSource): string {
   return source.quality !== "auto" ? source.quality : "Auto";
 }
 
-/** Short, honest marker for a source this browser cannot decode or demux.
- * The legacy whole-file transcoder is production-disabled after exceeding
- * safe shared-host resource limits, so these rows cannot be selected. */
+/** Short, honest marker for a source this browser cannot DECODE. Container
+ * problems no longer earn this tag — those are remuxed and play normally — so
+ * it now means what it says: no route exists, in this browser, at all. */
 const UNAVAILABLE_BADGE_TAG = "unavailable";
 
 export function qualityBadge(source: PlaybackSource): string {
   const badge = baseQualityBadge(source);
-  // A release this browser cannot decode/demux says so before it is clicked.
+  // A release this browser cannot decode says so before it is clicked.
   const withCompatTag = isSourcePlayableHere(source)
     ? badge
     : `${badge} · ${UNAVAILABLE_BADGE_TAG}`;
@@ -394,33 +395,78 @@ function detectAv1Support(): boolean {
 }
 
 /**
- * False for a release this exact browser cannot play directly.
- * Container-first, then codec-first, independent of
- * `compat`:
- *  - Container: MKV/WebM play in NO browser, not even Safari, regardless of
- *    the codec inside (`isBrowserPlayableContainer`, shared with the
- *    debrid tier's own parser in torrentio.ts) — this is checked BEFORE
- *    codec so an MKV release is never mistakenly reported playable just
- *    because it happens to hold plain H.264. This also fixes a real bug
- *    where an `.mkv` source that Torrentio parsed as `compat:"native"`
- *    (H.264 inside, no HDR) was tagged natively playable even though no
- *    browser can open the container itself.
- *  - `codec:"av1"` — gated purely on `browserSupportsAv1()`, regardless of
- *    whatever `compat` the RD agent stamps on it (a release can be tagged
- *    `compat:"native"` for the HEVC/HDR/MKV sense and still be undecodable
- *    AV1 on an old Safari, or vice versa be `compat:"safari"`-tagged for an
- *    unrelated reason and still be fine AV1 on Chrome).
- *  - Everything else (`hevc`/`h264`/`unknown`) — the existing `compat`-based
- *    HEVC gate, unchanged.
- * Embed sources never carry `container`/`compat`/non-h264 `codec`, so they
- * always read true (unchanged: "always treated as natively playable" per
- * the type doc). The Server list keeps incompatible releases visible for
- * inventory honesty, but production disables selection and auto-pick.
+ * How this source can be delivered to THIS browser.
+ *
+ * - "direct"      container and codec are both fine; attach the URL as-is.
+ * - "remux"       the CONTAINER is the only problem. MKV/WebM open in no
+ *                 browser, Safari included, but a large share of them hold
+ *                 streams the browser decodes natively — AV1 and H.264 video,
+ *                 Opus/AAC audio. Rewrapping to fMP4 is a stream copy (no
+ *                 decode, no encode; measured 60s of 4K AV1 in 6s wall), so
+ *                 these are genuinely playable rather than dead inventory.
+ * - "unavailable" the CODEC cannot be decoded here. No container change helps:
+ *                 Chrome cannot decode HEVC in any wrapper, ever.
+ */
+export type SourceDelivery = "direct" | "remux" | "unavailable";
+
+function codecDecodableHere(source: PlaybackSource): boolean {
+  if (source.codec === "av1") return browserSupportsAv1();
+  if (source.codec === "hevc") return browserSupportsHevc();
+  if (source.codec === "h264") return true;
+  // Unknown codec: fall back to the release-level compat hint. Note MKV forces
+  // that hint to "safari", so an unknown-codec MKV stays conservative here
+  // rather than being optimistically surfaced and failing on first frame.
+  return source.compat !== "safari" || browserSupportsHevc();
+}
+
+export function sourceDelivery(source: PlaybackSource): SourceDelivery {
+  const containerOk =
+    !source.container || isBrowserPlayableContainer(source.container);
+  if (!codecDecodableHere(source)) return "unavailable";
+  return containerOk ? "direct" : "remux";
+}
+
+/**
+ * Can this source reach the screen at all, by any route?
+ *
+ * Deliberately true for "remux": the container is not a dead end any more, so
+ * everything that gates *inventory* (auto-play pool, unavailable badge, health
+ * evidence) should let those through. Callers that care about the COST of the
+ * route — ranking, mid-playback upgrades — must ask `sourceDelivery` instead,
+ * because a remux still spends server bandwidth and a couple of seconds of
+ * startup that a direct URL does not.
  */
 export function isSourcePlayableHere(source: PlaybackSource): boolean {
-  if (source.container && !isBrowserPlayableContainer(source.container)) return false;
-  if (source.codec === "av1") return browserSupportsAv1();
-  return source.compat !== "safari" || browserSupportsHevc();
+  return sourceDelivery(source) !== "unavailable";
+}
+
+/**
+ * Order between two delivery routes, as a comparator fragment
+ * (negative = `a` first, 0 = no opinion).
+ *
+ * Two rules, and the second is the whole reason this exists:
+ *
+ *  1. "unavailable" always sinks. Nothing about it is playable.
+ *  2. "direct" beats "remux" ONLY when it costs no resolution. A remux is a
+ *     stream copy, so a 4K MKV remuxes to 4K — capping it behind a 1080p
+ *     direct source would throw away the resolution the user actually has,
+ *     which is exactly the bug this delivery split was built to fix. At equal
+ *     height the direct route wins, since the rewrap buys nothing there.
+ */
+function compareDelivery(
+  a: PlaybackSource,
+  b: PlaybackSource,
+  aHeight: number,
+  bHeight: number
+): number {
+  const aDel = sourceDelivery(a);
+  const bDel = sourceDelivery(b);
+  if (aDel === bDel) return 0;
+  if (aDel === "unavailable") return 1;
+  if (bDel === "unavailable") return -1;
+  if (aDel === "direct" && aHeight >= bHeight) return -1;
+  if (bDel === "direct" && bHeight >= aHeight) return 1;
+  return 0;
 }
 
 function hevcPenalty(): number {
@@ -487,20 +533,33 @@ function isPhoenixSource(source: PlaybackSource): boolean {
 
 /** Strong bonus so a 4K/1080p debrid source outranks embed 1080p — but never enough to beat the transcode-required penalty below. */
 const DEBRID_BASE_BONUS = 150;
-/** Large enough that a transcode-required (HEVC/AV1-incapable, or MKV/WebM) debrid source drops below a plain natively-playable 1080p source — transcoding has real startup latency, so it must never win a tie. */
+/** Large enough that an undecodable (HEVC/AV1-incapable) debrid source drops below a plain natively-playable 1080p source — it cannot be played at all, so it must never win a tie. */
 const DEBRID_TRANSCODE_PENALTY = 220;
+/**
+ * Remux tax. Small ON PURPOSE, and the size is load-bearing: it must be big
+ * enough to lose an equal-height tie to a direct source, and smaller than the
+ * 30-point gap between the 4K (120) and 1080p (90) height bands, so a 4K MKV
+ * still outscores a 1080p direct file. A stream copy costs some server
+ * bandwidth and ~2s of startup — not a resolution tier.
+ */
+const DEBRID_REMUX_PENALTY = 25;
 
 /**
- * PREMIUM debrid tier adjustment. A source that needs /api/transcode to play
- * here (HEVC/AV1 this browser can't decode, OR any MKV/WebM container —
- * `!isSourcePlayableHere`) must NOT outrank — and must not become the
- * auto-default over — a genuinely natively-playable source, so the penalty
- * only lifts when the source plays here without transcoding.
+ * PREMIUM debrid tier adjustment, scaled by how the source has to be delivered
+ * (`sourceDelivery`): full bonus for a direct URL, a light tax for a stream
+ * copy, and a penalty that wipes the bonus out for anything this browser
+ * genuinely cannot decode.
  */
 function debridScoreAdjustment(source: PlaybackSource): number {
   if (source.origin !== "debrid") return 0;
-  const needsTranscode = !isSourcePlayableHere(source);
-  return DEBRID_BASE_BONUS - (needsTranscode ? DEBRID_TRANSCODE_PENALTY : 0);
+  const delivery = sourceDelivery(source);
+  const tax =
+    delivery === "unavailable"
+      ? DEBRID_TRANSCODE_PENALTY
+      : delivery === "remux"
+        ? DEBRID_REMUX_PENALTY
+        : 0;
+  return DEBRID_BASE_BONUS - tax;
 }
 
 export function scoreSource(source: PlaybackSource): number {
@@ -566,14 +625,12 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
     const bMatch = pref && matchesPreference(b, pref) ? 1 : 0;
     if (aMatch !== bMatch) return bMatch - aMatch;
 
-    // Honesty (Server list, req 4): a release this browser can't play
-    // natively (HEVC/AV1 needing another browser, or any MKV/WebM — now
-    // routed through /api/transcode instead) never outranks one that
-    // actually plays here — still selectable, just sorted below what's
-    // playable (transcoding has real startup latency).
-    const aPlayable = isSourcePlayableHere(a) ? 1 : 0;
-    const bPlayable = isSourcePlayableHere(b) ? 1 : 0;
-    if (aPlayable !== bPlayable) return bPlayable - aPlayable;
+    // Honesty (Server list, req 4): a release this browser can't decode sinks
+    // to the bottom — still listed, since inventory is real, but never above
+    // something that plays. Same rule the auto-pick uses, so the list's top
+    // row and the source that actually starts agree.
+    const deliveryOrder = compareDelivery(a, b, sourceMaxHeight(a), sourceMaxHeight(b));
+    if (deliveryOrder !== 0) return deliveryOrder;
 
     const aVer = a.verified === false ? 0 : 1;
     const bVer = b.verified === false ? 0 : 1;
@@ -652,10 +709,14 @@ export function isFastCdnSource(source: PlaybackSource): boolean {
  */
 export function isFasterSource(current: PlaybackSource, candidate: PlaybackSource): boolean {
   if (current.id === candidate.id) return false;
+  // "direct", not merely playable: this fires MID-PLAYBACK, and interrupting a
+  // stream that is already running to start a server-side rewrap is not an
+  // upgrade the viewer asked for. A remux only ever gets chosen up front, by
+  // pickDefaultSource, where its resolution gain is weighed openly.
   if (
     candidate.origin === "debrid" &&
     current.origin !== "debrid" &&
-    isSourcePlayableHere(candidate)
+    sourceDelivery(candidate) === "direct"
   ) {
     return true;
   }
@@ -755,8 +816,9 @@ function autoPlayPool(sources: PlaybackSource[]): PlaybackSource[] {
       isSourcePlayableHere(s)
   );
   if (!notHardDead.length) {
-    // Keep failed/soft sources as manual auto-recovery fallbacks, but never
-    // route an incompatible source into the production-disabled transcoder.
+    // Keep failed/soft sources as manual auto-recovery fallbacks. Undecodable
+    // ones are already gone (browserPlayable); remuxable ones stay, since the
+    // rewrap path is production-enabled.
     const soft = browserPlayable.filter((s) => s.probe?.ok !== false);
     // Prefer non-poison even among soft fallbacks.
     const softClean = soft.filter((s) => !isNeverAutoDefaultUrl(s.url));
@@ -788,9 +850,9 @@ function autoPlayPool(sources: PlaybackSource[]): PlaybackSource[] {
  * MKV/WebM, see `isSourcePlayableHere`) is a genuine PREMIUM upgrade —
  * progressive but CDN-direct and already decode-safe — so it belongs in that
  * same top tier; real resolution then decides the winner within it. A
- * transcode-required debrid source never qualifies here (autoPlayPool
+ * debrid source this browser cannot DECODE never qualifies here (autoPlayPool
  * already excludes it from the auto-default pool entirely in that case,
- * though it stays visible/selectable in the picker).
+ * though it stays visible in the picker, badged unavailable).
  */
 function isTopTierSource(source: PlaybackSource): boolean {
   if (isHlsSource(source)) return true;
@@ -921,6 +983,14 @@ export function pickDefaultSource(
     const aVer = a.verified === false ? 0 : 1;
     const bVer = b.verified === false ? 0 : 1;
     if (aVer !== bVer) return bVer - aVer;
+
+    // Delivery cost, height-gated (see compareDelivery). Must sit ABOVE the
+    // premium-direct rule below: without it, a 1080p MKV debrid source would
+    // use that rule to beat an equal-height embed that needs no server work
+    // at all. It stays BELOW the height tiers, so a 4K remux still wins the
+    // resolution it genuinely has.
+    const deliveryOrder = compareDelivery(a, b, aH, bH);
+    if (deliveryOrder !== 0) return deliveryOrder;
 
     /**
      * Premium direct-play beats an embed it does not lose height to.

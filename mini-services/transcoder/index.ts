@@ -33,7 +33,10 @@
  * SAFETY:
  *   - Concurrency-capped (VAAPI is a single shared decoder — serialize heavy
  *     jobs; see TRANSCODER_MAX_CONCURRENT).
- *   - Disk-bounded (TTL cleanup; hard byte cap).
+ *   - Disk-bounded (TTL cleanup; hard byte cap; entries in use are never
+ *     evicted). The remux path additionally refuses to start below a free-space
+ *     floor and kills any single job that exceeds a per-job cap, because a
+ *     stream copy writes its input back out roughly 1:1.
  *   - Every failure degrades to "return null"/502 so the player falls back to
  *     the original direct URL (Safari/HW-Chrome) or another source — never a
  *     hang.
@@ -46,10 +49,11 @@ import {
   existsSync,
   readFileSync,
   statSync,
+  statfsSync,
   readdirSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   DEFAULT_SEGMENT_DURATION_S,
@@ -57,6 +61,7 @@ import {
   computeRungs,
   extractVariantPlaylistNames,
   type LadderRung,
+  buildRemuxArgs,
 } from "./ladder";
 
 const PORT = Number(process.env.TRANSCODER_PORT || 3040);
@@ -93,6 +98,49 @@ const SOFTWARE_ATTEMPT_TIMEOUT_MS = 30_000;
 /** Overall budget the HTTP layer waits for a playlist to become ready. */
 const PLAYLIST_READY_BUDGET_MS = 60_000;
 
+/**
+ * Disk safety for the remux path.
+ *
+ * A stream copy writes the source back out roughly 1:1, so remuxing a 4K
+ * release means tens of GB on disk - a completely different disk profile from
+ * the re-encode ladder, whose 1080p H.264 output is a fraction of its input.
+ * The host runs at 87% full, and `cleanupCache` only sweeps every 30 minutes,
+ * so without an admission gate two concurrent 4K remuxes can exhaust the
+ * volume long before eviction ever looks.
+ *
+ * REMUX_MIN_FREE_BYTES  refuse to START a remux below this much free space
+ *                       (after trying a cleanup first). The player treats the
+ *                       error as a source failure and fails over, which is the
+ *                       right outcome: another source beats a full disk.
+ * REMUX_MAX_JOB_BYTES   kill a single remux whose output exceeds this. Sized
+ *                       above any realistic streamable 4K encode (those run
+ *                       6-20 GB); it exists to stop a pathological input - a
+ *                       60 GB BluRay remux, or an upstream that never EOFs -
+ *                       from eating the volume on its own.
+ */
+const REMUX_MIN_FREE_BYTES = Number(
+  process.env.TRANSCODER_REMUX_MIN_FREE_BYTES || 25 * 1024 * 1024 * 1024
+);
+const REMUX_MAX_JOB_BYTES = Number(
+  process.env.TRANSCODER_REMUX_MAX_JOB_BYTES || 30 * 1024 * 1024 * 1024
+);
+/** How often a running remux's output size is checked against the cap. */
+const REMUX_WATCHDOG_INTERVAL_MS = 30_000;
+/**
+ * A cache entry is protected from eviction for this long after its last read.
+ * Without it, eviction is free to delete the very directory a viewer is
+ * streaming from - the entry is oldest by mtime precisely BECAUSE it was
+ * built first, which is not the same as being unused.
+ */
+const CACHE_ACTIVE_GRACE_MS = 30 * 60 * 1000;
+
+/** Last read time per cache key, for the eviction guard above. */
+const lastAccess = new Map<string, number>();
+
+function touchKey(key: string): void {
+  lastAccess.set(key, Date.now());
+}
+
 /** In-progress transcodes — concurrent requests for the same key share the result. */
 const inflight = new Map<string, Promise<string>>();
 /** Active ffmpeg child processes (for cleanup on shutdown). */
@@ -102,8 +150,28 @@ function log(msg: string): void {
   console.log(`[transcoder] ${msg}`);
 }
 
-function sourceKey(inputUrl: string, maxHeight: number): string {
-  return createHash("sha256").update(`${inputUrl}|${maxHeight}`).digest("hex").slice(0, 24);
+/**
+ * Cache identity. `mode` participates so a remux and a transcode of the SAME
+ * source never share an output directory - they produce different containers
+ * (fMP4 vs TS) and different playlists, and colliding them would serve a
+ * half-written mixture.
+ */
+function sourceKey(inputUrl: string, maxHeight: number, mode: BuildMode = "transcode"): string {
+  // Height is dropped from a remux's identity because a remux HAS no target
+  // height - it copies the bitstream, so the output is the source resolution
+  // whatever the caller asked for. Keeping it in would let two requests for the
+  // same rewrap land on different keys and rebuild the same output twice.
+  const heightPart = mode === "remux" ? "copy" : String(maxHeight);
+  return createHash("sha256")
+    .update(`${inputUrl}|${heightPart}|${mode}`)
+    .digest("hex")
+    .slice(0, 24);
+}
+
+export type BuildMode = "transcode" | "remux";
+
+function parseMode(raw: string | null): BuildMode {
+  return raw === "remux" ? "remux" : "transcode";
 }
 
 function cacheDir(key: string): string {
@@ -234,6 +302,31 @@ function attemptTranscode(
   });
 }
 
+/**
+ * Bound a running remux's disk footprint. A stream copy writes ~1:1, so the
+ * only thing standing between a pathological input and a full volume is this.
+ * Killing ffmpeg leaves the segments already written intact and playable, so
+ * an over-cap title degrades to "plays up to the cap" rather than to nothing.
+ */
+function watchRemuxSize(proc: ChildProcess, outDir: string, key: string): void {
+  const timer = setInterval(() => {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      clearInterval(timer);
+      return;
+    }
+    const bytes = dirBytes(outDir);
+    if (bytes > REMUX_MAX_JOB_BYTES) {
+      clearInterval(timer);
+      log(
+        `remux key=${key} hit the per-job cap (${bytes} > ${REMUX_MAX_JOB_BYTES} bytes); stopping ffmpeg`
+      );
+      proc.kill("SIGKILL");
+    }
+  }, REMUX_WATCHDOG_INTERVAL_MS);
+  timer.unref();
+  proc.once("close", () => clearInterval(timer));
+}
+
 function wipeOutDir(outDir: string): void {
   rmSync(outDir, { recursive: true, force: true });
 }
@@ -344,9 +437,11 @@ async function waitForPlaylist(key: string, budgetMs: number): Promise<string> {
  */
 async function getOrBuild(
   inputUrl: string,
-  maxHeight: number
+  maxHeight: number,
+  mode: BuildMode = "transcode"
 ): Promise<string> {
-  const key = sourceKey(inputUrl, maxHeight);
+  const key = sourceKey(inputUrl, maxHeight, mode);
+  touchKey(key);
 
   // Cache hit — ladder already built (transcode complete).
   const cached = playlistPath(key);
@@ -359,6 +454,44 @@ async function getOrBuild(
   if (existing) {
     // Swallow — the work promise only tracks completion; we return early below.
     existing.catch(() => {});
+  } else if (mode === "remux") {
+    /**
+     * Remux needs none of the ladder machinery below: there are no rungs to
+     * compute (the bitstream is copied unchanged, so output resolution IS the
+     * source resolution), no VAAPI/software fallback chain (nothing is being
+     * decoded), and no height probe. One attempt, one ffmpeg, stream copy.
+     */
+    // Admission control: a stream copy needs room for roughly the whole source
+    // file. Try to make room first, then refuse rather than start a job that
+    // cannot finish - the app turns this into a 502 and the player fails over
+    // to another source, which is a far better outcome than a full volume.
+    if (freeBytes() < REMUX_MIN_FREE_BYTES) {
+      cleanupCache();
+      if (freeBytes() < REMUX_MIN_FREE_BYTES) {
+        throw new Error(
+          `insufficient disk for remux: ${freeBytes()} free, need ${REMUX_MIN_FREE_BYTES}`
+        );
+      }
+    }
+    const outDir = cacheDir(key);
+    mkdirSync(outDir, { recursive: true });
+    const args = buildRemuxArgs({ inputUrl, outDir, segmentDurationS: SEGMENT_DURATION_S });
+    log(`${key} remux (stream copy, no re-encode)`);
+    const work = (async () => {
+      const proc = await attemptTranscode("remux", key, outDir, args, null);
+      if (!proc) {
+        wipeOutDir(outDir);
+        throw new Error(`remux failed for key=${key}`);
+      }
+      watchRemuxSize(proc, outDir, key);
+      trackCompletion(key, proc);
+      return playlistPath(key);
+    })().catch((e) => {
+      log(`background remux failed key=${key}: ${e instanceof Error ? e.message : e}`);
+      inflight.delete(key);
+      throw e;
+    });
+    inflight.set(key, work);
   } else {
     const [sourceH, hasAudio] = await Promise.all([probeHeight(inputUrl), probeHasAudio(inputUrl)]);
     const fullRungs = computeRungs(sourceH, maxHeight);
@@ -383,6 +516,33 @@ async function getOrBuild(
 }
 
 // ── Cache management ──────────────────────────────────────────────────────
+
+/** Free bytes on the volume backing the cache; 0 when it cannot be read (which
+ * fails the admission check closed, the safe direction). */
+function freeBytes(): number {
+  try {
+    const st = statfsSync(CACHE_DIR);
+    return Number(st.bavail) * Number(st.bsize);
+  } catch {
+    return 0;
+  }
+}
+
+function dirBytes(dir: string): number {
+  let total = 0;
+  try {
+    for (const f of readdirSync(dir)) {
+      try {
+        total += statSync(join(dir, f)).size;
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return total;
+}
 
 function cacheBytes(): number {
   let total = 0;
@@ -420,8 +580,17 @@ function cleanupCache(): void {
             /* ignore */
           }
         }
+        // Never reclaim an entry that is being built or was just read - see
+        // CACHE_ACTIVE_GRACE_MS. Applies to both eviction paths below.
+        const accessed = lastAccess.get(dir) ?? 0;
+        const inUse =
+          inflight.has(dir) || now - accessed < CACHE_ACTIVE_GRACE_MS;
+        if (inUse) {
+          continue;
+        }
         if (now - st.mtimeMs > CACHE_TTL_MS) {
           rmSync(d, { recursive: true, force: true });
+          lastAccess.delete(dir);
           log(`TTL-evicted ${dir}`);
         } else {
           entries.push({ dir: d, mtime: st.mtimeMs, size });
@@ -436,6 +605,7 @@ function cleanupCache(): void {
     for (const e of entries) {
       if (bytes <= CACHE_MAX_BYTES) break;
       rmSync(e.dir, { recursive: true, force: true });
+      lastAccess.delete(basename(e.dir));
       bytes -= e.size;
       log(`cap-evicted ${e.dir}`);
     }
@@ -467,9 +637,10 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/key" && req.method === "GET") {
     const inputUrl = url.searchParams.get("u");
     const maxHeight = Number(url.searchParams.get("maxHeight") || "1080");
+    const mode = parseMode(url.searchParams.get("mode"));
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ key: sourceKey(inputUrl, maxHeight) }));
+    res.end(JSON.stringify({ key: sourceKey(inputUrl, maxHeight, mode) }));
     return;
   }
 
@@ -479,10 +650,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/transcode" && req.method === "GET") {
     const inputUrl = url.searchParams.get("u");
     const maxHeight = Number(url.searchParams.get("maxHeight") || "1080");
+    const mode = parseMode(url.searchParams.get("mode"));
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
 
     try {
-      const playlist = await getOrBuild(inputUrl, maxHeight);
+      const playlist = await getOrBuild(inputUrl, maxHeight, mode);
       const { readFile } = await import("node:fs/promises");
       const body = await readFile(playlist, "utf8");
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -505,11 +677,23 @@ const server = createServer(async (req, res) => {
     }
     const fp = join(cacheDir(key), file);
     if (!existsSync(fp)) return sendText(res, 404, "not found");
+    // Being read == in use. This is what keeps eviction from deleting the
+    // directory a viewer is streaming from (see CACHE_ACTIVE_GRACE_MS).
+    touchKey(key);
     try {
       const { readFile } = await import("node:fs/promises");
       const body = await readFile(fp);
       const isM3u8 = file.endsWith(".m3u8");
-      res.setHeader("Content-Type", isM3u8 ? "application/vnd.apple.mpegurl" : "video/mp2t");
+      // fMP4 (remux: init.mp4 + seg_*.m4s) vs MPEG-TS (re-encode ladder).
+      const isFmp4 = file.endsWith(".m4s") || file.endsWith(".mp4");
+      res.setHeader(
+        "Content-Type",
+        isM3u8
+          ? "application/vnd.apple.mpegurl"
+          : isFmp4
+            ? "video/mp4"
+            : "video/mp2t"
+      );
       res.end(body);
     } catch {
       return sendText(res, 500, "read error");
@@ -526,6 +710,8 @@ const server = createServer(async (req, res) => {
         port: PORT,
         cacheBytes: cacheBytes(),
         cacheCapBytes: CACHE_MAX_BYTES,
+        freeBytes: freeBytes(),
+        remuxMinFreeBytes: REMUX_MIN_FREE_BYTES,
         inflight: inflight.size,
         activeProcs: activeProcs.size,
         vaapiDecodeEnabled: VAAPI_DECODE_ENABLED,

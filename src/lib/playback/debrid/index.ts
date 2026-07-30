@@ -211,6 +211,32 @@ function providerDisplayName(provider: DebridProvider): string {
 }
 
 /** RD's exact original label format ("1080p • Debrid") is preserved unchanged; TorBox uses its own distinct format ("TorBox · 1080p"). */
+/**
+ * "· Safari" must mean "only Safari can play this", and `compat` alone no
+ * longer means that. `compat` is set to "safari" for two unrelated reasons:
+ * a codec Chrome cannot decode (HEVC/HDR — genuinely Safari-only), and an MKV
+ * container (which Safari cannot open either, so the tag was never accurate
+ * there). Now that MKV is remuxed and plays everywhere, tagging a 4K H.264 MKV
+ * "Safari" tells the viewer their best source is unusable when it is the one
+ * that works — the labels are the surface the "no 4K available" complaint was
+ * actually about.
+ *
+ * So the hint is derived from the codec, which is the only thing that really
+ * constrains WHICH browser can play it:
+ *   hevc     Safari-only in practice. Keep the tag.
+ *   h264     every browser. No tag, container notwithstanding.
+ *   av1      Chrome/Firefox, and NOT older Safari — "Safari" would be backwards.
+ *   unknown  fall back to `compat`, unchanged: no evidence to overrule it.
+ */
+export function safariHintFor(
+  compat: string | null | undefined,
+  codec?: ReleaseCodec | "h264" | "hevc" | "unknown"
+): string {
+  if (codec === "hevc") return " · Safari";
+  if (codec === "h264" || codec === "av1") return "";
+  return compat === "safari" ? " · Safari" : "";
+}
+
 function buildLabel(provider: DebridProvider, quality: RdQuality, safariHint: string): string {
   const q = qualityLabel(quality);
   if (provider === "torbox") return `TorBox · ${q}${safariHint}`;
@@ -229,7 +255,7 @@ function toPlaybackSource(
   codec?: "h264" | "hevc" | "unknown"
 ): PlaybackSource {
   const height = heightForQuality(quality);
-  const safariHint = record.compat === "safari" ? " · Safari" : "";
+  const safariHint = safariHintFor(record.compat, codec);
   return {
     id: buildSourceId(provider, imdbId, mediaType, season, episode, quality),
     url: record.url,
@@ -291,7 +317,7 @@ function toRdPlaybackSource(
 ): PlaybackSource {
   const height = slotHeight(slot);
   const quality = slotQuality(slot);
-  const safariHint = record.compat === "safari" ? " · Safari" : "";
+  const safariHint = safariHintFor(record.compat, codec);
   const effectiveContainer = effectiveReleaseContainer(record.url, container);
   return {
     id: buildSourceId("realdebrid", imdbId, mediaType, season, episode, slot),

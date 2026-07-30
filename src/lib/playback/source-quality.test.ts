@@ -6,6 +6,7 @@ import {
   findQualityUpgradeSource,
   isFasterSource,
   isSourcePlayableHere,
+  sourceDelivery,
   parseMaxHeight,
   pickDefaultSource,
   qualityBadge,
@@ -286,51 +287,114 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
   });
 });
 
-/** Decode-incompatible releases remain in inventory but cannot enter the
- * auto-play path while the unsafe legacy transcoder is production-disabled. */
-describe("pickDefaultSource / sortSourcesForPicker — incompatible-source surfacing", () => {
-  it("never auto-defaults to a transcode-required MKV 4K source when a native 1080p source exists", () => {
-    const mkv4k = makeSource({
-      id: "mkv-4k",
-      provider: "Debrid",
-      origin: "debrid",
-      compat: "native",
-      codec: "h264",
-      container: "mkv",
-      maxHeight: 2160,
-    });
-    const native1080 = makeSource({ id: "native-1080", label: "Aether", maxHeight: 1080 });
-    const picked = pickDefaultSource([mkv4k, native1080]);
-    expect(picked?.id).toBe("native-1080");
+/**
+ * Delivery routing (`sourceDelivery`). An MKV is a container problem, not a
+ * dead end: the server rewraps it with a stream copy, preserving resolution
+ * and codec. A codec this browser cannot decode is a genuine dead end.
+ */
+describe("pickDefaultSource / sortSourcesForPicker — delivery routing", () => {
+  const mkv4k = makeSource({
+    id: "mkv-4k",
+    provider: "Debrid",
+    origin: "debrid",
+    compat: "native",
+    codec: "h264",
+    container: "mkv",
+    maxHeight: 2160,
+  });
+  const native1080 = makeSource({ id: "native-1080", label: "Aether", maxHeight: 1080 });
+
+  it("auto-defaults to a remuxable 4K source over a direct 1080p one — the remux keeps the 4K", () => {
+    // The stream copy does not re-encode, so this really is 2160p on screen.
+    // Capping it behind 1080p was the bug: the roster carried 4K all along.
+    expect(pickDefaultSource([mkv4k, native1080])?.id).toBe("mkv-4k");
   });
 
-  it("returns no default when the only source is unavailable in this browser", () => {
-    const mkv4k = makeSource({
-      id: "mkv-4k-only",
+  it("prefers the direct source at EQUAL height — a rewrap that buys no resolution is pure cost", () => {
+    const mkv1080 = makeSource({
+      id: "mkv-1080",
       provider: "Debrid",
       origin: "debrid",
       compat: "native",
       codec: "h264",
       container: "mkv",
-      maxHeight: 2160,
+      maxHeight: 1080,
     });
-    const picked = pickDefaultSource([mkv4k]);
-    expect(picked).toBeNull();
+    const mp41080 = makeSource({
+      id: "mp4-1080",
+      provider: "Debrid",
+      origin: "debrid",
+      compat: "native",
+      codec: "h264",
+      container: "mp4",
+      maxHeight: 1080,
+    });
+    expect(pickDefaultSource([mkv1080, mp41080])?.id).toBe("mp4-1080");
+    expect(sortSourcesForPicker([mkv1080, mp41080]).map((s) => s.id)).toEqual([
+      "mp4-1080",
+      "mkv-1080",
+    ]);
   });
 
-  it("stays visible in the manual picker even though it sorts below the native source", () => {
-    const mkv4k = makeSource({
-      id: "mkv-4k",
+  it("lets a validated debrid remux beat an equal-height embed that has no health evidence", () => {
+    // Not a contradiction of the rule above — delivery cost is only ONE signal
+    // and it deliberately sits below health evidence in the comparator. The
+    // debrid link cleared server-side media validation; `native1080` is an
+    // unprobed embed. Ranking a rewrap of a known-good link below an unproven
+    // one is how the Fight Club / Oppenheimer mis-picks happened.
+    const mkv1080 = makeSource({
+      id: "mkv-1080",
       provider: "Debrid",
       origin: "debrid",
       compat: "native",
       codec: "h264",
       container: "mkv",
+      maxHeight: 1080,
+    });
+    expect(pickDefaultSource([mkv1080, native1080])?.id).toBe("mkv-1080");
+  });
+
+  it("still auto-plays when every source needs a remux", () => {
+    expect(pickDefaultSource([mkv4k])?.id).toBe("mkv-4k");
+  });
+
+  it("returns no default when the only source is undecodable in this browser", () => {
+    const hevc4k = makeSource({
+      id: "hevc-4k-only",
+      provider: "Debrid",
+      origin: "debrid",
+      compat: "native",
+      codec: "hevc",
+      container: "mkv",
       maxHeight: 2160,
     });
-    const native1080 = makeSource({ id: "native-1080", label: "Aether", maxHeight: 1080 });
-    const sorted = sortSourcesForPicker([mkv4k, native1080]);
-    expect(sorted.map((s) => s.id)).toEqual(["native-1080", "mkv-4k"]);
+    expect(pickDefaultSource([hevc4k])).toBeNull();
+  });
+
+  it("sinks an undecodable source below a playable one in the manual picker, without hiding it", () => {
+    const hevc4k = makeSource({
+      id: "hevc-4k",
+      provider: "Debrid",
+      origin: "debrid",
+      compat: "native",
+      codec: "hevc",
+      container: "mkv",
+      maxHeight: 2160,
+    });
+    const sorted = sortSourcesForPicker([hevc4k, native1080]);
+    expect(sorted.map((s) => s.id)).toEqual(["native-1080", "hevc-4k"]);
+  });
+
+  it("orders the picker the same way the auto-pick does, so the top row is the one that plays", () => {
+    const sorted = sortSourcesForPicker([native1080, mkv4k]);
+    expect(sorted[0]?.id).toBe("mkv-4k");
+    expect(sorted.map((s) => s.id)).toEqual(["mkv-4k", "native-1080"]);
+  });
+
+  it("never auto-upgrades a running stream into a remux mid-playback", () => {
+    // isFasterSource fires DURING playback; interrupting a working stream to
+    // start a server-side rewrap is not an upgrade the viewer asked for.
+    expect(isFasterSource(native1080, mkv4k)).toBe(false);
   });
 });
 
@@ -722,14 +786,13 @@ describe("isSourcePlayableHere", () => {
   });
 
   /**
-   * Container-first gate (transcoder-link task): MKV/WebM play in NO
-   * browser, not even Safari, regardless of the codec inside — this must
-   * be checked BEFORE any codec/compat logic. Also the regression test for
-   * the real bug this fixes: an `.mkv` source Torrentio parsed as plain
-   * H.264 with `compat:"native"` was previously (wrongly) reported
-   * natively playable.
+   * MKV/WebM open in NO browser, Safari included, whatever the codec inside —
+   * so they are never "direct". But the container is the ONLY problem when the
+   * streams inside decode here, and rewrapping to fMP4 is a stream copy, so
+   * they are "remux" rather than dead inventory. This is the pair of rows that
+   * used to be dropped entirely and is the reason 4K never appeared.
    */
-  it("container mkv/webm -> false regardless of codec or compat (no browser plays these containers)", () => {
+  it("container mkv/webm -> remux (never direct, never discarded) when the codec decodes here", () => {
     const mkvNativeH264 = makeSource({
       id: "mkv-h264-native",
       origin: "debrid",
@@ -746,8 +809,29 @@ describe("isSourcePlayableHere", () => {
       container: "webm",
       maxHeight: 1080,
     });
-    expect(isSourcePlayableHere(mkvNativeH264)).toBe(false);
-    expect(isSourcePlayableHere(webmNativeH264)).toBe(false);
+    expect(sourceDelivery(mkvNativeH264)).toBe("remux");
+    expect(sourceDelivery(webmNativeH264)).toBe("remux");
+    expect(isSourcePlayableHere(mkvNativeH264)).toBe(true);
+    expect(isSourcePlayableHere(webmNativeH264)).toBe(true);
+  });
+
+  /**
+   * The container fix must not paper over a codec this browser cannot decode:
+   * rewrapping HEVC into MP4 still leaves HEVC, which Chrome cannot decode in
+   * any wrapper. Codec is checked first, and it is decisive.
+   */
+  it("an undecodable codec stays unavailable even in a remuxable container", () => {
+    const hevcMkv = makeSource({
+      id: "hevc-mkv",
+      origin: "debrid",
+      compat: "native",
+      codec: "hevc",
+      container: "mkv",
+      maxHeight: 2160,
+    });
+    // No window/MediaSource under the test runtime -> HEVC unsupported.
+    expect(sourceDelivery(hevcMkv)).toBe("unavailable");
+    expect(isSourcePlayableHere(hevcMkv)).toBe(false);
   });
 
   it("container mp4/mov/unknown never trip the container gate — falls through to the existing codec/compat logic", () => {
@@ -811,7 +895,7 @@ describe("qualityBadge — browser compatibility honesty", () => {
     expect(qualityBadge(av1)).toBe("4K · unavailable (Debrid)");
   });
 
-  it('an MKV source is tagged "· unavailable" at its real height even when its (legacy) compat says "native"', () => {
+  it('an MKV source badges its real height with no unavailable tag — it remuxes and plays', () => {
     const mkv = makeSource({
       id: "mkv-4k",
       provider: "Debrid",
@@ -821,7 +905,7 @@ describe("qualityBadge — browser compatibility honesty", () => {
       container: "mkv",
       maxHeight: 2160,
     });
-    expect(qualityBadge(mkv)).toBe("4K · unavailable (Debrid)");
+    expect(qualityBadge(mkv)).toBe("4K (Debrid)");
   });
 
   it("an unavailable 720p source keeps its real height", () => {
