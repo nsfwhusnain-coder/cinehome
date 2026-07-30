@@ -715,19 +715,36 @@ function recoverHlsAdaptive(
 }
 
 /**
- * Legacy no-context entry point — callers that don't have buffer/policy handy.
- * Defaults to the current saved policy with unknown buffer (−1), which routes
- * to FLOOR-AFFIRM (the original absolute-floor behavior) unless the saved
- * policy is adaptive AND the caller later upgrades to the context-aware path.
+ * Stall-recovery entry point for every caller.
+ *
+ * This used to hardcode `bufferAheadS: -1` ("unknown"), and it was the ONLY
+ * caller of `recoverHlsAdaptive` — so the DOWNSHIFT branch, which requires
+ * `bufferAheadS >= 0` to detect starvation, could never be reached from
+ * anywhere. The `"adaptive"` floor policy is the shipped default
+ * (DEFAULT_FLOOR_POLICY in player-preferences.ts) and is documented as
+ * Netflix-style "drop a rung to keep playing, then climb back", but with no
+ * buffer reading it silently collapsed into the `"absolute"` behavior: hold
+ * 1080p and buffer through the starvation instead.
+ *
+ * Passing the real forward-buffer measurement is what makes the setting mean
+ * something. `bufferedAheadSeconds` already exists and returns -1 on failure,
+ * which preserves the old floor-affirm path when the reading is unavailable.
+ * Users who prefer the hold-1080p-forever behavior still have it — that is
+ * exactly what the "absolute" policy in Settings selects.
  */
-function recoverHlsWithoutDownshift(
+function recoverHlsPlayback(
   hls: Hls,
+  video: HTMLVideoElement | null,
   preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
 ): void {
-  recoverHlsAdaptive(hls, {
-    bufferAheadS: -1,
-    policy: getQualityFloorPolicySafe(),
-  }, preferredHeight);
+  recoverHlsAdaptive(
+    hls,
+    {
+      bufferAheadS: video ? bufferedAheadSeconds(video) : -1,
+      policy: getQualityFloorPolicySafe(),
+    },
+    preferredHeight
+  );
 }
 
 /** SSR-safe read of the floor policy (defaults to adaptive on the server). */
@@ -1960,7 +1977,13 @@ export function VideoPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderedSources, activeSource?.id]);
 
-  tryNextSourceRef.current = tryNextSource;
+  // Assigned in an effect rather than during render: `failActiveSource` only
+  // ever reads this from timers, engine callbacks and event handlers, all of
+  // which run after effects have flushed, so deferring the write costs nothing
+  // and keeps render side-effect-free.
+  useEffect(() => {
+    tryNextSourceRef.current = tryNextSource;
+  }, [tryNextSource]);
 
   const handleRetryFull = useCallback(() => {
     failedSourceIdsRef.current.clear();
@@ -2239,7 +2262,7 @@ export function VideoPlayer({
       const now = Date.now();
       if (now - lastStallRecoverAtRef.current < HLS_STALL_RECOVER_DEBOUNCE_MS) return;
       lastStallRecoverAtRef.current = now;
-      recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
+      recoverHlsPlayback(hls, video, qualityTargetRef.current);
     };
 
     if (useDash) {
@@ -3116,7 +3139,7 @@ export function VideoPlayer({
         const now = Date.now();
         if (now - lastStallRecoverAtRef.current < HLS_STALL_RECOVER_DEBOUNCE_MS) return;
         lastStallRecoverAtRef.current = now;
-        recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
+        recoverHlsPlayback(hls, video, qualityTargetRef.current);
       }, HLS_STALL_RECOVER_DEBOUNCE_MS);
     };
     const onPlaying = () => {
@@ -3233,7 +3256,7 @@ export function VideoPlayer({
       // First full no-progress window: one engine-specific recovery nudge.
       const hls = hlsRef.current;
       if (hls) {
-        recoverHlsWithoutDownshift(hls, qualityTargetRef.current);
+        recoverHlsPlayback(hls, video, qualityTargetRef.current);
       } else if (dashRef.current) {
         try {
           dashRef.current.play();
@@ -3617,6 +3640,12 @@ export function VideoPlayer({
       if (list) {
         for (let i = 0; i < list.length; i++) {
           const t = list[i];
+          // Mutating the browser's AudioTrackList is the only way to switch
+          // audio on the native path — there is no declarative API. The rule
+          // flags this as "modifying videoRef", but the ref itself is never
+          // reassigned; this writes to a DOM object it points at, from an
+          // event handler, which is exactly where imperative media calls belong.
+          // eslint-disable-next-line react-hooks/immutability
           if (t) t.enabled = i === trackId;
         }
       }
@@ -3781,8 +3810,15 @@ export function VideoPlayer({
     ]
   );
 
+  /**
+   * Read the failed-source STATE here, not `failedSourceIdsRef`. This value is
+   * computed during render and decides whether the error card offers "Next
+   * source"; a ref is invisible to React, so a source failing would not
+   * re-evaluate it. The ref and this state are written together everywhere
+   * (see `markSourceFailed`), so this is the same data with correct tracking.
+   */
   const hasAlternateSource = orderedSources.some(
-    (s) => !failedSourceIdsRef.current.has(s.id) && s.id !== activeSource?.id
+    (s) => !failedSourceIds.includes(s.id) && s.id !== activeSource?.id
   );
   const isExhausted = error === ALL_SOURCES_FAILED_MSG;
   const errorActions: PlayerErrorAction[] = [

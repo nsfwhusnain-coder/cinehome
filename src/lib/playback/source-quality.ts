@@ -923,19 +923,26 @@ export function pickDefaultSource(
     if (aVer !== bVer) return bVer - aVer;
 
     /**
-     * Premium direct-play beats an equal-height embed.
+     * Premium direct-play beats an embed it does not lose height to.
      *
      * `isTopTierSource` cannot express this on its own: an HLS embed and a
      * natively-playable debrid source are BOTH top tier, so they tie there and
      * the multi-rendition test below decides instead — which debrid can never
      * win, because it is always progressive MP4 and has no ladder by
-     * construction. Observed live: on Oppenheimer and Interstellar a Luna
+     * construction. Observed live: on Oppenheimer and Inception a Luna
      * embed with ladder [1080,720,480] took the pick over two and four healthy
      * native Real-Debrid 1080p sources respectively.
      *
-     * Gated on `aH === bH` so this can never cost real resolution — it only
-     * settles a tie that the ladder test would otherwise resolve against the
-     * premium tier. Embed-vs-embed is untouched.
+     * Gated on the premium source being AT LEAST as tall, so this can never
+     * cost real resolution while still letting it win outright when it is
+     * taller. An earlier version required exactly equal heights, which
+     * backfired: both sources sit in the same >=1080 tier, and the raw height
+     * comparison happens AFTER the ladder test, so a native 4K debrid source
+     * lost to a 1080p embed that merely had a ladder. Observed live on
+     * Inception, whose roster carries a real `4K • Debrid`
+     * (compat=native, container=mp4) that was being passed over for Luna 1080p.
+     * A SHORTER premium source still falls through and loses on height, as it
+     * should. Embed-vs-embed is untouched.
      *
      * The trade, stated plainly: a fixed 1080p direct-CDN file over an
      * adaptive ladder that could downshift under pressure. That is the right
@@ -945,8 +952,9 @@ export function pickDefaultSource(
      */
     const aPremiumDirect = a.origin === "debrid" && isSourcePlayableHere(a);
     const bPremiumDirect = b.origin === "debrid" && isSourcePlayableHere(b);
-    if (aPremiumDirect !== bPremiumDirect && aH === bH) {
-      return aPremiumDirect ? -1 : 1;
+    if (aPremiumDirect !== bPremiumDirect) {
+      if (aPremiumDirect && aH >= bH) return -1;
+      if (bPremiumDirect && bH >= aH) return 1;
     }
 
     const aLadder = isMultiRendition(a) ? 1 : 0;

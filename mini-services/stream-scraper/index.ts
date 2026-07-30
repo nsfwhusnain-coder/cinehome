@@ -6,6 +6,7 @@
 
 import { chromium, type Browser } from "playwright";
 import { createServer } from "http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { URL } from "url";
 import { resolveVidlinkApi } from "./vidlink-api";
 import { curlGet } from "./curl-http";
@@ -559,13 +560,33 @@ function effectiveMaxHeight(entry: SourceEntry): number {
   return rankEffectiveMaxHeight(entry, inferHeightFromUrl);
 }
 
-/** Preferred height for ranking (from qualityHint query). 0 = no preference beyond HD floor. */
-let scrapeQualityHintHeight = 0;
+/**
+ * Preferred height for ranking (from the `qualityHint` query param).
+ *
+ * This was a module-level `let`, assigned at the top of each request and reset
+ * to 0 in a `finally`. That is a race on a server that handles concurrent
+ * scrapes: two in-flight requests share the single slot, so one could rank with
+ * the other's target, and whichever finished first zeroed the hint while the
+ * other was still ranking. Mostly invisible while every caller asked for 1080
+ * (0 and 1080 both resolve to the HD floor downstream) — but it silently
+ * discarded a 2160 preference, which is exactly the case that now matters:
+ * some titles do carry a natively-decodable 4K debrid source.
+ *
+ * AsyncLocalStorage scopes the value to one request's async context instead.
+ * Background enrich started inside that context inherits it deliberately, and
+ * an absent store falls back to the same HD floor as before, so a runtime that
+ * ever failed to propagate would degrade to today's behavior rather than break.
+ */
+const qualityHintStore = new AsyncLocalStorage<number>();
+
+function currentQualityHintHeight(): number {
+  return qualityHintStore.getStore() ?? 0;
+}
 
 /** Options shared by sort + pick so streamUrl matches ranked[0]. */
 function defaultRankOptions() {
   return {
-    qualityHintHeight: scrapeQualityHintHeight,
+    qualityHintHeight: currentQualityHintHeight(),
     inferHeight: inferHeightFromUrl,
     isHevcStream,
     codecOnlyScore: (e: { url: string; label?: string; quality?: string; provider?: string }) =>
@@ -2902,7 +2923,7 @@ const server = createServer(async (req, res) => {
     // Preferred height from player Settings (1080 / 2160). Ranking only — not a filter.
     const qhRaw = url.searchParams.get("qualityHint");
     const qhNum = qhRaw ? Number(qhRaw) : NaN;
-    scrapeQualityHintHeight =
+    const qualityHintHeight =
       Number.isFinite(qhNum) && qhNum >= 1080 ? Math.min(qhNum, 4320) : 1080;
 
     if (!tmdbId) {
@@ -2911,16 +2932,18 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    try {
-      const result = await scrapeStream(tmdbId, mediaType, season, episode, { fast, noCache });
-      res.end(JSON.stringify(result));
-    } catch (e: unknown) {
-      res.statusCode = 500;
-      const message = e instanceof Error ? e.message : String(e);
-      res.end(JSON.stringify({ streamUrl: null, sources: [], error: message }));
-    } finally {
-      scrapeQualityHintHeight = 0;
-    }
+    // Scoped to this request's async context — see `qualityHintStore`. No
+    // reset needed (and no reset RACE): the value dies with the context.
+    await qualityHintStore.run(qualityHintHeight, async () => {
+      try {
+        const result = await scrapeStream(tmdbId, mediaType, season, episode, { fast, noCache });
+        res.end(JSON.stringify(result));
+      } catch (e: unknown) {
+        res.statusCode = 500;
+        const message = e instanceof Error ? e.message : String(e);
+        res.end(JSON.stringify({ streamUrl: null, sources: [], error: message }));
+      }
+    });
     return;
   }
 
