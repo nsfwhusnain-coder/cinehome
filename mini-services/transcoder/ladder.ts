@@ -102,6 +102,13 @@ export function rungLabel(height: number): string {
  * audio the browser cannot decode is a failover case, exactly as it is today,
  * and is not worth an encode pass on the shared host.
  */
+/** Sustained read speed for a remux, as a multiple of realtime. */
+const REMUX_READ_RATE = 4;
+/** AAC bitrate for the remux's stereo downmix. */
+const REMUX_AUDIO_BITRATE_K = 192;
+/** Seconds of input read at full speed before the throttle applies. */
+const REMUX_INITIAL_BURST_S = 60;
+
 export function buildRemuxArgs(input: {
   inputUrl: string;
   outDir: string;
@@ -116,10 +123,51 @@ export function buildRemuxArgs(input: {
     "-reconnect", "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "5",
+    /**
+     * Throttle the read, but only after a head start.
+     *
+     * An unthrottled stream copy runs at whatever the link allows - measured
+     * around 10x realtime - so it races far ahead of the viewer, pulls ~10x the
+     * title's bitrate from the debrid CDN for the whole film, and writes the
+     * entire file to disk within minutes whether or not anyone is still
+     * watching. Two concurrent 4K jobs saturated the connection outright and
+     * pushed a cold start past the player's manifest timeout, which is how a
+     * 4K source ended up failing over to a 1080p embed.
+     *
+     * The burst keeps startup instant (the first segments are still read at
+     * full speed), then REMUX_READ_RATE holds a steady lead over playback -
+     * enough to absorb a seek or a slow patch, without running away.
+     */
+    "-readrate_initial_burst", String(REMUX_INITIAL_BURST_S),
+    "-readrate", String(REMUX_READ_RATE),
     "-i", input.inputUrl,
-    // The whole point: copy, never encode.
+    // The whole point: copy, never encode — the VIDEO, which is where all the
+    // cost and all the resolution is.
     "-c:v", "copy",
-    "-c:a", "copy",
+    /**
+     * Audio is the exception, and it has to be.
+     *
+     * MKV releases routinely carry DTS-HD MA, TrueHD, E-AC3, FLAC or PCM, none
+     * of which any browser can decode. Copying them produces a file whose video
+     * is perfect and whose audio track MSE rejects outright — which fails the
+     * whole append, so the player retries the same fragment and eventually
+     * drops to a lower-quality source. Measured on Interstellar: a 3840-wide
+     * H.264 remux served DTS-HD MA and cost ~28s of retries before falling back
+     * to 1080p.
+     *
+     * Re-encoding audio is nothing like re-encoding video: it is a few percent
+     * of one core against a stream that is ~1% of the bitrate, so the remux
+     * stays I/O bound and 4K survives untouched. Doing it unconditionally also
+     * keeps an ffprobe round trip off the startup path — the alternative was
+     * detecting the codec first, which costs more time than the encode does.
+     *
+     * Stereo downmix: multichannel AAC decode is inconsistent across browsers,
+     * and a downmix that always plays beats a surround track that sometimes
+     * does not.
+     */
+    "-c:a", "aac",
+    "-b:a", String(REMUX_AUDIO_BITRATE_K) + "k",
+    "-ac", "2",
     // First audio + first video only. Multi-track MKVs are common and a stray
     // subtitle/attachment stream will otherwise fail the mux into fMP4.
     "-map", "0:v:0",

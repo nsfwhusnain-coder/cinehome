@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
 import {
+  buildRemuxArgs,
   LADDER,
   buildDecodePrefixFilter,
   buildFfmpegArgs,
@@ -355,5 +356,83 @@ describe("extractVariantPlaylistNames", () => {
       "\n"
     );
     expect(extractVariantPlaylistNames(master)).toEqual([]);
+  });
+});
+
+/**
+ * The remux args are the disk-and-bandwidth contract for the whole feature: an
+ * unthrottled stream copy runs ~10x realtime, which pulls ~10x the title's
+ * bitrate from the CDN and writes the entire film to disk within minutes,
+ * whether or not anyone is still watching.
+ */
+describe("buildRemuxArgs", () => {
+  const args = buildRemuxArgs({ inputUrl: "https://cdn.example/movie.mkv", outDir: "/out" });
+  const valueAfter = (flag: string) => args[args.indexOf(flag) + 1];
+
+  it("copies the video — that is where all the cost and all the resolution is", () => {
+    expect(valueAfter("-c:v")).toBe("copy");
+    // No VIDEO encoder settings may appear; their presence would mean the
+    // resolution is being re-encoded, which is the thing this path exists to
+    // avoid. (Audio is re-encoded on purpose — see the audio block below.)
+    expect(args).not.toContain("-crf");
+    expect(args).not.toContain("-b:v");
+    expect(args).not.toContain("-vf");
+    expect(args.some((a) => a.startsWith("libx26"))).toBe(false);
+    expect(args.some((a) => a.includes("vaapi"))).toBe(false);
+  });
+
+  it("emits fMP4 with an init segment, not MPEG-TS", () => {
+    // fMP4 is what makes an MKV's own streams playable without re-encoding;
+    // it is also why the playlist rewriter has to handle EXT-X-MAP.
+    expect(valueAfter("-hls_segment_type")).toBe("fmp4");
+    expect(valueAfter("-hls_fmp4_init_filename")).toBe("init.mp4");
+    expect(valueAfter("-hls_segment_filename")).toContain("seg_%05d.m4s");
+  });
+
+  it("throttles the read after an initial burst", () => {
+    const rate = Number(valueAfter("-readrate"));
+    const burst = Number(valueAfter("-readrate_initial_burst"));
+    expect(rate).toBeGreaterThan(1); // must stay ahead of playback
+    expect(rate).toBeLessThanOrEqual(5); // but not race away from it
+    expect(burst).toBeGreaterThan(0); // startup is never throttled
+    // The throttle must be applied to the INPUT, so it has to precede -i.
+    expect(args.indexOf("-readrate")).toBeLessThan(args.indexOf("-i"));
+    expect(args.indexOf("-readrate_initial_burst")).toBeLessThan(args.indexOf("-i"));
+  });
+
+  it("maps exactly one video and at most one audio stream", () => {
+    // Multi-track MKVs are the norm; a stray subtitle or attachment stream
+    // fails the mux into fMP4 outright.
+    expect(args).toContain("0:v:0");
+    expect(args).toContain("0:a:0?");
+  });
+
+  it("keeps the whole playlist so the film stays seekable", () => {
+    expect(valueAfter("-hls_list_size")).toBe("0");
+    expect(valueAfter("-hls_playlist_type")).toBe("event");
+  });
+});
+
+/**
+ * Audio is the one thing a remux may not copy. MKV releases routinely carry
+ * DTS-HD MA / TrueHD / E-AC3 / FLAC / PCM, which no browser decodes; copying
+ * them yields perfect video that MSE rejects wholesale, so the player retries
+ * the fragment and eventually drops to a worse source.
+ */
+describe("buildRemuxArgs — audio", () => {
+  const args = buildRemuxArgs({ inputUrl: "https://cdn.example/movie.mkv", outDir: "/out" });
+  const valueAfter = (flag: string) => args[args.indexOf(flag) + 1];
+
+  it("re-encodes audio to AAC while leaving video copied", () => {
+    expect(valueAfter("-c:a")).toBe("aac");
+    expect(valueAfter("-c:v")).toBe("copy");
+  });
+
+  it("downmixes to stereo, which every browser can decode", () => {
+    expect(valueAfter("-ac")).toBe("2");
+  });
+
+  it("sets an explicit audio bitrate rather than leaving it to the encoder default", () => {
+    expect(valueAfter("-b:a")).toMatch(/^\d+k$/);
   });
 });

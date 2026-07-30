@@ -127,6 +127,38 @@ const REMUX_MAX_JOB_BYTES = Number(
 /** How often a running remux's output size is checked against the cap. */
 const REMUX_WATCHDOG_INTERVAL_MS = 30_000;
 /**
+ * Kill a remux nobody is watching.
+ *
+ * ffmpeg runs at roughly 10x realtime, so it races far ahead of the viewer and
+ * keeps going after they navigate away — measured on a single abandoned 4K
+ * playback: 4.5 GB written within a minute of the tab closing, with the job
+ * still running and headed for the full file. The cache cap would eventually
+ * reclaim it, but only after the write had already happened, which is the
+ * expensive part on a volume at 88%.
+ *
+ * A player requests segments continuously while playing and stops the moment
+ * it is closed, so "no segment read recently" is a direct signal. Two minutes
+ * is long enough to survive a pause with a full buffer, short enough to bound
+ * an abandoned job. Output is wiped rather than kept: a killed stream copy
+ * leaves a playlist that just stops partway through, and serving that later as
+ * a cache hit would silently truncate the film.
+ */
+const REMUX_IDLE_TIMEOUT_MS = 120_000;
+const REMUX_IDLE_CHECK_INTERVAL_MS = 30_000;
+/**
+ * Concurrent remux ceiling, ENFORCED — unlike TRANSCODER_MAX_CONCURRENT, which
+ * was declared and reported in /health but never actually checked anywhere.
+ * Two households watching two different 4K titles is the realistic ceiling
+ * here; beyond that the shared upstream link is the bottleneck and every
+ * stream suffers. Over capacity the request is refused rather than queued, so
+ * the player fails over to another source immediately instead of sitting on a
+ * manifest that will not arrive.
+ */
+const REMUX_MAX_CONCURRENT = Number(process.env.TRANSCODER_REMUX_MAX_CONCURRENT || 2);
+
+/** Keys with a remux ffmpeg currently running. */
+const activeRemuxes = new Set<string>();
+/**
  * A cache entry is protected from eviction for this long after its last read.
  * Without it, eviction is free to delete the very directory a viewer is
  * streaming from - the entry is oldest by mtime precisely BECAUSE it was
@@ -327,6 +359,36 @@ function watchRemuxSize(proc: ChildProcess, outDir: string, key: string): void {
   proc.once("close", () => clearInterval(timer));
 }
 
+/** See REMUX_IDLE_TIMEOUT_MS — stop writing for a viewer who has gone. */
+function watchRemuxIdle(proc: ChildProcess, outDir: string, key: string): void {
+  const timer = setInterval(() => {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      clearInterval(timer);
+      return;
+    }
+    const idleMs = Date.now() - (lastAccess.get(key) ?? 0);
+    if (idleMs > REMUX_IDLE_TIMEOUT_MS) {
+      clearInterval(timer);
+      log(`remux key=${key} idle for ${idleMs}ms; stopping ffmpeg and discarding partial output`);
+      proc.kill("SIGKILL");
+      // Wipe on the close handler, not here, so ffmpeg has released its files.
+      proc.once("close", () => {
+        inflight.delete(key);
+        lastAccess.delete(key);
+        wipeOutDir(outDir);
+      });
+      // Already exited between the check and the kill.
+      if (proc.exitCode !== null) {
+        inflight.delete(key);
+        lastAccess.delete(key);
+        wipeOutDir(outDir);
+      }
+    }
+  }, REMUX_IDLE_CHECK_INTERVAL_MS);
+  timer.unref();
+  proc.once("close", () => clearInterval(timer));
+}
+
 function wipeOutDir(outDir: string): void {
   rmSync(outDir, { recursive: true, force: true });
 }
@@ -473,7 +535,26 @@ async function getOrBuild(
         );
       }
     }
+    if (activeRemuxes.size >= REMUX_MAX_CONCURRENT) {
+      throw new Error(
+        `remux at capacity: ${activeRemuxes.size}/${REMUX_MAX_CONCURRENT} running`
+      );
+    }
+    /**
+     * Start from an empty directory, always.
+     *
+     * `attemptTranscode` only mkdir -p's, so anything left by an earlier run of
+     * the SAME key survives — and the key is stable per source, so that is the
+     * normal case after an interrupted playback. The result is one directory
+     * holding output from two different ffmpeg invocations: `init.mp4` from the
+     * new run alongside segments from the old one. They do not share an
+     * initialization segment, so MSE rejects the mismatched fragments and the
+     * player retries the same segment until it gives up and fails over —
+     * measured at ~15s wasted before a 4K source dropped to a 1080p fallback.
+     * The ladder path never hit this because it wipes between attempts.
+     */
     const outDir = cacheDir(key);
+    wipeOutDir(outDir);
     mkdirSync(outDir, { recursive: true });
     const args = buildRemuxArgs({ inputUrl, outDir, segmentDurationS: SEGMENT_DURATION_S });
     log(`${key} remux (stream copy, no re-encode)`);
@@ -483,7 +564,10 @@ async function getOrBuild(
         wipeOutDir(outDir);
         throw new Error(`remux failed for key=${key}`);
       }
+      activeRemuxes.add(key);
+      proc.once("close", () => activeRemuxes.delete(key));
       watchRemuxSize(proc, outDir, key);
+      watchRemuxIdle(proc, outDir, key);
       trackCompletion(key, proc);
       return playlistPath(key);
     })().catch((e) => {
@@ -614,9 +698,57 @@ function cleanupCache(): void {
   }
 }
 
+/**
+ * Drop cache entries that were interrupted mid-write.
+ *
+ * A cache hit is decided by "master.m3u8 exists", so a directory left behind by
+ * a crash, a container restart or a killed job is served as if it were
+ * complete — and it is not: the playlist references segments that may be
+ * truncated or gone, so the player retries the same segment until it gives up
+ * and fails over. Seen live: a leftover directory from an interrupted job cost
+ * a 4K source ~15s of retries before it dropped to a 1080p fallback.
+ *
+ * `#EXT-X-ENDLIST` is the reliable marker. ffmpeg writes it only when the mux
+ * finishes cleanly, and nothing is in flight at boot, so a media playlist
+ * without one was interrupted. Ladder MASTERS never carry it (they list
+ * variants, not segments), so they are identified and left alone.
+ */
+function purgeIncompleteEntries(): void {
+  let removed = 0;
+  try {
+    for (const dir of readdirSync(CACHE_DIR)) {
+      const path = playlistPath(dir);
+      if (!existsSync(path)) {
+        rmSync(cacheDir(dir), { recursive: true, force: true });
+        removed += 1;
+        continue;
+      }
+      let master = "";
+      try {
+        master = readFileSync(path, "utf8");
+      } catch {
+        master = "";
+      }
+      const isLadderMaster = extractVariantPlaylistNames(master).length > 0;
+      if (isLadderMaster || master.includes("#EXT-X-ENDLIST")) continue;
+      rmSync(cacheDir(dir), { recursive: true, force: true });
+      removed += 1;
+    }
+  } catch {
+    /* cache dir may not exist yet */
+  }
+  if (removed > 0) log(`purged ${removed} incomplete cache entr${removed === 1 ? "y" : "ies"} at boot`);
+}
+
 // Run cleanup periodically + once at boot.
 mkdirSync(CACHE_DIR, { recursive: true });
+purgeIncompleteEntries();
 setInterval(cleanupCache, 30 * 60 * 1000).unref();
+// A running remux adds gigabytes between those sweeps, so it gets its own
+// tighter cadence for as long as anything is actually in flight.
+setInterval(() => {
+  if (inflight.size > 0) cleanupCache();
+}, 2 * 60 * 1000).unref();
 setTimeout(cleanupCache, 60_000).unref();
 
 // ── HTTP server ───────────────────────────────────────────────────────────
@@ -717,6 +849,8 @@ const server = createServer(async (req, res) => {
         vaapiDecodeEnabled: VAAPI_DECODE_ENABLED,
         device: existsSync(VA_API_DEVICE) ? VA_API_DEVICE : null,
         maxConcurrent: MAX_CONCURRENT,
+        activeRemuxes: activeRemuxes.size,
+        remuxMaxConcurrent: REMUX_MAX_CONCURRENT,
       })
     );
     return;
