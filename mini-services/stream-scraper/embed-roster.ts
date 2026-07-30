@@ -82,6 +82,13 @@ export const PRIMARY_GOTO_TIMEOUT_MS = 11_000;
  * as captures settle (EARLY_EXIT_SETTLE_MS after the first good one), so the
  * window is an upper bound, not a delay. Playwright is background-only, so it
  * cannot affect time-to-first-frame either way.
+ *
+ * CAVEAT recorded the same day, after heavy probing: Vidking began throttling
+ * this host, and the numbers above degraded to goto 11.6-11.8s and first capture
+ * 16.8-18.0s after goto (~29s total). At that point `goto` alone exceeds
+ * PRIMARY_GOTO_TIMEOUT_MS and NO per-embed budget short of ~30s can help. Do not
+ * chase a throttled host by inflating these values — the wall exists to stop one
+ * unproductive host consuming the whole enrich. Re-measure before tuning again.
  */
 export const PRIMARY_CAPTURE_WAIT_MS = 11_000;
 /**
@@ -100,8 +107,16 @@ export const SECONDARY_WORKER_BUDGET_MS = 10_000;
 /**
  * Overall Playwright hard wall across both waves (primary + optional secondary).
  * Phase 3 intercept: 28s → 20s (network early-exit shrinks median per-embed).
+ *
+ * 20s → 22s on 2026-07-30 to repair a self-inflicted regression: raising
+ * PRIMARY_WORKER_BUDGET_MS to 14s left only 5990ms of a 20s wall, just under
+ * SECONDARY_MIN_REMAINING_MS (6000), so every enrich logged "PW secondary
+ * skipped (remaining 5989ms < 6000ms)" and the secondary wave stopped running
+ * entirely. 22s restores 8s of headroom after a full-length primary while
+ * staying inside the wall's documented 18–22s band and well under
+ * ENRICH_HARD_TIMEOUT_MS.
  */
-export const PW_WAIT_MS = 20_000;
+export const PW_WAIT_MS = 22_000;
 
 /**
  * Absolute cap for background enrich (APIs + PW). Phase 3 intercept: 38s → 28s.

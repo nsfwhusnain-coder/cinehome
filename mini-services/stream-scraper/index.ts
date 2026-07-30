@@ -1326,6 +1326,27 @@ const CLICK_RETRY_WAIT_MS = 1_800;
 const VIDEO_SOURCE_CHECK_INTERVAL_MS = 1_000;
 
 /**
+ * Per-peek network budget.
+ *
+ * Was 6s, and up to three candidates were peeked in sequence — so a capture that
+ * had ALREADY succeeded could still spend 18s here and blow the whole per-embed
+ * worker budget. That is exactly what was happening to Vidking: standalone it
+ * intercepts a stream 7.1–8.3s after goto, but every production attempt died at
+ * the 14s worker wall with "timed out" and contributed 0 sources, while also
+ * eating so much of the shared PW wall that the secondary wave never started
+ * ("PW secondary skipped, remaining 5989ms < 6000ms").
+ *
+ * This peek only marks `isMaster` to ORDER captures in `selectEmbedCaptures`.
+ * It is not correctness-critical: the real rendition ladder is measured later by
+ * quality-probe.ts, and `looksLikeHlsMasterUrl` already gives a usable heuristic
+ * for free. Losing an ordering hint is a far cheaper failure than losing the
+ * entire embed.
+ */
+const MASTER_PEEK_TIMEOUT_SEC = 2;
+/** At most one peek per embed — see MASTER_PEEK_TIMEOUT_SEC for why. */
+const MASTER_PEEK_MAX_CANDIDATES = 1;
+
+/**
  * Peek the body of a captured .m3u8 without a network fetch on the hot path —
  * bounded, best-effort. False (no master seen yet) on any failure so the
  * caller just falls through to its existing capture set instead of stalling.
@@ -1339,7 +1360,7 @@ async function hasMasterPlaylist(capture: StreamCapture, referer: string): Promi
         "User-Agent": capture.userAgent || DEFAULT_UA,
         Accept: "*/*",
       },
-      timeoutSec: 6,
+      timeoutSec: MASTER_PEEK_TIMEOUT_SEC,
     });
     return res.ok && isHlsMasterManifest(res.text);
   } catch {
@@ -1627,7 +1648,10 @@ async function tryScrapeUrl(
         if (!isCancelled()) {
           const hlsCaptures = captures.filter((c) => c.url.includes(".m3u8"));
           // Peek top candidates; mark any multi-rendition masters for selection.
-          const peekOrder = selectEmbedCaptures(hlsCaptures, Math.min(3, hlsCaptures.length));
+          const peekOrder = selectEmbedCaptures(
+            hlsCaptures,
+            Math.min(MASTER_PEEK_MAX_CANDIDATES, hlsCaptures.length)
+          );
           let anyMaster = false;
           for (const cand of peekOrder) {
             if (isCancelled()) break;
@@ -1655,7 +1679,7 @@ async function tryScrapeUrl(
             }
             for (const cand of selectEmbedCaptures(
               captures.filter((c) => c.url.includes(".m3u8")),
-              2
+              MASTER_PEEK_MAX_CANDIDATES
             )) {
               if (isCancelled()) break;
               if (cand.isMaster) continue;
