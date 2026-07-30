@@ -11,14 +11,28 @@ import {
 } from "./cinepro";
 
 describe("CinePro timeout constants", () => {
-  it("exports fast/full budgets with fast shorter than full", () => {
-    expect(CINEPRO_FAST_TIMEOUT_MS).toBe(8_000);
-    expect(CINEPRO_FULL_TIMEOUT_MS).toBe(12_000);
-    expect(CINEPRO_FAST_TIMEOUT_MS).toBeLessThan(CINEPRO_FULL_TIMEOUT_MS);
-    // Fast path should not exceed client-ish 8s ceiling by much.
+  /**
+   * The full-path contract changed deliberately (2026-07-30). It used to be
+   * "keep the budget small so a slow CinePro cannot hang the response"; the
+   * response is no longer at risk, because the provider race returns on the
+   * first hit and caps itself at FULL_API_MAX_WAIT_MS regardless, so a late
+   * CinePro arm only ever enriches the result cache.
+   *
+   * The budget that matters now is: does it outlast cinepro-core's COLD fan-out
+   * across its 14 providers? Measured 40.7s wall (Videasy ~40s is the tail). At
+   * the old 12s every cold title aborted, contributed nothing, and booked a
+   * circuit failure for what was only an impatient budget.
+   */
+  it("keeps the fast path inside the client budget", () => {
     expect(CINEPRO_FAST_TIMEOUT_MS).toBeLessThanOrEqual(8_000);
-    // Full is well under the old 28s hang.
-    expect(CINEPRO_FULL_TIMEOUT_MS).toBeLessThan(28_000);
+    expect(CINEPRO_FAST_TIMEOUT_MS).toBeLessThan(CINEPRO_FULL_TIMEOUT_MS);
+  });
+
+  it("gives the full path room to outlast a cold 14-provider fan-out", () => {
+    // Must clear the measured ~40.7s cold wall, or cold titles never cache.
+    expect(CINEPRO_FULL_TIMEOUT_MS).toBeGreaterThan(41_000);
+    // ...but stay bounded: this arm is fire-and-forget, not fire-and-forget-forever.
+    expect(CINEPRO_FULL_TIMEOUT_MS).toBeLessThanOrEqual(60_000);
   });
 });
 

@@ -14,8 +14,24 @@ const DEFAULT_UA =
 
 /** Fast-race budget — keep under FAST_MAX_WAIT (~7.5s) when possible; late-merge still ok. */
 export const CINEPRO_FAST_TIMEOUT_MS = 8_000;
-/** Full / enrich path — hard ceiling (was 28s; p95 observed ~11–17s). */
-export const CINEPRO_FULL_TIMEOUT_MS = 12_000;
+/**
+ * Full-path ceiling.
+ *
+ * Raised from 12s to 45s, and this does NOT cost time-to-first-frame. The
+ * provider race returns as soon as the first arm produces a source (see
+ * FIRST_HIT_SETTLE_MS in index.ts) and caps itself at FULL_API_MAX_WAIT_MS
+ * (7.5s) regardless, so by the time CinePro settles the response has long since
+ * been sent. A late arm's only job is to call `onLateEntries` and enrich the
+ * result cache for the client's progressive poll and the next viewer.
+ *
+ * 12s was actively throwing that work away: cinepro-core fans out to 14
+ * providers and a COLD title is bounded by its slowest one (measured: Videasy
+ * ~40s, Peachify ~20s, total 40.7s wall). Every cold title therefore aborted at
+ * 12s, contributed nothing, AND recorded a circuit failure for what was really
+ * just an impatient budget. Once cinepro-core has cached the title it answers
+ * in ~3ms, so this ceiling only ever applies to the first request for a title.
+ */
+export const CINEPRO_FULL_TIMEOUT_MS = 45_000;
 /** Keep more provider streams per title (LordFlix-style multi-server list). */
 const MAX_CINEPRO_SOURCES = 16;
 
@@ -138,6 +154,28 @@ function providerName(meta: CineProProviderMeta | string | undefined): string {
   return meta?.name || meta?.id || "CinePro";
 }
 
+/**
+ * CinePro sub-providers that reliably answer with something other than video.
+ *
+ * Icefy ("Aether") serves ad tiles — its playlist resolves, but the segment body
+ * is a PNG/JPEG rather than media. This is not a new discovery: `verifyHlsServer`
+ * in index.ts has carried an explicit "Icefy/Aether ad tiles (PNG/JPEG) — not
+ * playable video" check for some time. Measured again 2026-07-30 across Fight
+ * Club, The Dark Knight, Breaking Bad S1E1 and Game of Thrones S1E1: 0/4
+ * playable, ad tile every time.
+ *
+ * Verification already soft-keeps it (`verified: false`) so it never auto-plays
+ * and never reaches the Servers panel — dropping it here simply stops paying for
+ * the resolve and the verification round trip, and stops padding the payload
+ * with a row nothing can use. Keep this list tight and evidence-backed: a
+ * sub-provider that merely misses a title must NOT be added.
+ */
+const DEAD_SUBPROVIDERS = new Set(["icefy"]);
+
+function isDeadSubprovider(meta: CineProProviderMeta | string | undefined): boolean {
+  return DEAD_SUBPROVIDERS.has(providerName(meta).trim().toLowerCase());
+}
+
 /** Native scraper Vixsrc API entry (provider "Vixsrc", label Luna). */
 export function isNativeVixsrcEntry(entry: CineproDedupeEntry): boolean {
   const p = entry.provider.trim().toLowerCase();
@@ -236,6 +274,7 @@ export async function resolveCinepro(
 
     for (const src of raw) {
       if (!src.url || out.length >= MAX_CINEPRO_SOURCES) break;
+      if (isDeadSubprovider(src.provider)) continue;
       const rewritten = rewriteProxyUrl(src.url, base);
       if (!rewritten || seen.has(rewritten)) continue;
       const typ = (src.type || "").toLowerCase();

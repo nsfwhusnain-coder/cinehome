@@ -177,14 +177,25 @@ describe("countVerifiedNonPoison / secondary gate", () => {
     expect(n).toBe(2);
   });
 
-  it("secondary skip threshold is 2", () => {
-    expect(VERIFIED_MIN_SKIP_SECONDARY).toBe(2);
-    expect(
-      countVerifiedNonPoison(
-        [{ url: "https://a" }, { url: "https://b" }],
-        () => false
-      )
-    ).toBeGreaterThanOrEqual(VERIFIED_MIN_SKIP_SECONDARY);
+  /**
+   * Threshold moved 2 -> 4 on 2026-07-30, so assert the BEHAVIOUR rather than
+   * the literal. A ground-truth audit of what actually plays through /api/hls
+   * found TV titles landing on exactly 2 playable sources (Luna + Pulse). Two
+   * cleared the old gate, so the secondary hosts that exist for precisely that
+   * case never ran, and a single failure left the viewer with one source.
+   */
+  it("still runs the secondary wave for a two-source roster", () => {
+    const twoSourceRoster = countVerifiedNonPoison(
+      [{ url: "https://a" }, { url: "https://b" }],
+      () => false
+    );
+    expect(twoSourceRoster).toBe(2);
+    expect(twoSourceRoster).toBeLessThan(VERIFIED_MIN_SKIP_SECONDARY);
+  });
+
+  it("keeps the threshold bounded so a healthy roster still skips the wave", () => {
+    expect(VERIFIED_MIN_SKIP_SECONDARY).toBeGreaterThan(2);
+    expect(VERIFIED_MIN_SKIP_SECONDARY).toBeLessThanOrEqual(5);
   });
 });
 

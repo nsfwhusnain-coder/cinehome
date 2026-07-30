@@ -39,10 +39,23 @@ export const PRIMARY_MAX = 1;
 /** Max hosts in the secondary Playwright wave. */
 export const SECONDARY_MAX = 3;
 /**
- * Skip secondary wave once this many verified + non-poison sources exist
- * (API enrich + primary embeds combined).
+ * Skip the secondary wave once this many MEASURED-playable, non-poison sources
+ * exist (API enrich + primary embeds combined).
+ *
+ * Raised 2 -> 4 on 2026-07-30. At 2, the wave had effectively stopped running:
+ * a ground-truth audit of what actually plays through `/api/hls` found movies
+ * comfortable (Fight Club 6 playable, The Dark Knight 9) but TV sitting at
+ * exactly 2 — Luna plus Pulse — on both Breaking Bad S1E1 and Game of Thrones
+ * S1E1. Exactly 2 clears the old threshold, so the secondary hosts that exist
+ * to cover precisely that case were never consulted, and a single failure left
+ * one source.
+ *
+ * This costs nothing on a healthy title (movies stay above the threshold and
+ * skip it) and is bounded regardless: the wave is background-only, shares the
+ * one PW_WAIT_MS wall, and needs SECONDARY_MIN_REMAINING_MS of budget left to
+ * start at all.
  */
-export const VERIFIED_MIN_SKIP_SECONDARY = 2;
+export const VERIFIED_MIN_SKIP_SECONDARY = 4;
 
 /**
  * Primary embed page.goto timeout. A dead Vidking arm must leave half of the

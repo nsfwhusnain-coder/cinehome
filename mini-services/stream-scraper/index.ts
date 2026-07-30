@@ -1006,6 +1006,32 @@ async function pickAllVerifiedCaptures(
   return selectEmbedCaptures(verified, MAX_CAPTURES_PER_EMBED);
 }
 
+/**
+ * PNG / JPEG / GIF / WEBP magic bytes.
+ *
+ * Several embed CDNs answer a media request with an ad tile rather than an
+ * error, so "the server returned bytes" is not evidence of a live source.
+ * `verifyHlsServer` already rejects these on the segment it walks to; this is
+ * the byte-level equivalent for the progressive path.
+ *
+ * Note the GIF check deliberately compares all four bytes: 0x47 alone is also
+ * the MPEG-TS sync byte, so a shorter check would discard real TS segments.
+ */
+function isImagePayload(body: Buffer): boolean {
+  if (body.byteLength < 4) return false;
+  if (body[0] === 0x89 && body[1] === 0x50 && body[2] === 0x4e && body[3] === 0x47) return true;
+  if (body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) return true;
+  if (body[0] === 0x47 && body[1] === 0x49 && body[2] === 0x46 && body[3] === 0x38) return true;
+  if (
+    body.byteLength >= 12 &&
+    body[0] === 0x52 && body[1] === 0x49 && body[2] === 0x46 && body[3] === 0x46 &&
+    body[8] === 0x57 && body[9] === 0x45 && body[10] === 0x42 && body[11] === 0x50
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** Probe API-sourced entries so dead CDN URLs never fill a server slot. */
 async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
   const referer = entry.session.referer || "";
@@ -1015,13 +1041,19 @@ async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
   const lower = entry.url.toLowerCase();
 
   try {
-    // CinePro /v1/proxy and any m3u8 — full HLS hop (master can 200 while segments 403).
-    if (
-      lower.includes(".m3u8") ||
-      lower.includes("/playlist/") ||
-      lower.includes("/v1/proxy") ||
-      lower.includes("cinepro")
-    ) {
+    // Any real m3u8 — full HLS hop (a master can 200 while its segments 403).
+    //
+    // `/v1/proxy` and `cinepro` URLs are deliberately NOT forced down this path
+    // any more. CinePro's proxy wraps BOTH HLS masters (VixSrc, Icefy) AND
+    // progressive MP4 rungs (FshareTV), and `verifyHlsServer` hard-requires
+    // `#EXTM3U`, so every MP4 rung failed verification for the sole reason that
+    // it was not HLS. They were then soft-kept (`verified: false`), which makes
+    // them permanently ineligible for auto-default — while measuring 6/6
+    // playable through the real `/api/hls` path in production. Sniffing the
+    // body below routes on what the URL actually IS: an m3u8 body still gets
+    // the full walk (so Icefy's ad-image segments are still caught), and a real
+    // media body is accepted on its own terms.
+    if (lower.includes(".m3u8") || lower.includes("/playlist/")) {
       return verifyHlsServer(entry.url, referer, ua, cookies);
     }
     if (entry.url.includes(".mpd")) {
@@ -1035,7 +1067,7 @@ async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
       });
       return mpdRes.ok && mpdRes.text.includes("<MPD");
     }
-    // Sniff: m3u8 without extension
+    // Sniff: an m3u8 without the extension, or a real progressive media body.
     const headers: Record<string, string> = {
       Referer: refererForCdn(entry.url, referer),
       Origin: origin,
@@ -1050,6 +1082,11 @@ async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
     if (head.startsWith("#EXTM3U")) {
       return verifyHlsServer(entry.url, referer, ua, cookies);
     }
+    // Now that progressive bodies reach this branch (see the routing note
+    // above), "returned some bytes" is too weak on its own: several embed CDNs
+    // answer with an ad tile instead of media. Reject the image signatures the
+    // HLS walk already rejects, so both paths apply the same standard.
+    if (isImagePayload(res.body)) return false;
     return res.body.byteLength > 200;
   } catch {
     return false;
