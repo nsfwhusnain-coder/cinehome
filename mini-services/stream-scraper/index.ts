@@ -2059,12 +2059,34 @@ async function resolveCinemaosEntries(
  * path they already take on a cache hit.
  */
 const FIRST_HIT_SETTLE_MS = 300;
-/** After the first playable fast source, wait briefly for peers then return. */
+/**
+ * FAST path: settle briefly and return. This one gates time-to-first-frame, so
+ * a thin first answer is the right trade — the client starts playing on it while
+ * the parallel `full` request and progressive polling fill the roster in.
+ */
 const FAST_FIRST_GRACE_MS = FIRST_HIT_SETTLE_MS;
 /** Hard ceiling for the entire fast multi-API race (client timeout is 8s). */
 const FAST_MAX_WAIT_MS = 7_500;
-/** Full requests use the same progressive fan-out instead of gating on CinePro. */
-const FULL_FIRST_GRACE_MS = FIRST_HIT_SETTLE_MS;
+/**
+ * FULL path: wait for peers. Do NOT reuse the fast settle here.
+ *
+ * The full request does not gate first frame — `fast` has already answered and
+ * playback has started — so its actual job is to come back with a COMPLETE
+ * roster. Sharing the 300ms fast settle made it return whichever single provider
+ * answered first (Vixsrc at ~1027ms) and pushed every other provider past the
+ * finish line into `onLateEntries`, i.e. into the cache only:
+ *
+ *   [scrape] full API race -> 1 source(s) in 1327ms
+ *   [scrape] full 1 source(s) (cap 20)
+ *
+ * That is what produced "only 3 sources" in the picker and made the roster
+ * appear to trickle in: the client's progressive poll stops once it sees
+ * SOURCE_POLL_TARGET healthy sources, so late arrivals could sit in the cache
+ * unseen for the rest of the session. Waiting ~2.5s here costs nothing the
+ * viewer can perceive and is the difference between a 1-source and a
+ * ~10-source roster.
+ */
+const FULL_FIRST_GRACE_MS = 2_500;
 /** Leave time inside the route budget for measured probes and serialization. */
 const FULL_API_MAX_WAIT_MS = 7_500;
 
