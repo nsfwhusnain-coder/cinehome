@@ -54,6 +54,54 @@ docker compose up -d --build
 
 CinePro providers (example): Icefy, VidApi, VixSrc, VidNest, VidZee, Peachify, Tulnex, …
 
+### cinepro-core DNS (fixed 2026-07-30 — read before debugging CinePro)
+
+`cinepro-core` is **not defined in any compose file**. It carries stale
+`com.docker.compose.project=embedin` labels, but `/home/hussy/embedin/docker-compose.yml`
+only defines `embedin` and `api` — so `docker compose` cannot manage or recreate it,
+and `docker compose up -d` in that directory may treat it as an orphan.
+
+It was returning HTTP 500 on **every** request because it inherited the host's
+Tailscale MagicDNS (`100.100.100.100`) and could not resolve `api.themoviedb.org`
+(`getaddrinfo EAI_AGAIN`), so TMDB validation failed before any provider ran. This
+is the same broken host resolver that `CINEHOME_DNS_PRIMARY` / `CINEHOME_DNS_FALLBACK`
+exist to work around for CineHome itself.
+
+Recreate it (there is no compose path) with explicit DNS:
+
+```bash
+TMDB=$(docker inspect cinepro-core --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep '^TMDB_API_KEY=' | cut -d= -f2-)
+docker run -d --name cinepro-core \
+  --network embedin_default --network-alias cinepro-core \
+  --dns 192.168.1.1 --dns 1.1.1.1 \
+  --restart unless-stopped \
+  -e TMDB_API_KEY="$TMDB" -e NODE_ENV=production -e HOST=0.0.0.0 -e PORT=3000 \
+  -e CACHE_TYPE=memory \
+  ghcr.io/cinepro-org/core:latest
+```
+
+**Renaming a container does NOT drop its network alias.** A stopped-then-renamed
+old copy came back up under `restart: unless-stopped` and still answered to
+`cinepro-core` on `embedin_default`, so Docker round-robined between the healthy
+and the broken instance and CinePro appeared to fail intermittently — including
+for titles that had already been proven warm. When replacing it, always:
+
+```bash
+docker update --restart=no cinepro-core-old
+docker network disconnect embedin_default cinepro-core-old
+docker stop cinepro-core-old
+docker exec cinehome getent ahostsv4 cinepro-core   # must return exactly ONE address
+```
+
+Expected behaviour: a COLD title takes ~40s upstream (bounded by the slowest
+provider — Videasy ~40s, Peachify ~20s), which exceeds CineHome's 12s full budget,
+so the arm lands late and enriches the result cache rather than the first response;
+the next request is served from cinepro-core's cache in ~3ms. That is precisely what
+`providers/cinepro-warmer.ts` exists for. Note also that CinePro `/v1/proxy` URLs
+routinely fail cold scraper-side verification and are soft-kept (`verified:false`),
+so they are switchable in the Servers panel but never auto-default.
+
 ### Scraper resource envelope
 
 `BROWSER_POOL_SIZE` defaults to 1 and is clamped to 1..4. The pool is shared
