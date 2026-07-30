@@ -1,5 +1,14 @@
 import { lookupTmdb } from "./tmdb-lookup";
+import { isPoisonStreamUrl } from "../poison-url";
 import type { ProviderStream } from "./types";
+
+/**
+ * Cap on streams kept per title. The addon can return 15+; every one costs a
+ * verification round trip downstream (filterVerifiedEntries), so this is bounded
+ * well below the response size while still being a real roster rather than a
+ * single pick.
+ */
+const MAX_NOTORRENT_SOURCES = 8;
 
 const NOTORRENT_API = "https://addon-osvh.onrender.com";
 const UA =
@@ -79,10 +88,58 @@ export async function resolveNotorrent(
       });
     }
 
-    out.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
-    const best = out.find((s) => s.url.includes(".m3u8")) ?? out[0];
-    console.log(`[notorrent] ${best ? 1 : 0} stream(s) for ${tmdbId}`);
-    return best ? [best] : [];
+    /**
+     * Keep a roster, not a single pick.
+     *
+     * This used to end with `out.find(m3u8) ?? out[0]` and return exactly ONE
+     * stream. The addon routinely returns 9-15 eligible streams per title —
+     * measured on anime, where it is often the only non-debrid provider that has
+     * the title at all: Death Note 12, One Piece 12, Demon Slayer 15, Attack on
+     * Titan 9 — so 8-14 usable sources per title were being discarded at the
+     * last line of the resolver. That is a large part of why TV and anime
+     * rosters looked so thin.
+     *
+     * Ordering matters as much as the count:
+     *  - non-poison first. The single stream this used to return was frequently
+     *    on hostingersite.com, which is in our OWN poison list, so the one
+     *    source we kept was one the ranker would then refuse to auto-play.
+     *  - then HLS over progressive, then real quality.
+     */
+    const seen = new Set<string>();
+    const ranked = out
+      .filter((s) => {
+        const key = s.url.split("?")[0] ?? s.url;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => {
+        const aPoison = isPoisonStreamUrl(a.url) ? 1 : 0;
+        const bPoison = isPoisonStreamUrl(b.url) ? 1 : 0;
+        if (aPoison !== bPoison) return aPoison - bPoison;
+        const aHls = a.url.includes(".m3u8") ? 1 : 0;
+        const bHls = b.url.includes(".m3u8") ? 1 : 0;
+        if (aHls !== bHls) return bHls - aHls;
+        return qualityRank(b.quality) - qualityRank(a.quality);
+      })
+      .slice(0, MAX_NOTORRENT_SOURCES);
+
+    /**
+     * Distinct labels are required, not cosmetic: `entryIdentity` in the scraper
+     * and `sourceIdentity` on the client both key on provider|label, so leaving
+     * every row as plain "Pulse" would collapse the whole roster back to one
+     * entry downstream. The numbered form is the convention the naming layer
+     * already understands (parseLabelToken -> token "pulse" + instance).
+     */
+    const labelled = ranked.map((s, i) => ({
+      ...s,
+      label: i === 0 ? "Pulse" : `Pulse ${i + 1}`,
+    }));
+
+    console.log(
+      `[notorrent] ${labelled.length} stream(s) for ${tmdbId} (from ${out.length} eligible)`
+    );
+    return labelled;
   } catch {
     return [];
   }
