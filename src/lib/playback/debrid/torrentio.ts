@@ -25,12 +25,14 @@
  * whichever class happens to have the most raw entries. Native 720p is kept
  * only as an availability fallback when no higher native release survives.
  *
- * CONTAINER — MKV/WebM candidates are kept in the resolved inventory, but
- * no browser plays them directly (see `isBrowserPlayableContainer`). The
- * legacy whole-file transcoder is production-disabled after exceeding safe
- * host resource limits, so `container`/`codec` are carried to the client and
- * `isSourcePlayableHere` keeps incompatible rows visible but disabled.
- * Safari-compatible HEVC-in-MP4/MOV candidates still direct-play there.
+ * CONTAINER — MKV/WebM candidates are kept in the resolved inventory. No
+ * browser opens them directly (see `isBrowserPlayableContainer`), but they are
+ * no longer dead: the app remuxes them to fMP4 with a stream copy, which
+ * preserves resolution and codec, so a 4K MKV plays at 4K. `container` and
+ * `codec` are carried to the client, where `sourceDelivery` turns them into
+ * direct / remux / unavailable. Container therefore affects DELIVERY COST
+ * only; the codec is what decides which browsers can play a release at all,
+ * and it alone drives `compat`.
  */
 import { tmdb } from "@/lib/tmdb";
 import type { MediaType } from "../types";
@@ -111,9 +113,18 @@ interface TorrentioResponseRaw {
   streams?: TorrentioStreamRaw[];
 }
 
-const HEVC_PATTERN = /x265|hevc|h\.?265/i;
-const AV1_PATTERN = /\bav1\b/i;
-const H264_PATTERN = /x264|h\.?264|avc1?/i;
+/**
+ * Codec tokens. The separator between "H" and the number is `[.\s_-]?` rather
+ * than `\.?` because Torrentio's title line has already had dots flattened to
+ * spaces by the time we see it: real cached releases arrive as
+ * "Dark S01E01 Secrets 2160p NF WEB-DL DUAL DDP5 1 Atmos H 265-Kitsune", and
+ * "H 265" matched nothing. An unrecognised codec at 4K defaults to "safari"
+ * (see `compat` below), so every miss here is a 4K row silently marked
+ * unavailable — including the H 264 ones, which would have played.
+ */
+const HEVC_PATTERN = /x\s?265|hevc|h[.\s_-]?265/i;
+const AV1_PATTERN = /\bav0?1\b/i;
+const H264_PATTERN = /x\s?264|h[.\s_-]?264|avc1?/i;
 const HDR_PATTERN = /\bhdr(?:10\+?)?\b|dolby\s?vision|\bdv\b/i;
 const MKV_PATTERN = /\.mkv\b|\bmkv\b/i;
 const MP4_PATTERN = /\.mp4\b|\bmp4\b/i;
@@ -186,9 +197,24 @@ export function parseReleaseTitle(text: string): ParsedRelease {
   // won't play. This matches the live data: 95%+ of 4K is HEVC. At 1080p,
   // unknown stays "native" (most 1080p is H.264, and the "unknown" tier was
   // explicitly kept eligible — see isBrowserPlayableContainer).
-  const likelyHevc = codec === "hevc" || hdr || container === "mkv" || container === "webm";
+  //
+  // Container is deliberately NOT part of this. It used to be: MKV and WebM
+  // forced "safari", which put every H.264/AV1 MKV in the same bucket as an
+  // x265 HDR remux and sank it behind `sortCandidates`/`selectTopPerClass`.
+  // The result was visible on nearly every title - exactly ONE 4K row, the
+  // HEVC one, because the decodable 4K releases were all MKV and therefore
+  // classified as Safari-only. Since a stream copy now makes MKV playable
+  // everywhere (see sourceDelivery/remux), the container decides HOW a source
+  // is delivered, not WHO can watch it. Only the codec constrains that.
   const compat: ReleaseCompat =
-    likelyHevc || (resolutionHeight === 2160 && codec === "unknown") ? "safari" : "native";
+    codec === "h264" || codec === "av1"
+      ? "native"
+      : codec === "hevc"
+        ? "safari"
+        : // Unknown codec — fall back to the release-shape heuristics, unchanged.
+          hdr || resolutionHeight === 2160
+          ? "safari"
+          : "native";
 
   return { resolutionHeight, codec, hdr, container, compat };
 }
@@ -363,21 +389,17 @@ function selectTopPerClass(
     const cap = PER_CLASS_CAP[key];
     const ranked = (buckets.get(key) ?? []).sort((a, b) => {
       /**
-       * A container no browser can open outranks nothing.
+       * Prefer the release that needs no server work.
        *
-       * Container was only a soft +50 in `candidateRankScore`, which a larger
-       * seeder count or a better size fit could out-vote — so an MKV routinely
-       * won a slot over a genuinely playable MP4 of the same class, and the row
-       * we surfaced was dead on arrival. Measured across five popular titles:
-       * 4K is plentiful (19-45 cached releases each) but ~90% is MKV, and the
-       * remaining 3-5 Safari-playable HEVC-in-MP4 per title were being passed
-       * over. Fight Club genuinely has 0 playable 4K (19/19 MKV); Dark Knight,
-       * Interstellar and Endgame each have 3-4 and were showing MKV anyway.
+       * This began as a hard playability gate, back when an MKV slot was a
+       * dead row: container was only a soft +50 in `candidateRankScore`, so a
+       * better seeder count routinely handed the slot to something no browser
+       * could open. Remux changed what it means — an MKV now plays, it just
+       * costs a stream copy and a couple of seconds of startup first.
        *
-       * Playability is a precondition, not a preference, so it sorts ahead of
-       * the score rather than contributing to it. MKV candidates are still kept
-       * (they stay visible and honestly marked, and the inventory is the same) —
-       * they just stop stealing the slot from something watchable.
+       * So it stays ahead of the score, but as a cost preference rather than a
+       * survival gate, and it matches `compareDelivery` on the client: at equal
+       * class, direct beats remux. Same ordering, different reason.
        */
       const aPlayable = isBrowserPlayableContainer(a.container) ? 1 : 0;
       const bPlayable = isBrowserPlayableContainer(b.container) ? 1 : 0;

@@ -76,16 +76,45 @@ describe("parseReleaseTitle", () => {
     expect(r.compat).toBe("native");
   });
 
-  it("AV1 + HDR -> still safari (HDR forces safari regardless of codec)", () => {
+  it("AV1 + HDR -> native; HDR is a proxy for HEVC, not a decode barrier of its own", () => {
+    // Chrome decodes 10-bit AV1 with HDR10 metadata. `hdr` only stands in for
+    // "probably HEVC" when the codec is unknown; here it is known.
     const r = parseReleaseTitle("Movie.2024.2160p.WEB-DL.AV1.HDR-GRP");
     expect(r.codec).toBe("av1");
     expect(r.hdr).toBe(true);
-    expect(r.compat).toBe("safari");
+    expect(r.compat).toBe("native");
   });
 
-  it("AV1 + MKV -> still safari at the compat layer (MKV forces safari for TorBox's own file-eligibility use; the actual browser-playability gate is `isBrowserPlayableContainer`, which drops it entirely)", () => {
+  /**
+   * The container no longer votes on compat. It used to force "safari", which
+   * meant a decodable AV1/H.264 MKV was bucketed with x265 HDR remuxes and
+   * lost every 4K slot to them — the reason nearly every title surfaced
+   * exactly one 4K row, and an unplayable one. Remux makes MKV playable, so
+   * the container now decides delivery cost (`sourceDelivery`), and the codec
+   * alone decides which browsers can play it.
+   */
+  it("AV1 + MKV -> native; the container decides delivery, not audience", () => {
     const r = parseReleaseTitle("Movie.2024.2160p.WEB-DL.AV1.mkv");
     expect(r.codec).toBe("av1");
+    expect(r.container).toBe("mkv");
+    expect(r.compat).toBe("native");
+  });
+
+  it("H.264 in MKV -> native, the most common case the old rule mis-bucketed", () => {
+    const r = parseReleaseTitle("Movie.2024.2160p.WEB-DL.H.264-GRP.mkv");
+    expect(r.codec).toBe("h264");
+    expect(r.container).toBe("mkv");
+    expect(r.compat).toBe("native");
+  });
+
+  it("HEVC stays safari wherever it lives — no container change can help it", () => {
+    expect(parseReleaseTitle("Movie.2024.2160p.BluRay.x265-GRP.mkv").compat).toBe("safari");
+    expect(parseReleaseTitle("Movie.2024.2160p.BluRay.x265-GRP.mp4").compat).toBe("safari");
+  });
+
+  it("unknown codec at 4K still defaults to safari — most 4K really is HEVC", () => {
+    const r = parseReleaseTitle("Movie.2024.2160p.BluRay-GRP");
+    expect(r.codec).toBe("unknown");
     expect(r.compat).toBe("safari");
   });
 
@@ -373,5 +402,45 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
     expect(native2160.length).toBeGreaterThan(0);
     expect(safari2160.length).toBeGreaterThan(0);
     expect(native1080.length).toBe(3);
+  });
+});
+
+/**
+ * Torrentio's title line arrives with dots already flattened to spaces, so a
+ * codec written "H 265" or "H 264" matched none of the original patterns. At
+ * 4K an unrecognised codec defaults to "safari" and the row is marked
+ * unavailable — so a parser miss and a genuinely unplayable release were
+ * indistinguishable in the UI.
+ */
+describe("parseReleaseTitle — space-separated codec tokens", () => {
+  it("reads 'H 265' as HEVC (observed live on a cached Dark 2160p release)", () => {
+    const r = parseReleaseTitle(
+      "Dark S01E01 Secrets 2160p NF WEB-DL DUAL DDP5 1 Atmos H 265-Kitsune"
+    );
+    expect(r.codec).toBe("hevc");
+    expect(r.compat).toBe("safari");
+  });
+
+  it("reads 'H 264' as H.264 — the miss that was costing watchable 4K", () => {
+    const r = parseReleaseTitle("Movie 2024 2160p WEB-DL DDP5 1 H 264-GRP");
+    expect(r.codec).toBe("h264");
+    expect(r.compat).toBe("native");
+  });
+
+  it("still reads the dotted and bare forms", () => {
+    expect(parseReleaseTitle("Movie.2024.1080p.H.265-GRP").codec).toBe("hevc");
+    expect(parseReleaseTitle("Movie.2024.1080p.h264-GRP").codec).toBe("h264");
+    expect(parseReleaseTitle("Movie.2024.1080p.x265-GRP").codec).toBe("hevc");
+    expect(parseReleaseTitle("Movie 2024 1080p x 264-GRP").codec).toBe("h264");
+  });
+
+  it("reads AV1 in both the AV1 and AV01 spellings", () => {
+    expect(parseReleaseTitle("Movie.2024.2160p.WEB-DL.AV1-GRP").codec).toBe("av1");
+    expect(parseReleaseTitle("Movie.2024.2160p.WEB-DL.AV01-GRP").codec).toBe("av1");
+  });
+
+  it("does not mistake a resolution or year for a codec", () => {
+    // No H/x prefix, so nothing here should read as 264/265.
+    expect(parseReleaseTitle("Movie.1265.2024.1080p.WEB-DL-GRP").codec).toBe("unknown");
   });
 });
