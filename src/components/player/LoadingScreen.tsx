@@ -73,9 +73,22 @@ export function LoadingScreen({
     ] as const;
   }, [isGenericServer, serverName, sourceCount, discovering]);
 
+  /**
+   * The rotation restarts from the first line whenever the screen (re)appears
+   * or the pool changes. Doing that reset during render rather than in the
+   * effect keeps the effect to what it is actually for — owning the interval —
+   * and avoids briefly showing whichever line the previous playback attempt
+   * happened to stop on.
+   */
+  const rotationKey = visible && !status ? `${statusPool.length}` : null;
+  const [rotationFor, setRotationFor] = useState<string | null>(null);
+  if (rotationKey !== rotationFor) {
+    setRotationFor(rotationKey);
+    setStatusIdx(0);
+  }
+
   useEffect(() => {
     if (!visible || status) return;
-    setStatusIdx(0);
     const id = window.setInterval(() => {
       setStatusIdx((v) => (v + 1) % statusPool.length);
     }, STATUS_ROTATE_MS);
@@ -110,7 +123,7 @@ export function LoadingScreen({
       aria-label={displayStatus}
     >
       {backdropUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
+         
         <img
           src={backdropUrl}
           alt=""
@@ -130,7 +143,7 @@ export function LoadingScreen({
 
       <div className="relative z-10 flex w-full max-w-md flex-col items-center px-6 text-center">
         {artUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
+           
           <img
             src={artUrl}
             alt=""

@@ -18,15 +18,19 @@ export function LazyRail({
   rootMargin = "200px 0px",
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
+  /**
+   * No IntersectionObserver means nothing will ever tell us the rail is on
+   * screen, so the only correct answer is "render it" — and that is an initial
+   * VALUE, resolved in the initializer rather than by an effect that would
+   * render an empty placeholder first and then immediately replace it.
+   */
+  const [visible, setVisible] = useState(
+    () => typeof IntersectionObserver === "undefined"
+  );
 
   useEffect(() => {
     const el = ref.current;
     if (!el || visible) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setVisible(true);
-      return;
-    }
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {

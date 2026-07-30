@@ -191,6 +191,6 @@ export function useAmbientColor(imagePath: string | null | undefined) {
 
   useEffect(() => {
     return () => setColor(FALLBACK);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 }

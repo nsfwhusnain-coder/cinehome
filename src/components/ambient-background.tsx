@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAmbientStore } from "@/stores/ambient-store";
 
 const CANVAS = "#0a0a0f";
@@ -12,22 +12,32 @@ const CANVAS = "#0a0a0f";
  */
 export function AmbientBackground() {
   const color = useAmbientStore((s) => s.color) ?? CANVAS;
-  const [a, setA] = useState(CANVAS);
-  const [b, setB] = useState(CANVAS);
-  const [showB, setShowB] = useState(false);
-
-  useEffect(() => {
-    const next = color || CANVAS;
-    if (showB) {
-      if (next === b) return;
-      setA(next);
-      setShowB(false);
-    } else {
-      if (next === a) return;
-      setB(next);
-      setShowB(true);
-    }
-  }, [color, a, b, showB]);
+  const next = color || CANVAS;
+  /**
+   * Two tint layers that alternate: whichever is hidden takes the incoming
+   * colour, then becomes the visible one, so opacity crosses between them.
+   *
+   * `seen` is the colour this pair was last built for. Comparing it during
+   * render and adjusting state right there is React's documented way to react
+   * to a changed input — an effect would do the same work a paint later, which
+   * is both what the compiler flags and a wasted frame. The crossfade is
+   * unaffected: the incoming layer still gets its new tint and its opacity in
+   * the same commit, which is exactly what the effect used to do.
+   */
+  const [fade, setFade] = useState({
+    a: CANVAS,
+    b: CANVAS,
+    showB: false,
+    seen: CANVAS,
+  });
+  if (next !== fade.seen) {
+    setFade(
+      fade.showB
+        ? { ...fade, a: next, showB: false, seen: next }
+        : { ...fade, b: next, showB: true, seen: next }
+    );
+  }
+  const { a, b, showB } = fade;
 
   const layer = (tint: string, opacity: number) => (
     <div

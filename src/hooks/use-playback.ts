@@ -330,11 +330,26 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const [discoveryWallHit, setDiscoveryWallHit] = useState(false);
   const [softMissWallHit, setSoftMissWallHit] = useState(false);
 
+  /**
+   * Walls belong to one target. Clearing them during render off a key rather
+   * than inside the effect also fixes a real staleness bug: the effect only
+   * reset when fetching became impossible, so navigating straight from one
+   * title to another carried "we already gave up looking" across to a roster
+   * that had barely started resolving.
+   */
+  const wallTarget = canFetch
+    ? `${args.mediaType}:${args.tmdbId}:${args.season ?? ""}:${args.episode ?? ""}`
+    : null;
+  const [wallsFor, setWallsFor] = useState<string | null>(null);
+  if (wallTarget !== wallsFor) {
+    setWallsFor(wallTarget);
+    if (discoveryWallHit) setDiscoveryWallHit(false);
+    if (softMissWallHit) setSoftMissWallHit(false);
+  }
+
   useEffect(() => {
     if (!canFetch) {
       pollStartedAtRef.current = null;
-      setDiscoveryWallHit(false);
-      setSoftMissWallHit(false);
       return;
     }
     const active = fast.isFetching || full.isFetching || hasSources || fast.isFetched || full.isFetched;

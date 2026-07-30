@@ -42,11 +42,21 @@ export function EpisodesPanel({
     [seasons]
   );
 
+  /**
+   * The panel's own season selection resets to the episode being watched each
+   * time it opens, and follows `season` while it stays open. Adjusting that
+   * during render off a sync key is the documented alternative to an effect:
+   * `syncKey` is null while closed, so reopening always counts as a change
+   * even if the season never moved — matching what the effect's [open, season]
+   * deps did.
+   */
   const [panelSeason, setPanelSeason] = useState(season);
-
-  useEffect(() => {
+  const [syncKey, setSyncKey] = useState<string | null>(null);
+  const openKey = open ? String(season) : null;
+  if (openKey !== syncKey) {
+    setSyncKey(openKey);
     if (open) setPanelSeason(season);
-  }, [open, season]);
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ["tmdb", "tv", "season", tvId, panelSeason],

@@ -275,15 +275,27 @@ function DetailContent({
     enabled: mediaType === "tv" && !!session?.user?.id,
   });
 
-  // Resume mid-show when progress exists; first open stays at S1E1 (or first season E1).
-  useEffect(() => {
-    if (mediaType !== "tv" || userPickedEpisode) return;
-    const resume = resumeTvEpisode(progressList, id);
-    if (resume) {
-      setSelectedSeason(resume.season);
-      setSelectedEpisode(resume.episode);
+  /**
+   * Resume mid-show when progress exists; first open stays at S1E1 (or first
+   * season E1). Applied during render off a sync key rather than in an effect,
+   * so the episode selector never paints S1E1 for a frame before snapping to
+   * the resume point. `userPickedEpisode` still wins outright — once the
+   * viewer has chosen, arriving progress must not move the selection under
+   * them.
+   */
+  const resumeKey =
+    mediaType === "tv" && !userPickedEpisode ? `${id}:${progressList?.length ?? -1}` : null;
+  const [resumeAppliedFor, setResumeAppliedFor] = useState<string | null>(null);
+  if (resumeKey !== resumeAppliedFor) {
+    setResumeAppliedFor(resumeKey);
+    if (resumeKey) {
+      const resume = resumeTvEpisode(progressList, id);
+      if (resume) {
+        setSelectedSeason(resume.season);
+        setSelectedEpisode(resume.episode);
+      }
     }
-  }, [mediaType, progressList, id, userPickedEpisode]);
+  }
 
   usePrefetchPlayback({
     tmdbId: id,

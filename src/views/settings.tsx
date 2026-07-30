@@ -542,12 +542,11 @@ function PlaybackPreferencesSection() {
 /** Full My-List-style grid of already-watched titles (localStorage). Only shown from Settings. */
 function WatchedHistorySection() {
   const navigate = useNavigate();
-  const [items, setItems] = useState<WatchedHistoryItem[]>([]);
+  // Lazy initializer, not an effect: this is an initial VALUE, not a
+  // synchronization with something that changes. `loadWatchedHistory` guards
+  // its own localStorage access, so it is safe to call during the first render.
+  const [items, setItems] = useState<WatchedHistoryItem[]>(loadWatchedHistory);
   const [filter, setFilter] = useState<"all" | "movie" | "tv">("all");
-
-  useEffect(() => {
-    setItems(loadWatchedHistory());
-  }, []);
 
   const refresh = () => setItems(loadWatchedHistory());
 

@@ -120,7 +120,7 @@ export function MovieCard({
           aria-label={`Open details for ${title}`}
         >
           {imgUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
+             
             <img
               src={imgUrl}
               srcSet={isPoster ? posterImg?.srcSet : undefined}

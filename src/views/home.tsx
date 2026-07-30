@@ -250,7 +250,7 @@ export function HomeView() {
     return () => {
       abortAllPreresolve();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [mounted, featured[0]?.id, continueItems]);
 
   if (catalog.isError && !catalog.data) {
@@ -486,7 +486,7 @@ function ContinueCard({ item }: { item: ProgressItem }) {
         aria-label={`Continue ${title}`}
       >
         {img ? (
-          // eslint-disable-next-line @next/next/no-img-element
+           
           <img
             src={img}
             alt=""

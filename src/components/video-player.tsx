@@ -1023,6 +1023,16 @@ export function VideoPlayer({
    */
   const everPlayedRef = useRef(false);
   const [everPlayed, setEverPlayed] = useState(false);
+  /**
+   * Whether the media element itself is currently faulted.
+   *
+   * This used to be read straight off `videoRef.current.error` during render,
+   * which is not reactive: the element can fault at any time and nothing would
+   * re-render to notice. Now the element's own "error" event records it, so
+   * the value is both correct and observed at the moment it changes. Cleared
+   * on every new source attempt and on title change.
+   */
+  const [mediaFaulted, setMediaFaulted] = useState(false);
   /** True only after intentional user pause — do not auto-resume after underrun. */
   const userPausedRef = useRef(false);
   /** Mid-watch source switch / failover — compact chip only, keep last frame. */
@@ -1282,11 +1292,40 @@ export function VideoPlayer({
   const setServerDisplayName = usePlayerStore((s) => s.setServerDisplayName);
   const resetStream = usePlayerStore((s) => s.resetStream);
 
+  /**
+   * Latest-value mirrors for the long-lived callbacks below.
+   *
+   * The media engines (hls.js/dash.js), the keyboard handler and
+   * `failActiveSource` all have to survive re-renders without changing
+   * identity — re-creating them would tear down and re-attach a playing
+   * engine — so they read the current value out of a ref instead of closing
+   * over it.
+   *
+   * These were assigned during render, which React does not allow: a render
+   * can be thrown away or replayed, and a ref written on a discarded render
+   * would still be observable afterwards. Writing them in one effect keeps
+   * every mirror in a single place and preserves the ordering that matters —
+   * this effect is declared before every effect that attaches an engine or a
+   * listener, and effects run in declaration order within a commit, so those
+   * still see the values from the render they belong to. Nothing reads these
+   * during render (only `mediaFaulted` did, and it is state now).
+   */
   const activeSourceRef = useRef(activeSource);
-  activeSourceRef.current = activeSource;
   /** Stable roster snapshot — failActiveSource must not change identity on enrich. */
   const orderedSourcesRef = useRef(orderedSources);
-  orderedSourcesRef.current = orderedSources;
+  const onRetrySourcesRef = useRef(onRetrySources);
+  /** While full enrich is still adding servers, never hard-fail the watch shell. */
+  const isDiscoveringRef = useRef(false);
+  const dockOpenRef = useRef(false);
+  const shortcutsOpenRef = useRef(false);
+  useEffect(() => {
+    activeSourceRef.current = activeSource;
+    orderedSourcesRef.current = orderedSources;
+    onRetrySourcesRef.current = onRetrySources;
+    isDiscoveringRef.current = Boolean(isDiscoveringSources);
+    dockOpenRef.current = dockOpen;
+    shortcutsOpenRef.current = shortcutsOpen;
+  });
   /** hls.js levels with ladder/maxHeight annotation from source metadata. */
   const levelsFromHls = useCallback((hls: Hls): QualityLevel[] => {
     const src = activeSourceRef.current;
@@ -1295,15 +1334,6 @@ export function VideoPlayer({
     return mapHlsLevels(hls, fallback, ladder);
   }, []);
   const tryNextSourceRef = useRef<() => boolean>(() => false);
-  const onRetrySourcesRef = useRef(onRetrySources);
-  onRetrySourcesRef.current = onRetrySources;
-  /** While full enrich is still adding servers, never hard-fail the watch shell. */
-  const isDiscoveringRef = useRef(false);
-  isDiscoveringRef.current = Boolean(isDiscoveringSources);
-  const dockOpenRef = useRef(false);
-  const shortcutsOpenRef = useRef(false);
-  dockOpenRef.current = dockOpen;
-  shortcutsOpenRef.current = shortcutsOpen;
   const networkRecoveriesRef = useRef(0);
   const lastStallRecoverAtRef = useRef(0);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1378,6 +1408,14 @@ export function VideoPlayer({
   /** Episode/title identity — reset session flags so next title never inherits resume/source state. */
   const mediaKey = `${mediaType ?? "movie"}:${tvId ?? title}:${tvSeason ?? ""}:${tvEpisode ?? ""}`;
 
+  /**
+   * Session reset on title/episode change. This cannot become a render-phase
+   * adjustment: most of what it clears lives OUTSIDE React — a dozen refs and
+   * several player-store setters — and neither may be touched during render.
+   * It is a synchronization with external systems, which is what effects are
+   * for; the rule cannot distinguish those setters from useState.
+   */
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     invalidateSourceAttempt();
     failedSourceIdsRef.current.clear();
@@ -1395,6 +1433,7 @@ export function VideoPlayer({
     resumeAtRef.current = 0;
     setCurrentTime(0);
     setEverPlayed(false);
+    setMediaFaulted(false);
     setIsSwitchingServer(false);
     setActiveSource(null);
     setError(null);
@@ -1423,8 +1462,9 @@ export function VideoPlayer({
       clearTimeout(resumeNoticeTimerRef.current);
       resumeNoticeTimerRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity change only
+    // Deps: title/episode identity only — everything else here is a reset.
   }, [mediaKey, setCurrentTime, setError, invalidateSourceAttempt]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (refreshNonce == null) return;
@@ -1446,8 +1486,16 @@ export function VideoPlayer({
 
   useEffect(() => {
     if (!orderedSources.length) {
+      // Teardown, not derivation: it invalidates the in-flight attempt token
+      // (a ref) and pushes the result to the player store in the same pass, so
+      // it has to run as an effect. Guarded so an already-empty roster is a
+      // no-op rather than a repeated store write.
       invalidateSourceAttempt();
-      setActiveSource(null);
+      if (activeSource) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setActiveSource(null);
+      }
+       
       setBuffering(false);
       return;
     }
@@ -1626,6 +1674,11 @@ export function VideoPlayer({
   }, [orderedSources.length, hasStream, setShowControls]);
 
   useEffect(() => {
+    // Zustand write, not React state. React's own guidance says an effect is
+    // for "update external systems with the latest state from React", which is
+    // exactly this — the lint rule just cannot tell a store setter apart from
+    // a useState setter, and there is no cascading render to avoid here.
+     
     if (!hasStream) setBuffering(false);
   }, [hasStream, setBuffering]);
 
@@ -1633,6 +1686,11 @@ export function VideoPlayer({
     if (!hasStream || swipeHintShownRef.current) return;
     if (typeof window === "undefined" || !window.matchMedia("(pointer: coarse)").matches) return;
     swipeHintShownRef.current = true;
+    // A once-per-session hint gated on a touch pointer. It cannot be decided
+    // during render without breaking hydration — the server has no matchMedia,
+    // so a render-phase answer would differ from the client's. One extra render
+    // on first play, exactly once.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSwipeHint("visible");
     const fadeTimer = setTimeout(() => setSwipeHint("fading"), SWIPE_HINT_VISIBLE_MS);
     const hideTimer = setTimeout(() => setSwipeHint("hidden"), SWIPE_HINT_VISIBLE_MS + SWIPE_HINT_FADE_MS);
@@ -2013,7 +2071,7 @@ export function VideoPlayer({
     // are queued (read fresh via closure whenever this re-runs), never a
     // trigger for re-running itself, or every resolved probe would re-arm
     // this effect and cycle indefinitely.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [orderedSources, activeSource?.id]);
 
   // Assigned in an effect rather than during render: `failActiveSource` only
@@ -2127,9 +2185,19 @@ export function VideoPlayer({
     }, wallMs);
     return () => window.clearTimeout(timer);
     // orderedSources read at arm time only — do not re-arm when enrich appends.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- R8: stable wall per active source
+    // Deps: one stable wall per active source; enrich must not re-arm it.
   }, [everPlayed, hasStream, activeSource?.id, initialTime, failActiveSource]);
 
+  /**
+   * Engine attach. This effect IS the external system: it creates and destroys
+   * hls.js/dash.js, assigns `video.src`, binds media listeners and tears them
+   * all down again. Its setState calls report the outcome of that imperative
+   * work into the player store, and the outcome is only knowable after the
+   * attempt — there is nothing here that could be derived during render.
+   * Suppressed for the whole effect rather than line by line, since every
+   * occurrence has the same reason.
+   */
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !hasStream) {
@@ -2225,6 +2293,9 @@ export function VideoPlayer({
     const sourceAttempt = sourceAttemptControllerRef.current.begin(
       activeSourceRef.current?.id ?? effectiveSrc
     );
+    // A new attempt starts unfaulted — otherwise a failover onto a working
+    // source would keep showing the blocking error left by the one before it.
+    setMediaFaulted(false);
     // Bind the HTMLMediaElement error to this exact source generation. A
     // component-wide listener that looked up "currentToken" at callback time
     // could miss a progressive MP4 failure during a source/effect transition,
@@ -2235,6 +2306,7 @@ export function VideoPlayer({
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
       }
+      setMediaFaulted(true);
       failActiveSource("media_element_error", sourceAttempt);
     };
     video.addEventListener("error", onBoundMediaElementError);
@@ -2977,7 +3049,7 @@ export function VideoPlayer({
     };
     // initialTime is intentionally not a dep — late progress is applied by the seek effect
     // below without tearing down hls.js mid-play.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stream identity only
+    // Deps: stream identity only — see the note above about initialTime.
   }, [
     effectiveSrc,
     activeSource?.id,
@@ -2997,6 +3069,7 @@ export function VideoPlayer({
     noteHardTransportFailure,
     recordDetectedHeight,
   ]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   /**
    * Late continue-watching progress: stream often attaches before /api/progress returns.
@@ -3351,7 +3424,7 @@ export function VideoPlayer({
     // onProgress/onEnded/nextEpisodeTarget intentionally excluded — read via
     // refs above so a new prop identity never re-attaches all media listeners
     // (task 8; watch.tsx's progressive-enrich polling re-renders ~every 2-5s).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [
     setIsPlaying,
     setCurrentTime,
@@ -3877,7 +3950,7 @@ export function VideoPlayer({
    * A media-element fault (`video.error`) still counts as blocking, so a genuine
    * decode/network failure is never silently swallowed.
    */
-  const errorBlocksPlayback = !everPlayed || Boolean(videoRef.current?.error);
+  const errorBlocksPlayback = !everPlayed || mediaFaulted;
   const errorActions: PlayerErrorAction[] = [
     ...(hasAlternateSource
       ? [
