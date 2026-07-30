@@ -361,11 +361,29 @@ function selectTopPerClass(
   const out: DebridCandidate[] = [];
   for (const key of Object.keys(PER_CLASS_CAP) as CandidateClass[]) {
     const cap = PER_CLASS_CAP[key];
-    const ranked = (buckets.get(key) ?? []).sort(
-      (a, b) =>
-        candidateRankScore(b, mediaType) -
-        candidateRankScore(a, mediaType)
-    );
+    const ranked = (buckets.get(key) ?? []).sort((a, b) => {
+      /**
+       * A container no browser can open outranks nothing.
+       *
+       * Container was only a soft +50 in `candidateRankScore`, which a larger
+       * seeder count or a better size fit could out-vote — so an MKV routinely
+       * won a slot over a genuinely playable MP4 of the same class, and the row
+       * we surfaced was dead on arrival. Measured across five popular titles:
+       * 4K is plentiful (19-45 cached releases each) but ~90% is MKV, and the
+       * remaining 3-5 Safari-playable HEVC-in-MP4 per title were being passed
+       * over. Fight Club genuinely has 0 playable 4K (19/19 MKV); Dark Knight,
+       * Interstellar and Endgame each have 3-4 and were showing MKV anyway.
+       *
+       * Playability is a precondition, not a preference, so it sorts ahead of
+       * the score rather than contributing to it. MKV candidates are still kept
+       * (they stay visible and honestly marked, and the inventory is the same) —
+       * they just stop stealing the slot from something watchable.
+       */
+      const aPlayable = isBrowserPlayableContainer(a.container) ? 1 : 0;
+      const bPlayable = isBrowserPlayableContainer(b.container) ? 1 : 0;
+      if (aPlayable !== bPlayable) return bPlayable - aPlayable;
+      return candidateRankScore(b, mediaType) - candidateRankScore(a, mediaType);
+    });
     out.push(...ranked.slice(0, cap));
   }
   return sortCandidates(out, mediaType);
