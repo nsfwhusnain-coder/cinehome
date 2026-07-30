@@ -62,10 +62,35 @@ export const VERIFIED_MIN_SKIP_SECONDARY = 4;
  * shared wall for an independent secondary provider.
  */
 export const PRIMARY_GOTO_TIMEOUT_MS = 11_000;
-/** Primary post-goto capture window (early-exit often finishes 1.5–8s). */
-export const PRIMARY_CAPTURE_WAIT_MS = 8_000;
-/** Primary per-embed hard wall; deliberately bounded below the 20s wave wall. */
-export const PRIMARY_WORKER_BUDGET_MS = 12_000;
+/**
+ * Primary post-goto capture window.
+ *
+ * Raised 8s -> 11s on 2026-07-30 because 8s was cutting off a WORKING host
+ * mid-capture. Measured time from `goto()` returning to Vidking's first stream
+ * interception, inside this exact image:
+ *
+ *   Fight Club   8305ms      The Dark Knight   7094ms
+ *   Breaking Bad 7534ms      Game of Thrones   7507ms
+ *
+ * Fight Club exceeded the old 8000ms window outright and the rest cleared it by
+ * a few hundred ms with nothing left for the manifest peek that follows — which
+ * is why production logged "PW primary sources before merge: 0" while a
+ * standalone probe hit 4/4 on the same titles. Vidking was never a dead host;
+ * it was a starved one.
+ *
+ * This costs nothing when a host is fast: `shouldEarlyExitWait` returns as soon
+ * as captures settle (EARLY_EXIT_SETTLE_MS after the first good one), so the
+ * window is an upper bound, not a delay. Playwright is background-only, so it
+ * cannot affect time-to-first-frame either way.
+ */
+export const PRIMARY_CAPTURE_WAIT_MS = 11_000;
+/**
+ * Primary per-embed hard wall: goto (~1.8s measured) + the capture window above
+ * + the post-capture master peek. Raised in step with the capture window; still
+ * leaves SECONDARY_MIN_REMAINING_MS of the shared PW_WAIT_MS wall so a secondary
+ * wave can still start after it.
+ */
+export const PRIMARY_WORKER_BUDGET_MS = 14_000;
 
 /** Secondary embeds — shorter so they fit residual PW wall. */
 export const SECONDARY_GOTO_TIMEOUT_MS = 8_000;

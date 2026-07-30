@@ -5,6 +5,7 @@ import {
   SECONDARY_MAX,
   VERIFIED_MIN_SKIP_SECONDARY,
   PW_WAIT_MS,
+  SECONDARY_MIN_REMAINING_MS,
   ENRICH_HARD_TIMEOUT_MS,
   buildPrimarySourceUrls,
   buildSecondarySourceUrls,
@@ -211,13 +212,31 @@ describe("Phase 3 intercept budget constants", () => {
     expect(ENRICH_HARD_TIMEOUT_MS).toBeGreaterThan(PW_WAIT_MS);
   });
 
-  it("primary capture keeps early-exit headroom without consuming the secondary wall", () => {
+  /**
+   * Budgets widened 2026-07-30 after measuring Vidking's real time-to-first-
+   * capture (7094-8305ms after goto) against the old 8000ms window: the fastest
+   * title cleared it by 466ms and the slowest missed it entirely, so a working
+   * host was being cut off mid-capture. Assert the RELATIONSHIPS that have to
+   * hold rather than the literals, and in particular tie the leftover-wall check
+   * to SECONDARY_MIN_REMAINING_MS — 8_000 was an arbitrary number for what is
+   * really "can a secondary wave still start after this?".
+   */
+  it("primary capture window covers the measured host latency", () => {
     const primary = buildPrimarySourceUrls(550, "movie");
+    const SLOWEST_MEASURED_CAPTURE_MS = 8_305;
     for (const s of primary) {
-      expect(s.captureWaitMs).toBe(8_000);
-      expect(s.workerBudgetMs).toBe(12_000);
-      expect(s.gotoTimeoutMs).toBe(11_000);
-      expect(PW_WAIT_MS - s.workerBudgetMs).toBeGreaterThanOrEqual(8_000);
+      expect(s.captureWaitMs).toBeGreaterThan(SLOWEST_MEASURED_CAPTURE_MS);
+      // goto + capture must fit inside the per-embed wall, with room to peek.
+      expect(s.gotoTimeoutMs).toBeGreaterThan(0);
+      expect(s.workerBudgetMs).toBeGreaterThan(s.captureWaitMs);
+    }
+  });
+
+  it("primary still leaves the shared wall able to start a secondary wave", () => {
+    for (const s of buildPrimarySourceUrls(550, "movie")) {
+      expect(PW_WAIT_MS - s.workerBudgetMs).toBeGreaterThanOrEqual(
+        SECONDARY_MIN_REMAINING_MS
+      );
     }
   });
 

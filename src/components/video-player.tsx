@@ -1196,13 +1196,35 @@ export function VideoPlayer({
    * viewer can neither act on nor care about. The Servers panel still exposes
    * the full roster for anyone who wants to switch by hand.
    */
+  /**
+   * Narrate the actual stage, with real numbers, instead of a single vague
+   * spinner. The viewer should be able to tell "still searching" from "found
+   * things, connecting" from "connected, filling the buffer" — those fail in
+   * different ways and take very different amounts of time.
+   *
+   * Deliberately describes the STAGE and the COUNT rather than naming the CDN:
+   * "Connecting to Zeus…" is infrastructure trivia the viewer cannot act on
+   * (and was removed on purpose), whereas "source 2 of 7" tells them progress
+   * is being made and how much runway is left. Server identities remain one tap
+   * away in the Servers list.
+   */
+  const totalSourceCount = orderedSources.length;
+  const activeSourceIndex = activeSource
+    ? orderedSources.findIndex((s) => s.id === activeSource.id) + 1
+    : 0;
   const loadingStatus: string | null = !hasStream
-    ? null
+    ? totalSourceCount > 0
+      ? `Found ${totalSourceCount} source${totalSourceCount === 1 ? "" : "s"} — choosing the best…`
+      : null // no sources yet: let LoadingScreen run its "Finding sources…" rotation
     : needsTranscode
-      ? "Preparing stream…"
+      ? "Preparing stream — this can take a few seconds…"
       : levelsPending
-        ? "Connecting…"
-        : "Buffering…";
+        ? activeSourceIndex > 0 && totalSourceCount > 1
+          ? `Connecting… (source ${activeSourceIndex} of ${totalSourceCount})`
+          : "Connecting…"
+        : playingHeight > 0
+          ? `Buffering ${formatResolutionLabel(playingHeight)}…`
+          : "Buffering…";
   const showSwitchingChip =
     !error &&
     everPlayed &&
@@ -3821,6 +3843,21 @@ export function VideoPlayer({
     (s) => !failedSourceIds.includes(s.id) && s.id !== activeSource?.id
   );
   const isExhausted = error === ALL_SOURCES_FAILED_MSG;
+  /**
+   * Does this error actually stop the viewer watching?
+   *
+   * Roster-level verdicts ("no playable server for this title") are produced by
+   * discovery/failover bookkeeping, which can conclude the roster is exhausted
+   * while the currently attached stream is playing perfectly well — the reported
+   * symptom being a full-screen "no sources found" card thrown over a running
+   * video. Playback that has started and has not faulted is the stronger signal,
+   * so the card is suppressed in that case and the error stays available through
+   * the dock instead.
+   *
+   * A media-element fault (`video.error`) still counts as blocking, so a genuine
+   * decode/network failure is never silently swallowed.
+   */
+  const errorBlocksPlayback = !everPlayed || Boolean(videoRef.current?.error);
   const errorActions: PlayerErrorAction[] = [
     ...(hasAlternateSource
       ? [
@@ -4032,8 +4069,13 @@ export function VideoPlayer({
       {/* Exhaustion (all sources failed) gets no dismiss — the card IS the
           only path forward. Other terminal errors (browser can't decode this
           stream type) keep a dismiss since the poster/video underneath is at
-          least visible and inert, not actively broken. */}
-      {error && (
+          least visible and inert, not actively broken.
+
+          Never blanket a stream that is actually playing (see
+          `errorBlocksPlayback`): a roster-level verdict can arrive while the
+          video is running fine, and covering working playback with "no sources"
+          is worse than the problem it reports. */}
+      {error && errorBlocksPlayback && (
         <PlayerErrorCard
           headline={isExhausted ? "All servers are unavailable right now" : error}
           subtext={

@@ -53,11 +53,18 @@ describe("buildServerSlots — single source of truth for naming", () => {
     expect(slot!.premium).toBeFalsy();
   });
 
-  it("removes a source that failed this playback session from the user roster", () => {
+  /**
+   * Contract changed 2026-07-30 (owner request: "show all sources"). A failed
+   * source is no longer hidden — hiding it left the panel showing 2 rows out of
+   * a roster of 8+ and removed any way to retry something the prober disliked.
+   * It is kept, marked, and sorted last instead.
+   */
+  it("keeps a session-failed source visible, marked and sorted last", () => {
     const a = source({ id: "a", provider: "vidking", label: "Solstice" });
     const b = source({ id: "b", provider: "vidlink", label: "Phoenix" });
     const slots = buildServerSlots([a, b], ["a"], false, undefined);
-    expect(slots.map((s) => s.id)).toEqual(["b"]);
+    expect(slots.map((s) => s.id)).toEqual(["b", "a"]);
+    expect(slots.find((s) => s.id === "a")?.status).toBe("failed");
   });
 
   it("shows a curated flag when known and an honest globe when geography is unknown", () => {
@@ -74,7 +81,16 @@ describe("buildServerSlots — single source of truth for naming", () => {
     expect(slots.find((slot) => slot.id === premium.id)?.flag).toBe("🌐");
   });
 
-  it("collapses duplicate logical servers to their best healthy representation", () => {
+  /**
+   * Contract changed 2026-07-30 (owner request: "show all sources"). Distinct
+   * quality rungs of one logical server are SEPARATE selectable streams — each
+   * is its own URL — and the in-player quality rail cannot switch between them,
+   * because it only spans rungs inside a single manifest. Collapsing them by
+   * display name alone was destroying most of the roster: CinePro/FshareTV ships
+   * Share 1080p/720p/360p, which all resolve to one themed name, so six real
+   * sources rendered as one row.
+   */
+  it("keeps distinct quality rungs of one server as separate rows", () => {
     const ru1080 = source({
       id: "cinemaos-cinema-ru-1080",
       provider: "CinemaOS",
@@ -90,9 +106,17 @@ describe("buildServerSlots — single source of truth for naming", () => {
       maxHeight: 720,
     });
     const slots = buildServerSlots([ru720, ru1080], [], false, undefined);
-    expect(slots).toHaveLength(1);
+    expect(slots).toHaveLength(2);
+    // Highest rung first, and each row carries its own honest badge.
     expect(slots[0]?.id).toBe(ru1080.id);
+    expect(slots.map((s) => s.qualityLabel)).toEqual(["1080p", "720p"]);
     expect(slots[0]?.flag).toBe("🇷🇺");
+  });
+
+  it("still collapses an exact duplicate (same server AND same resolution)", () => {
+    const a = source({ id: "dup-a", provider: "CinemaOS", label: "Cinema RU 1080", type: "mp4", maxHeight: 1080 });
+    const b = source({ id: "dup-b", provider: "CinemaOS", label: "Cinema RU 1080", type: "mp4", maxHeight: 1080 });
+    expect(buildServerSlots([a, b], [], false, undefined)).toHaveLength(1);
   });
 
   it("EXPECTED_SERVERS identity table names are all Greek — no cosmic string leaks through", () => {

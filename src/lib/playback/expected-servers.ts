@@ -176,32 +176,51 @@ export function buildServerSlots(
   activeSourceId?: string
 ): ServerSlot[] {
   const failedSet = new Set(failedIds);
-  // Always allow unprobed in the picker so background enrich can surface new servers.
-  const playable = filterPlayableSources(sources, {
-    allowUnprobed: true,
-    stickyId: activeSourceId,
-  }).filter(
-    (source) =>
-      !failedSet.has(source.id) &&
-      source.probe?.ok !== false &&
-      source.verified !== false &&
-      isSourcePlayableHere(source)
-  );
 
-  // Session-failed and conclusively dead rows are removed above. Keep the
-  // surviving roster ranked by measured source score without placeholders.
-  const ranked = [...playable].sort((a, b) => {
+  /**
+   * Show the WHOLE roster. This used to drop every row that was session-failed,
+   * probe-failed, soft-kept (`verified:false`) or undecodable here — which meant
+   * the panel routinely showed 2 entries while the response carried 8+, and gave
+   * the viewer no way to try something the prober happened to dislike. A prober
+   * verdict is evidence for ORDERING, not grounds for hiding a source: the
+   * server-side probe runs from a different network position than the browser
+   * and is wrong in both directions often enough to matter.
+   *
+   * Nothing is hidden now. Rows carry an honest status instead, and the ordering
+   * below keeps what actually works at the top.
+   */
+  const rank = (source: PlaybackSource): number => {
+    if (source.id === activeSourceId) return 0;
+    if (failedSet.has(source.id)) return 5;
+    if (!isSourcePlayableHere(source)) return 4;
+    if (source.verified === false || source.probe?.ok === false) return 3;
+    if (source.probe?.ok === true || source.origin === "debrid") return 1;
+    return 2; // reachable as far as we know, just never measured
+  };
+
+  const ranked = [...sources].sort((a, b) => {
+    const tier = rank(a) - rank(b);
+    if (tier !== 0) return tier;
     return scoreSource(b) - scoreSource(a);
   });
-  // A provider can publish the same logical server as separate fixed-quality
-  // URLs (CinemaOS commonly returns RU 1080 + RU 720). Quality belongs in
-  // the quality rail, not as duplicate server rows. Since ranking happens
-  // first, keep the best healthy representation for each stable server name.
-  const seenNames = new Set<string>();
+
+  /**
+   * Collapse only TRUE duplicates - same server AND same resolution.
+   *
+   * The old key was the display name alone, which quietly destroyed most of the
+   * roster: a provider that publishes one logical server as several fixed-quality
+   * URLs (CinePro/FshareTV ships Share 1080p / 720p / 360p, CinemaOS shipped
+   * RU 1080 + RU 720) has every rung resolve to the same themed name, so five
+   * genuinely distinct, separately-selectable streams rendered as one row. Those
+   * rungs are not interchangeable — each is its own URL with its own quality —
+   * so they belong in the list. The in-player quality rail only spans rungs
+   * INSIDE one manifest; it cannot switch between separate URLs.
+   */
+  const seenRows = new Set<string>();
   const uniqueServers = ranked.filter((source) => {
-    const name = displayName(source);
-    if (seenNames.has(name)) return false;
-    seenNames.add(name);
+    const key = `${displayName(source)}|${resolutionBadge(source)}`;
+    if (seenRows.has(key)) return false;
+    seenRows.add(key);
     return true;
   });
 
