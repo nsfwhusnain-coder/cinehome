@@ -579,8 +579,12 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
     const bVer = b.verified === false ? 0 : 1;
     if (aVer !== bVer) return bVer - aVer;
 
-    const aOk = a.probe?.ok === true ? 1 : a.probe?.ok === false ? -1 : 0;
-    const bOk = b.probe?.ok === true ? 1 : b.probe?.ok === false ? -1 : 0;
+    // Same normalization as pickDefaultSource (see hasHealthEvidence): an
+    // unprobed-but-validated debrid source is healthy, not unknown, so the
+    // visible order in the Servers panel matches what auto-pick actually does.
+    // An explicitly FAILED probe still sorts below unknown.
+    const aOk = a.probe?.ok === false ? -1 : hasHealthEvidence(a) ? 1 : 0;
+    const bOk = b.probe?.ok === false ? -1 : hasHealthEvidence(b) ? 1 : 0;
     if (aOk !== bOk) return bOk - aOk;
 
     const aMulti = isMultiRendition(a) ? 1 : 0;
@@ -793,6 +797,35 @@ function isTopTierSource(source: PlaybackSource): boolean {
   return source.origin === "debrid" && isSourcePlayableHere(source);
 }
 
+/**
+ * Health evidence for ranking, normalized across the two tiers.
+ *
+ * The latency prober (`probeSourceBatch`) lives in the stream-scraper and only
+ * ever measures scraper sources. The debrid tier is resolved separately in the
+ * Next app and merged in afterward (see mergeDebridSources), so a debrid source
+ * ALWAYS has `probe === undefined` — not "unhealthy", just never eligible for
+ * that particular measurement.
+ *
+ * Ranking used to compare `probe?.ok` directly, which quietly made that
+ * structural gap decisive: because the probe test sits above `isTopTierSource`
+ * and far above `scoreSource`'s DEBRID_BASE_BONUS, any embed the scraper had
+ * probed beat every equal-height debrid source outright. Observed live on
+ * Fight Club: a Luna embed with `probe.ok=true, speedScore=16` (the file's own
+ * `isSlowCdnSource` treats <35 as slow) won the auto-pick over three healthy
+ * Real-Debrid 1080p direct-CDN sources.
+ *
+ * A natively-playable debrid source is not unproven. It cleared a stricter
+ * server-side gate than the latency probe: a Range plausibility probe plus, for
+ * unknown containers, an ISO-BMFF signature check (see media-validation.ts) —
+ * both of which must pass before it can become a PlaybackSource at all. So it
+ * ranks as healthy here rather than as missing data. This asserts nothing new;
+ * it stops discarding validation that already happened.
+ */
+function hasHealthEvidence(source: PlaybackSource): boolean {
+  if (source.probe?.ok === true) return true;
+  return source.origin === "debrid" && isSourcePlayableHere(source);
+}
+
 /** Highest confirmed resolution across the whole roster (0 = nothing known yet). */
 export function sourceRosterMaxHeight(sources: PlaybackSource[]): number {
   return sources.reduce((max, s) => Math.max(max, sourceMaxHeight(s)), 0);
@@ -881,13 +914,40 @@ export function pickDefaultSource(
       if (aT !== bT) return bT - aT;
     }
 
-    const aOk = a.probe?.ok ? 1 : 0;
-    const bOk = b.probe?.ok ? 1 : 0;
+    const aOk = hasHealthEvidence(a) ? 1 : 0;
+    const bOk = hasHealthEvidence(b) ? 1 : 0;
     if (aOk !== bOk) return bOk - aOk;
 
     const aVer = a.verified === false ? 0 : 1;
     const bVer = b.verified === false ? 0 : 1;
     if (aVer !== bVer) return bVer - aVer;
+
+    /**
+     * Premium direct-play beats an equal-height embed.
+     *
+     * `isTopTierSource` cannot express this on its own: an HLS embed and a
+     * natively-playable debrid source are BOTH top tier, so they tie there and
+     * the multi-rendition test below decides instead — which debrid can never
+     * win, because it is always progressive MP4 and has no ladder by
+     * construction. Observed live: on Oppenheimer and Interstellar a Luna
+     * embed with ladder [1080,720,480] took the pick over two and four healthy
+     * native Real-Debrid 1080p sources respectively.
+     *
+     * Gated on `aH === bH` so this can never cost real resolution — it only
+     * settles a tie that the ladder test would otherwise resolve against the
+     * premium tier. Embed-vs-embed is untouched.
+     *
+     * The trade, stated plainly: a fixed 1080p direct-CDN file over an
+     * adaptive ladder that could downshift under pressure. That is the right
+     * call here — the debrid link skips the residential double-hop proxy
+     * entirely, and the ladders it competes against are frequently slow (the
+     * Luna above probed speedScore 16/100).
+     */
+    const aPremiumDirect = a.origin === "debrid" && isSourcePlayableHere(a);
+    const bPremiumDirect = b.origin === "debrid" && isSourcePlayableHere(b);
+    if (aPremiumDirect !== bPremiumDirect && aH === bH) {
+      return aPremiumDirect ? -1 : 1;
+    }
 
     const aLadder = isMultiRendition(a) ? 1 : 0;
     const bLadder = isMultiRendition(b) ? 1 : 0;

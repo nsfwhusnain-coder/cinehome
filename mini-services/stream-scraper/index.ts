@@ -1955,12 +1955,34 @@ async function resolveCinemaosEntries(
   return streams.map(providerToEntry);
 }
 
+/**
+ * Settle window after the FIRST playable source lands, before returning.
+ *
+ * This is a peer-collection window, not a correctness requirement: every arm
+ * that misses it still merges into the result cache via `onLateSources` /
+ * `onLateEntries`, and the client independently polls progressively AND runs
+ * a parallel `full` request. So the only thing a long grace buys is a wider
+ * roster in the FIRST response — at a direct, per-request cost to time-to-
+ * first-frame.
+ *
+ * It was 2_500ms, which dominated the whole resolve. Measured on this host:
+ * vixsrc answered at 760ms, notorrent at 1005ms, yet `lastScrape.totalMs` was
+ * 3111ms — i.e. ~80% of every resolve was this timer idling on a roster the
+ * client was already going to receive anyway.
+ *
+ * 300ms is chosen from the same measurement: the two fastest arms land 245ms
+ * apart, so this still captures a near-simultaneous peer (the actual point of
+ * a settle window) while cutting ~2.2s off first frame. Slower arms
+ * (vidlink ~2.0s, cinemaos ~3.0s) become late-merge, which is exactly the
+ * path they already take on a cache hit.
+ */
+const FIRST_HIT_SETTLE_MS = 300;
 /** After the first playable fast source, wait briefly for peers then return. */
-const FAST_FIRST_GRACE_MS = 2_500;
+const FAST_FIRST_GRACE_MS = FIRST_HIT_SETTLE_MS;
 /** Hard ceiling for the entire fast multi-API race (client timeout is 8s). */
 const FAST_MAX_WAIT_MS = 7_500;
 /** Full requests use the same progressive fan-out instead of gating on CinePro. */
-const FULL_FIRST_GRACE_MS = 2_500;
+const FULL_FIRST_GRACE_MS = FIRST_HIT_SETTLE_MS;
 /** Leave time inside the route budget for measured probes and serialization. */
 const FULL_API_MAX_WAIT_MS = 7_500;
 
@@ -1976,14 +1998,6 @@ async function resolveFastApiSources(
   episode?: number,
   options: { onLateSources?: (entries: SourceEntry[]) => void } = {}
 ): Promise<SourceEntry[]> {
-  const verifyMapped = async (
-    streams: ProviderStream[] | null
-  ): Promise<SourceEntry[]> => {
-    const entries = (streams ?? []).map(providerToEntry);
-    if (!entries.length) return [];
-    return filterVerifiedEntries(entries, { softKeep: false });
-  };
-
   // Fast race: live providers only. Lordflix/Videasy (enc-dec.app) were removed
   // from the roster entirely (2026-07-21 — 100% zero-result over 24h of prod
   // logs), so there is nothing to keep off the race slots anymore.

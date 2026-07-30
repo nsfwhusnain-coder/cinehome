@@ -1138,9 +1138,14 @@ export function VideoPlayer({
   const subtitlesOn = usePlayerStore((s) => s.subtitlesOn);
   const activeSubtitleId = usePlayerStore((s) => s.activeSubtitleId);
 
-  const huntingName = activeSource
-    ? getServerDisplayName(activeSource.provider, activeSource.label)
-    : "servers";
+  /**
+   * The loading overlay is intentionally not told which server it is waiting
+   * on — an empty name routes LoadingScreen to its generic status rotation
+   * ("Finding sources…" / "Connecting…") instead of "Connecting to Zeus…".
+   * The resolved name is still published to the store for the Servers panel
+   * and the settings dock, which are where it belongs.
+   */
+  const huntingName = "";
   // CRITICAL: overlay is gated on firstPlayable (hasStream), NOT scrape complete.
   const needsSourceHunt =
     sourcesLoading || (!hasStream && !sourcesError && !orderedSources.length);
@@ -1168,14 +1173,18 @@ export function VideoPlayer({
    * real "have we connected yet" signal — distinct from `buffering`, which
    * only says "no frame yet" and stays true a little past that point too.
    */
+  /**
+   * Deliberately server-agnostic copy. Which CDN we landed on is internal
+   * plumbing — naming it ("Connecting to Zeus…") leaks infrastructure the
+   * viewer can neither act on nor care about. The Servers panel still exposes
+   * the full roster for anyone who wants to switch by hand.
+   */
   const loadingStatus: string | null = !hasStream
     ? null
     : needsTranscode
       ? "Preparing stream…"
       : levelsPending
-        ? huntingName && huntingName !== "servers"
-          ? `Connecting to ${huntingName}…`
-          : "Connecting…"
+        ? "Connecting…"
         : "Buffering…";
   const showSwitchingChip =
     !error &&
@@ -1451,7 +1460,22 @@ export function VideoPlayer({
         isMultiRendition(best) && !isMultiRendition(activeSource);
       const betterHeight =
         sourceMaxHeight(best) > sourceMaxHeight(activeSource) + 100;
-      if (!betterMulti && !betterHeight) return;
+      /**
+       * Transport quality, not just pixel count. `isFasterSource` already owns
+       * this comparison — including the rule that a natively-playable debrid
+       * source beats a non-debrid one, because it is direct-CDN and skips both
+       * the residential `/api/hls` double hop and the master→media→segment
+       * walk that every embed pays.
+       *
+       * Without this clause the debrid tier almost never won a cold start:
+       * a Real-Debrid 1080p is progressive MP4, so `betterMulti` is false by
+       * construction (no ladder), and against a 1080p embed `betterHeight` is
+       * false too — so the roster ranked RD first (see `isTopTierSource` /
+       * `sourceFailoverPriority` in source-quality.ts) while this gate quietly
+       * declined to adopt it, and the slower embed kept the session.
+       */
+      const betterTransport = isFasterSource(activeSource, best);
+      if (!betterMulti && !betterHeight && !betterTransport) return;
       autoUpgradedRef.current = true;
       initialTimeAppliedRef.current = false;
       setError(null);
@@ -1744,11 +1768,15 @@ export function VideoPlayer({
     [handleSourceChange]
   );
 
-  /** "'Zeus' unavailable — switched to 'Apollo'" — names both ends of the hop. */
-  const showFailoverNotice = useCallback((failed: PlaybackSource, next: PlaybackSource) => {
-    const failedName = getServerDisplayName(failed.provider, failed.label);
-    const nextName = getServerDisplayName(next.provider, next.label);
-    setFailoverNotice(`'${failedName}' unavailable — switched to '${nextName}'`);
+  /**
+   * Failover is announced, not narrated. The old copy named both ends of the
+   * hop ("'Zeus' unavailable — switched to 'Apollo'"), which turns a recovery
+   * the player handled by itself into a technical incident report. Keep a
+   * short neutral acknowledgement so an unexplained pause still has a cause,
+   * without exposing CDN identities.
+   */
+  const showFailoverNotice = useCallback((_failed: PlaybackSource, _next: PlaybackSource) => {
+    setFailoverNotice("Switching servers…");
     if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
     failoverNoticeTimerRef.current = setTimeout(() => {
       failoverNoticeTimerRef.current = null;
@@ -3875,7 +3903,7 @@ export function VideoPlayer({
         >
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-white/80" />
           <span>
-            Switching to {huntingName}…
+            Switching…
             {needsTranscode ? " Preparing stream, this can take a few seconds." : ""}
           </span>
         </div>
@@ -3924,11 +3952,8 @@ export function VideoPlayer({
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-white/80" />
           <span>
             Buffering
-            {playingHeight > 0
-              ? ` — ${formatResolutionLabel(playingHeight)}`
-              : huntingName && huntingName !== "servers"
-                ? ` — ${huntingName}`
-                : ""}
+            {/* Resolution is actionable to the viewer; the CDN's name is not. */}
+            {playingHeight > 0 ? ` — ${formatResolutionLabel(playingHeight)}` : ""}
           </span>
         </div>
       )}
