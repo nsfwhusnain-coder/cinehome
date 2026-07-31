@@ -37,6 +37,7 @@ import {
   hlsPromotionTargetHeight,
   maxLevelHeight,
   pickDefaultQualityIndex,
+  pickStartLevelIndex,
 } from "@/lib/playback/hls-quality";
 import {
   getPreferredProvider,
@@ -546,15 +547,6 @@ function mapHlsLevels(
 }
 
 /**
- * Best start level: ≥1080 preferred, else highest on ladder. Delegates to
- * the shared hls-quality.ts helper so the player's default pick can never
- * disagree with the picker's own "default selection" logic.
- */
-function pickStartLevelIndex(levels: QualityLevel[]): number {
-  return pickDefaultQualityIndex(levels);
-}
-
-/**
  * Highest-bitrate level with height <= maxHeight — used as hls.autoLevelCapping
  * (level index; hls.js levels are bandwidth-ascending).
  */
@@ -839,7 +831,7 @@ function applyPreferredHlsQuality(
   let idx = findBestLevelForTarget(levels, targetH);
   // Sub-HD-only ladder (pickDefaultQualityIndex = -1): still force best available.
   if (idx < 0) idx = findMinLevelIndexForHeight(levels, 0);
-  if (idx < 0) idx = pickStartLevelIndex(levels);
+  if (idx < 0) idx = pickStartLevelIndex(levels, "auto");
   return forceHlsLevel(hls, idx);
 }
 
@@ -2628,6 +2620,46 @@ export function VideoPlayer({
             if (isHomeHlsProxy) xhr.withCredentials = true;
           },
         });
+        /**
+         * Pin the opening rung BEFORE anything is fetched.
+         *
+         * MANIFEST_PARSED (below) already applies the product rule, but it is
+         * too late: `startFragPrefetch` deliberately requests the first
+         * fragment while the manifest is still settling, so that fragment came
+         * from whatever level hls.js chose for itself — and with
+         * `startLevel: -1` that is the master's first listed rung, which is
+         * usually its lowest. Measured on Squid Game S1E1: 854x480 at first
+         * frame, 1920x1080 twenty seconds later, once ABR had caught up.
+         *
+         * MANIFEST_LOADED is the earliest event carrying the ladder and fires
+         * before any fragment request, so the same rule lands in time here.
+         * Only `startLevel` is touched — `loadLevel` and everything after the
+         * first fragment stay with MANIFEST_PARSED, whose level controller is
+         * fully initialised by then.
+         *
+         * Registered BEFORE `loadSource`, which is load-bearing: loadSource
+         * starts the manifest request immediately, and a fast manifest —
+         * anything already warm behind the local proxy — resolves before a
+         * listener attached further down would exist. That is exactly what
+         * happened on the first attempt at this fix: Squid Game (slow
+         * manifest) opened at 1080p while Dark, Breaking Bad and RRR still
+         * opened at 480p/720p.
+         */
+        hls.on(Hls.Events.MANIFEST_LOADED, (_evt, data) => {
+          try {
+            const parsed = (data.levels ?? []).map((level, index) => ({
+              index,
+              height: level.height ?? 0,
+              width: level.width,
+              bitrate: level.bitrate,
+            }));
+            const startIdx = pickStartLevelIndex(parsed, qualityTargetRef.current);
+            if (startIdx >= 0) hls.startLevel = startIdx;
+          } catch {
+            /* leave hls.js to its own choice rather than fail the attach */
+          }
+        });
+
         hlsRef.current = hls;
         hls.loadSource(effectiveSrc);
         hls.attachMedia(video);

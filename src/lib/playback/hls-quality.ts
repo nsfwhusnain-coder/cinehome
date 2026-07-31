@@ -268,6 +268,37 @@ export function pickDefaultQualityIndex(levels: QualityLevel[]): number {
 }
 
 /**
+ * Which rung the FIRST fragment should come from.
+ *
+ * Distinct from `pickDefaultQualityIndex` in one way that matters: it never
+ * answers -1 for a real ladder. hls.js treats -1 as "decide for yourself", and
+ * left to itself it opens on whatever the master happens to list first — which
+ * on most masters is the lowest rung. That is how the opening seconds decoded
+ * at 480p and only climbed once ABR had measured the line (observed on Squid
+ * Game S1E1: 854x480 at first frame, 1920x1080 twenty seconds later).
+ *
+ * So a ladder with no rung reaching the 1080p floor starts at its highest rung
+ * instead of its lowest — an honest degrade rather than a guess downward.
+ *
+ * A fixed user preference is honoured directly; "auto" uses the same
+ * lowest-rung-meeting-the-floor rule the rest of the player already applies,
+ * so the first fragment and every fragment after it agree.
+ */
+export function pickStartLevelIndex(
+  levels: QualityLevel[],
+  target: "auto" | number
+): number {
+  if (!levels.length) return -1;
+  if (target !== "auto") return findBestLevelForTarget(levels, target);
+  const floorIdx = pickDefaultQualityIndex(levels);
+  if (floorIdx >= 0) return floorIdx;
+  // Whole ladder is sub-HD: open at the best it has, never the first listed.
+  return levels.reduce((best, l) =>
+    effectiveLevelHeight(l) > effectiveLevelHeight(best) ? l : best
+  ).index;
+}
+
+/**
  * True when selected fixed height and actual decode height disagree enough
  * to show an honest mismatch hint in the dock (never for Auto / unknown).
  */

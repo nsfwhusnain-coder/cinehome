@@ -9,6 +9,7 @@ import {
   hlsPromotionTargetHeight,
   isQualityMismatch,
   pickDefaultQualityIndex,
+  pickStartLevelIndex,
 } from "./hls-quality";
 import type { QualityLevel } from "@/stores/player-store";
 
@@ -268,5 +269,51 @@ describe("findBestLevelForTarget fixed-pick honesty", () => {
       { index: 1, height: 2160 },
     ];
     expect(findBestLevelForTarget(levels, 1080)).toBe(0);
+  });
+});
+
+/**
+ * The first fragment sets the impression. hls.js left to itself opens on
+ * whatever the master lists first — usually the lowest rung — so this rule has
+ * to answer for every ladder shape, never -1.
+ */
+describe("pickStartLevelIndex", () => {
+  const ladder = [
+    { index: 0, height: 480 },
+    { index: 1, height: 720 },
+    { index: 2, height: 1080 },
+    { index: 3, height: 2160 },
+  ];
+
+  it("opens at 1080p, not the lowest rung and not 4K", () => {
+    // The Squid Game case: the master lists 480p first.
+    expect(pickStartLevelIndex(ladder, "auto")).toBe(2);
+  });
+
+  it("opens at the best available when nothing reaches the floor", () => {
+    // Honest degrade: 720p max means start at 720p, never 480p.
+    const subHd = [
+      { index: 0, height: 360 },
+      { index: 1, height: 720 },
+      { index: 2, height: 480 },
+    ];
+    expect(pickStartLevelIndex(subHd, "auto")).toBe(1);
+  });
+
+  it("honours a fixed preference over the auto floor", () => {
+    expect(pickStartLevelIndex(ladder, 2160)).toBe(3);
+    expect(pickStartLevelIndex(ladder, 720)).toBe(1);
+  });
+
+  it("never returns -1 for a ladder that has rungs", () => {
+    // -1 hands the choice back to hls.js, which is the bug.
+    for (const target of ["auto", 1080, 2160, 480] as const) {
+      expect(pickStartLevelIndex(ladder, target)).toBeGreaterThanOrEqual(0);
+      expect(pickStartLevelIndex([{ index: 0, height: 0 }], target)).toBe(0);
+    }
+  });
+
+  it("returns -1 only for an empty ladder", () => {
+    expect(pickStartLevelIndex([], "auto")).toBe(-1);
   });
 });
