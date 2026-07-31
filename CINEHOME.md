@@ -288,6 +288,76 @@ Circuit breakers (in-memory, §8.3): window last 20 attempts / 10m; open when er
 
 `/health` payload includes: `browsers`/`queued` (compat), `pool` (size/max/queued/warming), `circuits` (per-provider state/samples/errorRate/enabled), `timings` (lastMs/lastAt/lastOk), `lastScrape` wall time.
 
+## Remux (MKV -> fMP4) — how 4K actually plays
+
+MKV opens in **no browser**, Safari included, and that is where nearly all
+real 4K lives. Those rows used to be surfaced, badged "unavailable" and
+excluded from auto-play, which is why a 4K-rich title looked like it had none.
+
+The media worker (`mini-services/transcoder`, port 3040, internal only) now
+serves **two modes**, gated independently because their cost is not comparable:
+
+| Mode | Default | What it does |
+|------|---------|--------------|
+| `remux` (`REMUX_ENABLED`) | **ON** | `-c:v copy` into fMP4 HLS. No decode, no encode, no downscale — a 4K MKV plays at its real 4K. Audio IS re-encoded (see below). |
+| `transcode` (`TRANSCODER_ENABLED`) | OFF | Full re-encode to an H.264 ladder, capped at 1080p. A cold 4K HEVC job measured 17.4 GiB / 1378% CPU — opt-in only. |
+
+`sourceDelivery()` in `src/lib/playback/source-quality.ts` decides which of
+**direct / remux / unavailable** a source is. "unavailable" now means only what
+it says: a codec with no route in this browser (HEVC in Chrome). Container
+problems are remuxed.
+
+**Audio is always re-encoded to stereo AAC.** MKV releases routinely carry
+DTS-HD MA, TrueHD, E-AC3, FLAC or PCM; MSE rejects the whole append if the
+audio track is undecodable, so copying it yields perfect video that will not
+play. Audio encode is a few percent of one core against ~1% of the bitrate.
+
+### Remux env
+
+| Env | Default | Effect |
+|-----|---------|--------|
+| `REMUX_ENABLED` | `1` | `0` disables remuxing; MKV sources become unselectable again |
+| `TRANSCODER_REMUX_MAX_CONCURRENT` | `2` | Enforced ceiling. Over capacity the worker refuses so the player fails over, rather than queueing behind another film |
+| `TRANSCODER_REMUX_MIN_FREE_BYTES` | 25 GiB | Refuses to start a remux below this much free disk (after trying eviction first) |
+| `TRANSCODER_REMUX_MAX_JOB_BYTES` | 30 GiB | Kills any single job that exceeds this |
+
+Note `TRANSCODER_MAX_CONCURRENT` is reported on `/health` but has never been
+enforced; the remux ceiling above is the one that applies.
+
+### Disk
+
+A stream copy writes its input back out roughly 1:1, so a 4K remux is tens of
+GB. Four things bound it:
+
+- ffmpeg reads at **4x realtime** after a 60s full-speed burst (startup stays
+  instant, the lead stays bounded).
+- A job with **no segment read for 2 minutes** is killed and its partial output
+  discarded — otherwise an abandoned playback keeps writing the whole film.
+- Entries **in use are never evicted** (in flight, or read in the last 30 min).
+- **Incomplete entries are purged at boot**: a cache hit is decided by
+  "master.m3u8 exists", which is also true after a crash or a killed job.
+  A media playlist with no `#EXT-X-ENDLIST` was interrupted and is dropped.
+
+### Duration caveat
+
+A remux is produced live, so `video.duration` is **how much has been remuxed**,
+not how long the title is (measured: 491.9s twenty seconds into a 24-minute
+episode). The player marks duration `provisional` in that state and uses TMDB's
+runtime for resume progress and the next-episode card. Anything new that
+divides by duration must respect that flag.
+
+### Verify a remux end to end
+```bash
+# Worker health includes free disk and the remux ceiling
+docker exec cinehome curl -s http://127.0.0.1:3040/health
+
+# Prove the OUTPUT is really 4K, not a downscale
+docker exec cinehome sh -lc 'cd /app/transcode-cache/<key> \
+  && cat init.mp4 seg_00000.m4s > /tmp/p.mp4 \
+  && ffprobe -v error -select_streams v:0 \
+     -show_entries stream=codec_name,width,height -of default=noprint_wrappers=1 /tmp/p.mp4'
+```
+
 ## Verify
 ```bash
 docker exec cinehome curl -s http://127.0.0.1:3030/health
