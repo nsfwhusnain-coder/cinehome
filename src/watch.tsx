@@ -493,27 +493,6 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
   );
   const hasNextEpisode = nextEpisodeTarget != null;
 
-  /**
-   * TMDB's stated runtime, in seconds.
-   *
-   * Used only when the stream cannot state its own length yet — a remux is
-   * produced live, so its playlist reports how much has been remuxed rather
-   * than how long the title is. Without this, watching the first quarter of a
-   * remuxed film and leaving would save no resume point at all, because the
-   * only duration on offer was one known to be wrong. TMDB's figure is accurate
-   * to about a minute, which is far better than either alternative.
-   *
-   * `episode_run_time` is a series-level average and TMDB often leaves it
-   * empty, so a missing value simply means no fallback — never a guess.
-   */
-  const tmdbRuntimeSeconds = useMemo(() => {
-    const raw =
-      mediaType === "tv"
-        ? (meta?.episode_run_time as number[] | undefined)?.[0]
-        : (meta?.runtime as number | undefined);
-    return typeof raw === "number" && raw > 0 ? raw * 60 : 0;
-  }, [mediaType, meta]);
-
   const goToNextEpisode = useCallback(() => {
     if (!nextEpisodeTarget) return;
     // Flush current episode under its own identity, then hard-reset so next ep starts at 0.
@@ -629,7 +608,6 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
             initialTime={savedTime}
             onProgress={onProgress}
             onEnded={onEnded}
-            fallbackDurationS={tmdbRuntimeSeconds}
             hasNextEpisode={mediaType === "tv" && hasNextEpisode}
             onNextEpisode={goToNextEpisode}
             nextEpisodeTarget={nextEpisodeTarget}
@@ -656,7 +634,6 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
               key={`${nextEpisodeTarget.season}-${nextEpisodeTarget.episode}`}
               ended={ended}
               target={nextEpisodeTarget}
-              fallbackDurationS={tmdbRuntimeSeconds}
               currentSeason={tvSeason}
               onPlayNow={goToNextEpisode}
             />
@@ -686,13 +663,11 @@ function UpNextGate({
   ended,
   target,
   currentSeason,
-  fallbackDurationS,
   onPlayNow,
 }: {
   ended: boolean;
   target: { season: number; episode: number };
   currentSeason?: number;
-  fallbackDurationS: number;
   onPlayNow: () => void;
 }) {
   const currentTime = usePlayerStore((s) => s.currentTime);
@@ -700,8 +675,7 @@ function UpNextGate({
   const durationProvisional = usePlayerStore((s) => s.durationProvisional);
 
   const visible =
-    ended ||
-    shouldShowUpNext(currentTime, duration, durationProvisional, fallbackDurationS);
+    ended || shouldShowUpNext(currentTime, duration, durationProvisional);
   if (!visible) return null;
 
   return (

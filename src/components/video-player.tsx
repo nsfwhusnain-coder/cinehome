@@ -344,6 +344,9 @@ interface Props {
   onProgress?: (current: number, duration: number) => void;
   onEnded?: () => void;
   hasNextEpisode?: boolean;
+  /** TMDB runtime in seconds; used only while the stream's own duration is
+   * still growing (see `durationProvisional`). 0 = unknown. */
+  fallbackDurationS?: number;
   onNextEpisode?: () => void;
   /** Preload next episode sources (TV binge). */
   nextEpisodeTarget?: { season: number; episode: number } | null;
@@ -974,6 +977,7 @@ export function VideoPlayer({
   onProgress,
   onEnded,
   hasNextEpisode,
+  fallbackDurationS = 0,
   onNextEpisode,
   nextEpisodeTarget = null,
   onBack,
@@ -1033,6 +1037,23 @@ export function VideoPlayer({
    * on every new source attempt and on title change.
    */
   const [mediaFaulted, setMediaFaulted] = useState(false);
+  /**
+   * True while the stream's `duration` is still growing.
+   *
+   * A remux is produced live: ffmpeg writes an EVENT playlist segment by
+   * segment, so `video.duration` reports HOW MUCH HAS BEEN REMUXED, not how
+   * long the title is. Measured on a 24-minute episode 20 seconds in:
+   * duration read 491.9s. Anything that divides by duration is wrong until the
+   * playlist closes — resume progress would be saved at several times the real
+   * percentage, and the end-of-episode card would appear a long way from the
+   * end.
+   *
+   * It resolves itself: the remux runs at 4x realtime, so the playlist gains
+   * its `#EXT-X-ENDLIST` (hls.js: `details.live === false`) roughly a quarter
+   * of the way in, long before either of those things is needed. Until then
+   * both are suppressed rather than computed from a number known to be wrong.
+   */
+  const setDurationProvisional = usePlayerStore((st) => st.setDurationProvisional);
   /** True only after intentional user pause — do not auto-resume after underrun. */
   const userPausedRef = useRef(false);
   /** Mid-watch source switch / failover — compact chip only, keep last frame. */
@@ -1318,7 +1339,10 @@ export function VideoPlayer({
   const isDiscoveringRef = useRef(false);
   const dockOpenRef = useRef(false);
   const shortcutsOpenRef = useRef(false);
+  const durationProvisionalRef = useRef(false);
+  const fallbackDurationSRef = useRef(fallbackDurationS);
   useEffect(() => {
+    fallbackDurationSRef.current = fallbackDurationS;
     activeSourceRef.current = activeSource;
     orderedSourcesRef.current = orderedSources;
     onRetrySourcesRef.current = onRetrySources;
@@ -1434,6 +1458,8 @@ export function VideoPlayer({
     setCurrentTime(0);
     setEverPlayed(false);
     setMediaFaulted(false);
+    durationProvisionalRef.current = false;
+    setDurationProvisional(false);
     setIsSwitchingServer(false);
     setActiveSource(null);
     setError(null);
@@ -2296,6 +2322,11 @@ export function VideoPlayer({
     // A new attempt starts unfaulted — otherwise a failover onto a working
     // source would keep showing the blocking error left by the one before it.
     setMediaFaulted(false);
+    // Likewise provisional-duration: it belongs to the stream being replaced.
+    // A progressive source has a real duration from the start, and only an
+    // HLS LEVEL_LOADED can set this again.
+    durationProvisionalRef.current = false;
+    setDurationProvisional(false);
     // Bind the HTMLMediaElement error to this exact source generation. A
     // component-wide listener that looked up "currentToken" at callback time
     // could miss a progressive MP4 failure during a source/effect transition,
@@ -2714,6 +2745,21 @@ export function VideoPlayer({
 
         hls.on(Hls.Events.LEVELS_UPDATED, refreshHlsLevels);
         hls.on(Hls.Events.LEVEL_LOADED, refreshHlsLevels);
+        /**
+         * `details.live` means "this playlist carries no EXT-X-ENDLIST yet",
+         * which is only evidence of a GROWING duration for output we produce
+         * ourselves. Plenty of embed playlists omit ENDLIST while still
+         * reporting a correct, fixed duration, and treating those as
+         * provisional would suppress resume progress and the end-of-episode
+         * card for most of the roster. So the remux flag is required too: we
+         * know that stream is being written segment by segment because we are
+         * the ones writing it.
+         */
+        hls.on(Hls.Events.LEVEL_LOADED, (_e, data) => {
+          const provisional = needsRemux && Boolean(data.details?.live);
+          durationProvisionalRef.current = provisional;
+          setDurationProvisional(provisional);
+        });
         hls.on(Hls.Events.FRAG_BUFFERED, () => {
           const levelList = levelsFromHls(hls);
           if (videoRef.current && levelList.length) {
@@ -3199,14 +3245,26 @@ export function VideoPlayer({
       // progressive-enrich poll) must never force this whole effect to re-run
       // and re-attach all media listeners (task 8).
       const progressIntervalMs = firstProgressSavedRef.current ? 5000 : 2000;
+      /**
+       * Which duration to record progress against.
+       *
+       * A remux's own duration is how much has been remuxed, not how long the
+       * title is, so recording against it would mark a film nearly finished
+       * within minutes. TMDB's runtime is the honest stand-in while that
+       * lasts; if it is unknown, no progress is saved rather than a wrong
+       * percentage, since a bad resume point is worse than none.
+       */
+      const progressDuration = durationProvisionalRef.current
+        ? fallbackDurationSRef.current
+        : video.duration;
       if (
         onProgressRef.current &&
         now - lastProgressSave.current > progressIntervalMs &&
-        video.duration
+        progressDuration > 0
       ) {
         lastProgressSave.current = now;
         firstProgressSavedRef.current = true;
-        onProgressRef.current(t, video.duration);
+        onProgressRef.current(t, progressDuration);
       }
       // TV binge: warm next episode sources at 80% so next-ep TTFF is near-instant.
       const nextEpTarget = nextEpisodeTargetRef.current;
@@ -4228,6 +4286,7 @@ export function VideoPlayer({
       )}
 
       <SkipIntroButton onSkip={seekTo} />
+
 
       <PlayerControls
         title={title}
