@@ -821,12 +821,31 @@ function refererForCdn(targetUrl: string, referer: string): string {
   }
 }
 
+/**
+ * What an HLS verification learned about the stream.
+ *
+ * `maxHeight`/`ladder` come from the master playlist's own `RESOLUTION=`
+ * attributes, which this walk already downloads and parses in order to CHOOSE a
+ * variant — it just used to throw the numbers away and answer a bare boolean.
+ * That is why most NoTorrent/Pulse rows reached the picker with no resolution
+ * at all: measured on Breaking Bad S1E1, 8 of 11 sources reported height 0, so
+ * the Servers list could not label them and ranking could not tell a 1080p
+ * source from a 480p one. Reading them out costs no extra request.
+ */
+export interface HlsVerifyResult {
+  ok: boolean;
+  /** Highest RESOLUTION height advertised by the master, 0 if none was seen. */
+  maxHeight: number;
+  /** Every advertised height, descending — a real adaptive ladder. */
+  ladder: number[];
+}
+
 async function verifyHlsServer(
   manifestUrl: string,
   referer: string,
   userAgent: string,
   cookies: string
-): Promise<boolean> {
+): Promise<HlsVerifyResult> {
   try {
     const effectiveReferer = refererForCdn(manifestUrl, referer);
     let origin = effectiveReferer;
@@ -843,13 +862,24 @@ async function verifyHlsServer(
     };
     if (cookies) headers.Cookie = cookies;
 
+    // Heights seen on any master along the walk. Collected on the way past;
+    // the variant CHOICE below deliberately avoids the top rungs (they often
+    // 403 on VidApi), but what the master ADVERTISES is still the truth about
+    // what the source offers, so the two must not be conflated.
+    const seenHeights = new Set<number>();
+    const fail = (): HlsVerifyResult => ({ ok: false, maxHeight: 0, ladder: [] });
+    const done = (ok: boolean): HlsVerifyResult => {
+      const ladder = [...seenHeights].sort((a, b) => b - a);
+      return { ok, maxHeight: ladder[0] ?? 0, ladder };
+    };
+
     // Walk master → nested master → media, then require a real segment body.
     // Never treat "playlist has #EXTINF" alone as success (Horizon 2–4: media 200, seg 403).
     let url = manifestUrl;
     let text = "";
     for (let hop = 0; hop < 4; hop++) {
       const res = await curlGet(url, { headers, timeoutSec: 20 });
-      if (!res.ok || !res.text.includes("#EXTM3U")) return false;
+      if (!res.ok || !res.text.includes("#EXTM3U")) return fail();
       text = res.text;
       const lines = text.split("\n").map((l) => l.trim());
       const isMaster = lines.some((l) => l.startsWith("#EXT-X-STREAM-INF"));
@@ -862,6 +892,7 @@ async function verifyHlsServer(
           if (!n || n.startsWith("#")) continue;
           const bw = Number(lines[i]!.match(/BANDWIDTH=(\d+)/i)?.[1] || 0);
           const h = Number(lines[i]!.match(/RESOLUTION=\d+x(\d+)/i)?.[1] || 0);
+          if (h > 0) seenHeights.add(h);
           // Prefer ≤720p mid bitrate (top rungs often 403 on VidApi).
           if (h > 720 && h > 0) continue;
           const score = Math.abs((bw || 2_500_000) - 2_500_000);
@@ -876,7 +907,7 @@ async function verifyHlsServer(
             if (!lines[i - 1]?.startsWith("#EXT-X-STREAM-INF")) return false;
             return !!l && !l.startsWith("#");
           });
-          if (!any) return false;
+          if (!any) return done(false);
           next = any.startsWith("http") ? any : new URL(any, url).toString();
         }
         url = next;
@@ -884,10 +915,10 @@ async function verifyHlsServer(
       }
       // Media playlist — fetch first segment
       const segLine = lines.find((l) => l && !l.startsWith("#"));
-      if (!segLine) return false;
+      if (!segLine) return done(false);
       const segUrl = segLine.startsWith("http") ? segLine : new URL(segLine, url).toString();
       const segRes = await curlGet(segUrl, { headers, timeoutSec: 20 });
-      if (!segRes.ok || segRes.body.byteLength < 500) return false;
+      if (!segRes.ok || segRes.body.byteLength < 500) return done(false);
       const head = segRes.text?.trimStart().slice(0, 16) || "";
       // Nested playlist mistaken as segment
       if (head.startsWith("#EXTM3U")) {
@@ -902,13 +933,13 @@ async function verifyHlsServer(
         body.startsWith("GIF8") ||
         body.startsWith("\u00ff\u00d8\u00ff")
       ) {
-        return false;
+        return done(false);
       }
-      return true;
+      return done(true);
     }
-    return false;
+    return done(false);
   } catch {
-    return false;
+    return { ok: false, maxHeight: 0, ladder: [] };
   }
 }
 
@@ -933,7 +964,7 @@ async function pickAllVerifiedCaptures(
     }
 
     if (capture.url.includes(".m3u8")) {
-      const ok = await verifyHlsServer(
+      const { ok } = await verifyHlsServer(
         capture.url,
         embedUrl.includes("vidking.net") ? embedUrl : capture.referer || referer,
         capture.userAgent,
@@ -976,7 +1007,7 @@ async function pickAllVerifiedCaptures(
   if (!verified.length && hevcFallback) {
     const cap = hevcFallback;
     if (cap.url.includes(".m3u8")) {
-      const ok = await verifyHlsServer(
+      const { ok } = await verifyHlsServer(
         cap.url,
         embedUrl.includes("vidking.net") ? embedUrl : cap.referer || referer,
         cap.userAgent,
@@ -1033,7 +1064,7 @@ function isImagePayload(body: Buffer): boolean {
 }
 
 /** Probe API-sourced entries so dead CDN URLs never fill a server slot. */
-async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
+async function verifySourceEntry(entry: SourceEntry): Promise<HlsVerifyResult> {
   const referer = entry.session.referer || "";
   const origin = entry.session.origin || referer;
   const ua = entry.session.userAgent || DEFAULT_UA;
@@ -1056,6 +1087,9 @@ async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
     if (lower.includes(".m3u8") || lower.includes("/playlist/")) {
       return verifyHlsServer(entry.url, referer, ua, cookies);
     }
+    // Only HLS masters advertise RESOLUTION; the other branches answer with
+    // ok/not-ok and no height, exactly as before.
+    const plain = (ok: boolean): HlsVerifyResult => ({ ok, maxHeight: 0, ladder: [] });
     if (entry.url.includes(".mpd")) {
       const mpdRes = await curlGet(entry.url, {
         headers: {
@@ -1065,7 +1099,7 @@ async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
         },
         timeoutSec: VERIFY_TIMEOUT_SEC,
       });
-      return mpdRes.ok && mpdRes.text.includes("<MPD");
+      return plain(mpdRes.ok && mpdRes.text.includes("<MPD"));
     }
     // Sniff: an m3u8 without the extension, or a real progressive media body.
     const headers: Record<string, string> = {
@@ -1077,7 +1111,7 @@ async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
     };
     if (cookies) headers.Cookie = cookies;
     const res = await curlGet(entry.url, { headers, timeoutSec: VERIFY_TIMEOUT_SEC });
-    if (!res.ok || res.body.byteLength < 200) return false;
+    if (!res.ok || res.body.byteLength < 200) return plain(false);
     const head = res.text?.trimStart() || "";
     if (head.startsWith("#EXTM3U")) {
       return verifyHlsServer(entry.url, referer, ua, cookies);
@@ -1086,11 +1120,34 @@ async function verifySourceEntry(entry: SourceEntry): Promise<boolean> {
     // above), "returned some bytes" is too weak on its own: several embed CDNs
     // answer with an ad tile instead of media. Reject the image signatures the
     // HLS walk already rejects, so both paths apply the same standard.
-    if (isImagePayload(res.body)) return false;
-    return res.body.byteLength > 200;
+    if (isImagePayload(res.body)) return plain(false);
+    return plain(res.body.byteLength > 200);
   } catch {
-    return false;
+    return { ok: false, maxHeight: 0, ladder: [] };
   }
+}
+
+/**
+ * Fold what verification learned about resolution into the entry.
+ *
+ * Only fills gaps: a real quality probe (`quality-probe.ts`) measures the
+ * stream itself and is authoritative, so an entry that already has a height
+ * keeps it. This exists for the entries that had none — the master's own
+ * RESOLUTION attributes are the only resolution evidence those sources ever
+ * offer, and without them the Servers list shows a bare name and ranking
+ * cannot tell 1080p from 480p.
+ */
+function withVerifiedHeight(entry: SourceEntry, result: HlsVerifyResult): SourceEntry {
+  if (!result.maxHeight) return entry;
+  if ((entry.maxHeight ?? 0) > 0) return entry;
+  return {
+    ...entry,
+    maxHeight: result.maxHeight,
+    // A single advertised rendition is not a ladder; leave those alone so
+    // `isMultiRendition` keeps meaning what it says.
+    ladder: result.ladder.length > 1 ? result.ladder : entry.ladder,
+    quality: entry.quality === "auto" ? `${result.maxHeight}p` : entry.quality,
+  };
 }
 
 /** Soft-kept roster cap (unverified rows kept for manual server switching). */
@@ -1110,7 +1167,10 @@ async function filterVerifiedEntries(
   const softKeep = options.softKeep !== false;
   const ranked = [...entries].sort((a, b) => entryScore(b) - entryScore(a));
   const results = await Promise.all(
-    ranked.map(async (entry) => ({ entry, ok: await verifySourceEntry(entry) }))
+    ranked.map(async (entry) => {
+      const result = await verifySourceEntry(entry);
+      return { entry: withVerifiedHeight(entry, result), ok: result.ok };
+    })
   );
   const good = results
     .filter((r) => r.ok)
