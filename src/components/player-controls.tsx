@@ -95,6 +95,8 @@ interface Props {
   onSelectEpisode?: (season: number, episode: number) => void;
   sleepMinutes?: number | null;
   onSleepMinutesChange?: (minutes: number | null) => void;
+  /** TMDB runtime used to label a live-growing remux honestly. */
+  expectedDurationS?: number;
 }
 
 export function PlayerControls({
@@ -136,10 +138,12 @@ export function PlayerControls({
   onSelectEpisode,
   sleepMinutes = null,
   onSleepMinutesChange,
+  expectedDurationS = 0,
 }: Props) {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const currentTime = usePlayerStore((s) => s.currentTime);
   const duration = usePlayerStore((s) => s.duration);
+  const durationProvisional = usePlayerStore((s) => s.durationProvisional);
   const volume = usePlayerStore((s) => s.volume);
   const isMuted = usePlayerStore((s) => s.isMuted);
   const isFullscreen = usePlayerStore((s) => s.isFullscreen);
@@ -149,6 +153,7 @@ export function PlayerControls({
   const buffered = usePlayerStore((s) => s.bufferedEnd);
 
   const [showEpisodes, setShowEpisodes] = useState(false);
+  const [controlsFocused, setControlsFocused] = useState(false);
   const shortcutsDialogRef = useRef<HTMLDivElement>(null);
   const shortcutsPreviousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -160,7 +165,21 @@ export function PlayerControls({
     !!onSelectEpisode;
 
   const controlsVisible =
-    showControls || alwaysShowControls || !!settingsOpen || showEpisodes;
+    showControls || alwaysShowControls || !!settingsOpen || showEpisodes || controlsFocused;
+  const expectedRuntime =
+    durationProvisional && expectedDurationS > duration
+      ? expectedDurationS
+      : 0;
+
+  const onControlsBlur = (event: React.FocusEvent<HTMLElement>) => {
+    if (
+      event.relatedTarget instanceof Node &&
+      event.currentTarget.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    setControlsFocused(false);
+  };
 
   useEffect(() => {
     if (!shortcutsOpen) return;
@@ -184,11 +203,13 @@ export function PlayerControls({
       {/* Top bar — LordFlix */}
       <div
         className={cn(
-          "absolute inset-x-0 top-0 z-20 flex h-14 items-center justify-between px-4 transition-opacity duration-300 sm:px-5",
+          "player-controls-top absolute inset-x-0 top-0 z-20 flex items-center justify-between transition-opacity duration-300",
           "bg-gradient-to-b from-black/75 to-transparent",
           controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
         )}
         onClick={(e) => e.stopPropagation()}
+        onFocusCapture={() => setControlsFocused(true)}
+        onBlurCapture={onControlsBlur}
       >
         <button
           type="button"
@@ -255,6 +276,8 @@ export function PlayerControls({
           controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
         )}
         onClick={(e) => e.stopPropagation()}
+        onFocusCapture={() => setControlsFocused(true)}
+        onBlurCapture={onControlsBlur}
       >
         {/* Full viewport width — zero side padding */}
         <div className="w-full px-0">
@@ -266,7 +289,7 @@ export function PlayerControls({
           />
         </div>
 
-        <div className="flex items-center gap-1 px-3 pb-3 pt-0.5 sm:gap-2 sm:px-5">
+        <div className="player-controls-bottom-row flex items-center gap-1 pt-0.5 sm:gap-2">
           <div className="flex min-w-0 items-center gap-1 sm:gap-2">
             <IconBtn onClick={onTogglePlay} label={isPlaying ? "Pause" : "Play"}>
               {isPlaying ? (
@@ -307,7 +330,14 @@ export function PlayerControls({
             <div className="ml-1 hidden whitespace-nowrap text-[13px] tabular-nums text-white sm:block">
               {formatTime(currentTime)}
               <span className="text-white/50"> / </span>
-              <span className="text-white/80">{formatTime(duration)}</span>
+              <span className="text-white/80">
+                {expectedRuntime > 0 ? `~${formatTime(expectedRuntime)}` : formatTime(duration)}
+              </span>
+              {expectedRuntime > 0 && (
+                <span className="ml-1.5 text-[11px] font-medium text-white/55">
+                  · preparing
+                </span>
+              )}
             </div>
             {showNextEpisode && (
               <IconBtn onClick={onNextEpisode} label="Next episode">
@@ -386,7 +416,7 @@ export function PlayerControls({
             role="dialog"
             aria-modal="true"
             aria-label="Keyboard shortcuts"
-            className="absolute bottom-16 right-4 z-50 w-64 rounded-xl border border-white/10 bg-[rgba(15,15,15,0.95)] p-2 shadow-2xl"
+            className="player-shortcuts-panel absolute right-4 z-50 w-64 rounded-xl border border-white/10 bg-[rgba(15,15,15,0.95)] p-2 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between px-2 py-1">

@@ -155,3 +155,64 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* The player container itself enters fullscreen. Give it an explicit dynamic
+   viewport box so display-mode/monitor changes cannot preserve its old parent
+   percentage height. Keep the WebKit selector for Safari-based living-room
+   browsers. */
+.player-shell:fullscreen,
+.player-shell:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-width: 100vw;
+  min-height: 100vh;
+  min-height: 100dvh;
+  max-width: none;
+  max-height: none;
+}
+
+/* Keep fullscreen controls clear of notches, rounded TV overscan and mobile
+   home indicators. `max()` preserves the existing desktop spacing when the
+   safe-area inset is zero. */
+.player-controls-top {
+  height: calc(3.5rem + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+
+.player-controls-bottom-row {
+  padding-left: max(0.75rem, env(safe-area-inset-left));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.player-settings-dock,
+.player-shortcuts-panel {
+  bottom: calc(4rem + env(safe-area-inset-bottom));
+  max-height: calc(
+    100dvh - 5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)
+  );
+}
+
+.player-episodes-panel {
+  bottom: calc(3.75rem + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 640px) {
+  .player-controls-top {
+    padding-left: max(1.25rem, env(safe-area-inset-left));
+    padding-right: max(1.25rem, env(safe-area-inset-right));
+  }
+
+  .player-controls-bottom-row {
+    padding-left: max(1.25rem, env(safe-area-inset-left));
+    padding-right: max(1.25rem, env(safe-area-inset-right));
+  }
+
+  .player-settings-dock,
+  .player-shortcuts-panel {
+    bottom: calc(3.5rem + env(safe-area-inset-bottom));
+  }
+}

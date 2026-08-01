@@ -21,7 +21,7 @@
  */
 
 import { chromium, type BrowserContext, type Page } from "playwright";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 type ViewportName = "desktop" | "mobile" | "tv";
@@ -56,6 +56,19 @@ const OUT_DIR =
 const WATCH_PATH = process.env.PLAYER_PRODUCT_TITLE || "/watch/movie/550";
 const VIEWPORT_FILTER = process.env.PLAYER_PRODUCT_VIEWPORT as ViewportName | undefined;
 const FIRST_FRAME_TIMEOUT_MS = Number(process.env.FIRST_FRAME_TIMEOUT_MS || "45000");
+/** QA-only hostname remap for an isolated candidate using production auth. */
+const STORAGE_COOKIE_DOMAIN = process.env.STORAGE_COOKIE_DOMAIN?.trim() || "";
+
+interface StorageCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "Strict" | "Lax" | "None";
+}
 
 const checks: Check[] = [];
 
@@ -343,7 +356,48 @@ async function runDesktop(page: Page): Promise<void> {
       .catch(() => false);
     check(viewport, "F enters fullscreen", entered);
     if (entered) {
-      await page.keyboard.press("f");
+      await ensurePlaying(page);
+      // Let auto-hide fire, then prove a normal pointer movement restores a
+      // hit-testable control surface inside the fullscreen top layer.
+      await page.waitForTimeout(3_300);
+      await showControls(page);
+      const fullscreenSettings = page.getByRole("button", {
+        name: "Settings",
+        exact: true,
+      });
+      await fullscreenSettings.click();
+      const fullscreenDialog = page.getByRole("dialog", {
+        name: "Player settings",
+      });
+      await fullscreenDialog.waitFor({ state: "visible" });
+      const fullscreenBounds = await fullscreenDialog.evaluate((dialog) => {
+        const rect = dialog.getBoundingClientRect();
+        return {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+          width: window.innerWidth,
+          height: window.innerHeight,
+        };
+      });
+      check(
+        viewport,
+        "fullscreen controls restore and remain clickable",
+        fullscreenBounds.left >= 0 &&
+          fullscreenBounds.top >= 0 &&
+          fullscreenBounds.right <= fullscreenBounds.width &&
+          fullscreenBounds.bottom <= fullscreenBounds.height,
+        JSON.stringify(fullscreenBounds)
+      );
+      await page.screenshot({ path: join(OUT_DIR, "desktop-fullscreen-settings.png") });
+      await page.keyboard.press("Escape");
+      await fullscreenDialog.waitFor({ state: "hidden" });
+      // Browsers are allowed to consume Escape for the fullscreen top layer as
+      // well as the dialog. Only send F when Escape did not already exit.
+      if (await page.evaluate(() => Boolean(document.fullscreenElement))) {
+        await page.keyboard.press("f");
+      }
       const exited = await page
         .waitForFunction(() => !document.fullscreenElement, undefined, { timeout: 3_000 })
         .then(() => true)
@@ -390,6 +444,29 @@ async function runCompactViewport(
     true,
     `${playing.videoWidth}x${playing.videoHeight}`
   );
+  await showControls(page);
+
+  if (viewport === "mobile") {
+    const settingsButton = page.getByRole("button", { name: "Settings", exact: true });
+    const box = await settingsButton.boundingBox();
+    if (!box) {
+      check(viewport, "touching a control does not toggle playback underneath", false, "settings button has no box");
+    } else {
+      const before = await videoState(page);
+      await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+      const dialog = page.getByRole("dialog", { name: "Player settings" });
+      await dialog.waitFor({ state: "visible" });
+      const after = await videoState(page);
+      check(
+        viewport,
+        "touching a control does not toggle playback underneath",
+        after.paused === before.paused,
+        `paused ${before.paused} -> ${after.paused}`
+      );
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+    }
+  }
   await showControls(page);
 
   const layout = await page.evaluate(() => ({
@@ -453,11 +530,24 @@ async function makeContext(
       : viewport === "mobile"
         ? { width: 390, height: 844 }
         : { width: 1920, height: 1080 };
-  return browser.newContext({
+  const context = await browser.newContext({
     viewport: dimensions,
+    hasTouch: viewport === "mobile",
+    isMobile: viewport === "mobile",
     storageState: STORAGE_STATE,
     baseURL: BASE,
   });
+  if (STORAGE_COOKIE_DOMAIN) {
+    const state = JSON.parse(readFileSync(STORAGE_STATE, "utf8")) as {
+      cookies?: StorageCookie[];
+    };
+    const remapped = (state.cookies ?? []).map((cookie) => ({
+      ...cookie,
+      domain: STORAGE_COOKIE_DOMAIN,
+    }));
+    if (remapped.length) await context.addCookies(remapped);
+  }
+  return context;
 }
 
 async function runViewport(
@@ -473,6 +563,9 @@ async function runViewport(
     if (viewport === "desktop") await runDesktop(page);
     else await runCompactViewport(page, viewport);
   } catch (error) {
+    await page
+      .screenshot({ path: join(OUT_DIR, `${viewport}-failure.png`) })
+      .catch(() => undefined);
     check(viewport, "viewport pass completed", false, safeError(error));
   } finally {
     await context.close();

@@ -117,7 +117,7 @@ export function LoadingScreen({
 
   return (
     <div
-      className="absolute inset-0 z-40 flex flex-col items-center justify-center overflow-hidden bg-black"
+      className="pointer-events-none absolute inset-0 z-40 flex flex-col items-center justify-center overflow-hidden bg-black"
       role="status"
       aria-live="polite"
       aria-label={displayStatus}

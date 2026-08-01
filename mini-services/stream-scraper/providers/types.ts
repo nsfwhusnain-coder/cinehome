@@ -13,4 +13,6 @@ export interface TmdbLookup {
   year: string;
   imdbId: string;
   type: "movie" | "tv";
+  /** Movie runtime or TV series episode average, when TMDB supplies one. */
+  runtimeSeconds: number;
 }

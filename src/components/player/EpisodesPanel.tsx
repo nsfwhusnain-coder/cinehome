@@ -108,7 +108,7 @@ export function EpisodesPanel({
         aria-label="Close episodes"
       />
       <div
-        className="absolute bottom-[60px] left-3 right-3 z-[60] max-h-[min(55vh,420px)] overflow-hidden rounded-xl border border-white/10 bg-[rgba(15,15,15,0.96)] shadow-2xl backdrop-blur-xl sm:left-auto sm:right-4 sm:w-[360px]"
+        className="player-episodes-panel absolute left-3 right-3 z-[60] max-h-[min(55vh,420px)] overflow-hidden rounded-xl border border-white/10 bg-[rgba(15,15,15,0.96)] shadow-2xl backdrop-blur-xl sm:left-auto sm:right-4 sm:w-[360px]"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label="Episodes"

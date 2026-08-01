@@ -24,6 +24,7 @@ import {
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
+import { assessMediaDuration } from "@/lib/playback/media-duration";
 import {
   SourceAttemptController,
   type SourceAttemptToken,
@@ -72,6 +73,31 @@ const SWIPE_HINT_VISIBLE_MS = 2200;
 const SWIPE_HINT_FADE_MS = 500;
 const ALL_SOURCES_FAILED_MSG =
   "No playable server for this title right now. Retry full for a fresh resolve.";
+
+type FullscreenDocument = Document & {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+};
+
+type FullscreenContainer = HTMLDivElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+};
+
+function fullscreenElement(): Element | null {
+  const doc = document as FullscreenDocument;
+  return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+}
+
+function isInteractivePlayerTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        "button, a, input, select, textarea, [role='button'], [role='dialog'], [role='slider']"
+      )
+    )
+  );
+}
 
 /**
  * Double-hop residential proxy buffer policy.
@@ -1183,6 +1209,12 @@ export function VideoPlayer({
   /** Fire-once next-episode source preresolve at 80% progress. */
   const nextEpPreloadedRef = useRef(false);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
+  /** Prevent the synthetic click following a touch gesture from firing the
+   * video click handler a second time. */
+  const suppressVideoClickUntilRef = useRef(0);
+  /** A conclusive preview mismatch should refresh server-side caches once,
+   * even when a healthy alternate source takes over immediately. */
+  const durationRefreshRequestedRef = useRef(false);
 
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const buffering = usePlayerStore((s) => s.buffering);
@@ -1435,6 +1467,7 @@ export function VideoPlayer({
   useEffect(() => {
     invalidateSourceAttempt();
     failedSourceIdsRef.current.clear();
+    durationRefreshRequestedRef.current = false;
     setFailedSourceIds([]);
     userSelectedSourceRef.current = false;
     userSelectedQualityRef.current = false;
@@ -2171,6 +2204,40 @@ export function VideoPlayer({
     ]
   );
 
+  const rejectImplausiblyShortDuration = useCallback(
+    (observedDurationS: number): boolean => {
+      // A live remux reports only the amount produced so far. Its duration is
+      // intentionally provisional and must never be mistaken for a preview.
+      if (needsRemux || durationProvisionalRef.current) return false;
+      const expectedDurationS = fallbackDurationSRef.current;
+      const assessment = assessMediaDuration(
+        observedDurationS,
+        expectedDurationS,
+        mediaType ?? "movie"
+      );
+      if (assessment.plausible) return false;
+      const attempt = sourceAttemptControllerRef.current.currentToken();
+      if (!attempt) return false;
+      console.info(
+        "[playback-duration-rejected]",
+        JSON.stringify({
+          sourceId: attempt.sourceId,
+          observedDurationS: Math.round(assessment.observedDurationS),
+          expectedDurationS: Math.round(assessment.expectedDurationS),
+        })
+      );
+      const failedOver = failActiveSource("implausibly_short_duration", attempt);
+      if (failedOver && !durationRefreshRequestedRef.current) {
+        durationRefreshRequestedRef.current = true;
+        // The next source can begin immediately; refresh stale scraper/debrid
+        // rows in parallel so a future visit does not start on this preview.
+        queueMicrotask(() => onRetrySourcesRef.current?.());
+      }
+      return failedOver;
+    },
+    [failActiveSource, mediaType, needsRemux]
+  );
+
   const noteHardTransportFailure = useCallback(
     (attempt: SourceAttemptToken, reason: string): void => {
       const signal =
@@ -2791,6 +2858,9 @@ export function VideoPlayer({
           const provisional = needsRemux && Boolean(data.details?.live);
           durationProvisionalRef.current = provisional;
           setDurationProvisional(provisional);
+          if (!provisional) {
+            rejectImplausiblyShortDuration(data.details?.totalduration ?? 0);
+          }
         });
         hls.on(Hls.Events.FRAG_BUFFERED, () => {
           const levelList = levelsFromHls(hls);
@@ -3146,6 +3216,7 @@ export function VideoPlayer({
     failActiveSource,
     noteHardTransportFailure,
     recordDetectedHeight,
+    rejectImplausiblyShortDuration,
   ]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -3317,7 +3388,12 @@ export function VideoPlayer({
         });
       }
     };
-    const onDurationChange = () => setDuration(video.duration);
+    const onDurationChange = () => {
+      setDuration(video.duration);
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        rejectImplausiblyShortDuration(video.duration);
+      }
+    };
     const onProgressBuf = () => {
       try {
         if (video.buffered.length > 0) {
@@ -3529,15 +3605,10 @@ export function VideoPlayer({
     markEverPlayed,
     recordDetectedHeight,
     failActiveSource,
+    rejectImplausiblyShortDuration,
     mediaType,
     tvId,
   ]);
-
-  useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onFsChange);
-    return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, [setIsFullscreen]);
 
   const closeDock = useCallback(() => {
     setDockOpen(false);
@@ -3590,6 +3661,20 @@ export function VideoPlayer({
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     };
   }, [resetControlsTimer, isPlaying]);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(fullscreenElement()));
+      // A viewport transition must never land with stale hidden controls.
+      resetControlsTimer();
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+    };
+  }, [resetControlsTimer, setIsFullscreen]);
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
@@ -3646,8 +3731,14 @@ export function VideoPlayer({
   }, []);
 
   const toggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) containerRef.current?.requestFullscreen?.();
-    else document.exitFullscreen?.();
+    const container = containerRef.current as FullscreenContainer | null;
+    const doc = document as FullscreenDocument;
+    const operation = !fullscreenElement()
+      ? container?.requestFullscreen?.() ?? container?.webkitRequestFullscreen?.()
+      : document.exitFullscreen?.() ?? doc.webkitExitFullscreen?.();
+    if (operation && typeof operation.then === "function") {
+      void operation.catch(() => undefined);
+    }
   }, []);
 
   const togglePip = useCallback(async () => {
@@ -3968,21 +4059,36 @@ export function VideoPlayer({
   ]);
 
   const onTouchStart = (e: React.TouchEvent) => {
+    if (isInteractivePlayerTarget(e.target)) {
+      touchStart.current = null;
+      resetControlsTimer();
+      return;
+    }
     const t = e.touches[0];
     touchStart.current = { x: t.clientX, y: t.clientY };
   };
 
   const onTouchEnd = (e: React.TouchEvent) => {
+    if (isInteractivePlayerTarget(e.target)) {
+      touchStart.current = null;
+      resetControlsTimer();
+      return;
+    }
     if (!touchStart.current) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - touchStart.current.x;
     const dy = t.clientY - touchStart.current.y;
     touchStart.current = null;
+    suppressVideoClickUntilRef.current = performance.now() + 750;
 
     if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_MIN_PX) {
       seekRelative(dx > 0 ? SWIPE_SEEK_SECONDS : -SWIPE_SEEK_SECONDS);
     } else if (Math.abs(dy) > SWIPE_MIN_PX) {
       adjustVolume(dy < 0 ? 0.15 : -0.15);
+    } else if (!showControls && isPlaying) {
+      // First tap on hidden chrome reveals it without unexpectedly pausing.
+      resetControlsTimer();
+      return;
     } else {
       togglePlay();
     }
@@ -4079,7 +4185,7 @@ export function VideoPlayer({
   return (
     <div
       ref={containerRef}
-      className="group/player relative h-full min-h-0 w-full cursor-none bg-black select-none data-[ui=1]:cursor-auto"
+      className="player-shell group/player relative h-full min-h-0 w-full cursor-none bg-black select-none data-[ui=1]:cursor-auto"
       data-ui={
         controlsVisible || showHunting || !!error || !!sourcesError
           ? "1"
@@ -4117,6 +4223,7 @@ export function VideoPlayer({
           display: "block",
         }}
         onClick={() => {
+          if (performance.now() < suppressVideoClickUntilRef.current) return;
           if (dockOpen) closeDock();
           if (autoplayHint === MUTED_AUTOPLAY_HINT) {
             const v = videoRef.current;
@@ -4375,6 +4482,7 @@ export function VideoPlayer({
         onSelectEpisode={onSelectEpisode}
         sleepMinutes={sleepMinutes}
         onSleepMinutesChange={setSleepMinutes}
+        expectedDurationS={fallbackDurationS}
       />
     </div>
   );

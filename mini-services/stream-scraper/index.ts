@@ -12,6 +12,7 @@ import { resolveVidlinkApi } from "./vidlink-api";
 import { curlGet } from "./curl-http";
 import { resolveVixsrc } from "./providers/vixsrc";
 import { resolveNotorrent } from "./providers/notorrent";
+import { lookupTmdb } from "./providers/tmdb-lookup";
 import {
   resolveCinepro,
   isCineproConfigured,
@@ -34,7 +35,12 @@ import {
   type ProviderId,
 } from "./providers/circuit";
 import type { ProviderStream } from "./providers/types";
-import { getLastProbeSummary, probeSourceBatch, type ProbeResult } from "./probe";
+import {
+  getLastProbeSummary,
+  isKnownTruncatedSource,
+  probeSourceBatch,
+  type ProbeResult,
+} from "./probe";
 import {
   probeSourceQuality,
   isHlsMasterManifest,
@@ -647,7 +653,12 @@ function pickDefaultStreamUrl(sources: SourceEntry[]): string | null {
 }
 
 function buildMergedResult(entries: SourceEntry[], error?: string): ScrapeResult {
-  const withHints = attachCheapQualityHints(mergeSourceEntries(entries));
+  // Background enrich and cache refresh can finish while duration probes run.
+  // Never let either path reintroduce a preview URL that the probe just rejected.
+  const durationSafeEntries = entries.filter(
+    (entry) => !isKnownTruncatedSource(entry.url)
+  );
+  const withHints = attachCheapQualityHints(mergeSourceEntries(durationSafeEntries));
   const sources = sortSourcesForDefault(withHints).slice(0, MAX_SOURCES);
   if (!sources.length) {
     return { streamUrl: null, sources: [], error: error || "No stream URL found." };
@@ -659,7 +670,11 @@ function buildMergedResult(entries: SourceEntry[], error?: string): ScrapeResult
  * Full-path only: measure top candidates, attach probe, re-rank by measured speed.
  * Skipped on fast=1 (caller must not invoke).
  */
-async function applyLatencyProbes(result: ScrapeResult): Promise<ScrapeResult> {
+async function applyLatencyProbes(
+  result: ScrapeResult,
+  mediaType: "movie" | "tv",
+  expectedDurationS: number
+): Promise<ScrapeResult> {
   if (!result.sources.length) return result;
 
   // Codec-first order for which candidates to probe (name bonus still OK as selection hint).
@@ -681,7 +696,7 @@ async function applyLatencyProbes(result: ScrapeResult): Promise<ScrapeResult> {
     session: entry.session,
   }));
   const [probeMap, qualityMap] = await Promise.all([
-    probeSourceBatch(candidates),
+    probeSourceBatch(candidates, { mediaType, expectedDurationS }),
     probeSourceQuality(qualityEntries),
   ]);
   let sources: SourceEntry[] = result.sources.map((entry) => {
@@ -725,6 +740,26 @@ async function applyLatencyProbes(result: ScrapeResult): Promise<ScrapeResult> {
       ...(qualitySource ? { qualitySource } : {}),
     };
   });
+
+  const truncatedUrls = new Set(
+    [...probeMap.entries()]
+      .filter(([, probe]) => probe.error === "implausibly_short_duration")
+      .map(([url]) => url)
+  );
+  if (truncatedUrls.size > 0) {
+    sources = sources.filter((entry) => !truncatedUrls.has(entry.url));
+    logAt(
+      "warn",
+      `[duration] rejected ${truncatedUrls.size} truncated source(s) (expected ${Math.round(expectedDurationS)}s)`
+    );
+  }
+  if (!sources.length) {
+    return {
+      streamUrl: null,
+      sources: [],
+      error: "Only truncated preview streams were returned.",
+    };
+  }
 
   // LordFlix-style roster: keep probe-failed + unprobed for manual server switching.
   // Default pick still ranks probe.ok first via sortSourcesForDefault.
@@ -2646,7 +2681,13 @@ function scheduleBackgroundEnrich(
       const latest = getCached(key)?.sources ?? [];
       let merged = buildMergedResult([...latest, ...enriched]);
       if (merged.streamUrl) {
-        merged = await applyLatencyProbes(merged);
+        const expectedDurationS =
+          (await lookupTmdb(tmdbId, mediaType))?.runtimeSeconds ?? 0;
+        merged = await applyLatencyProbes(
+          merged,
+          mediaType,
+          expectedDurationS
+        );
         merged = { ...merged, partial: undefined };
         setCachedResult(key, merged);
         logAt(
@@ -2739,6 +2780,11 @@ async function scrapeStream(
   }
 
   const scrapeStarted = Date.now();
+  // Start metadata lookup beside provider work. Full-source probes use the
+  // runtime to reject previews; the fast path never waits for this promise.
+  const expectedDurationPromise = lookupTmdb(tmdbId, mediaType).then(
+    (metadata) => metadata?.runtimeSeconds ?? 0
+  );
   const key = cacheKey(tmdbId, mediaType, season, episode);
   const cached = getCached(key);
   const underCap = cached != null && cached.sources.length < MAX_SOURCES;
@@ -2883,6 +2929,8 @@ async function scrapeStream(
     "info",
     `[scrape] full API race -> ${fullRace.entries.length} source(s) in ${fullRace.totalMs}ms (first@${fullRace.firstHitMs ?? "-"}ms)`
   );
+  const expectedDurationS =
+    (await withTimeout(expectedDurationPromise, 1_000)) ?? 0;
   let collected = fullRace.entries;
   let merged = buildMergedResult(collected);
 
@@ -2910,7 +2958,7 @@ async function scrapeStream(
       captureScrapeTiming(key, false, Date.now() - scrapeStarted);
       return { streamUrl: null, sources: [], error: merged.error || "Enrichment failed" };
     }
-    merged = await applyLatencyProbes(merged);
+    merged = await applyLatencyProbes(merged, mediaType, expectedDurationS);
     const latestWhileProbing = getCached(key);
     if (latestWhileProbing?.sources.length) {
       merged = buildMergedResult(
@@ -2963,7 +3011,7 @@ async function scrapeStream(
   merged = buildMergedResult(collected);
 
   if (merged.streamUrl) {
-    merged = await applyLatencyProbes(merged);
+    merged = await applyLatencyProbes(merged, mediaType, expectedDurationS);
     setCachedResult(key, merged);
     logAt(
       "info",

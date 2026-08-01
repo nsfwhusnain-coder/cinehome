@@ -594,11 +594,11 @@ export function PlayerDock({
         role="dialog"
         aria-modal="true"
         aria-label="Player settings"
-        className="absolute bottom-16 left-3 right-3 z-50 w-auto origin-bottom animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-200 sm:bottom-14 sm:left-auto sm:right-4 sm:w-[25rem] sm:origin-bottom-right [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-white/80"
+        className="player-settings-dock absolute left-3 right-3 z-50 w-auto origin-bottom animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-200 sm:left-auto sm:right-4 sm:w-[25rem] sm:origin-bottom-right [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-white/80"
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className="relative overflow-hidden rounded-[1.25rem] border border-white/20"
+          className="relative flex max-h-[inherit] flex-col overflow-hidden rounded-[1.25rem] border border-white/20"
           style={GLASS_DOCK_STYLE}
         >
           {/* Specular edge (same family as GlassPill) */}
@@ -616,7 +616,7 @@ export function PlayerDock({
               maskComposite: "exclude",
             }}
           />
-          <div className="relative z-[1]">
+          <div className="relative z-[1] flex min-h-0 flex-col">
             <>
               <div className="flex items-center gap-1 border-b border-white/12 px-2 py-2">
                 <div className="min-w-0 flex-1 text-[13px] font-semibold tracking-tight text-white">
@@ -654,7 +654,7 @@ export function PlayerDock({
                   </button>
                 ))}
               </div>
-              <div className="max-h-[min(55vh,24rem)] overflow-y-auto p-2">{renderOptions()}</div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-2">{renderOptions()}</div>
             </>
           </div>
         </div>

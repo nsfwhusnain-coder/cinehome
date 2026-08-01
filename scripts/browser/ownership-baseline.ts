@@ -120,6 +120,15 @@ const FIXTURES: Fixture[] = [
     failover: true,
   },
   {
+    label: "Guardians of the Galaxy Vol. 2",
+    mediaType: "movie",
+    tmdbId: 283995,
+    categories: ["movie", "catalog-mainstream", "quality-release-gate"],
+    browser: true,
+    warmRepeat: true,
+    seek: true,
+  },
+  {
     label: "Oppenheimer",
     mediaType: "movie",
     tmdbId: 872585,

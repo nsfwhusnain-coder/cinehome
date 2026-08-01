@@ -22,9 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
-# Install scraper mini-service dependencies
-COPY mini-services/stream-scraper/package.json ./mini-services/stream-scraper/package.json
-RUN cd mini-services/stream-scraper && bun install
+# Install scraper mini-service dependencies. Copy its lockfile before install:
+# without it, the scraper can resolve a newer Playwright than the browser
+# downloaded below, leaving the provider pool with no matching executable.
+COPY mini-services/stream-scraper/package.json mini-services/stream-scraper/bun.lock ./mini-services/stream-scraper/
+RUN cd mini-services/stream-scraper && bun install --frozen-lockfile
 
 # Install headless Chromium + its OS-level deps for Playwright
 RUN bunx playwright install --with-deps chromium

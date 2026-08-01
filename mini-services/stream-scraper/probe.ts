@@ -5,6 +5,11 @@
 
 import { isPoisonStreamUrl } from "./poison-url";
 import { safeStreamTarget, type StreamPathKind } from "./safe-url-summary";
+import {
+  assessMediaDuration,
+  hlsMediaDurationSeconds,
+} from "../../src/lib/playback/media-duration";
+import type { MediaType } from "../../src/lib/playback/types";
 
 export interface ProbeSession {
   referer: string;
@@ -25,6 +30,8 @@ export interface ProbeResult {
   bytesPerSec: number;
   speedScore: number;
   error?: string;
+  /** Sum of EXTINF durations when the probe reached an HLS media playlist. */
+  durationS?: number;
 }
 
 const PROBE_BYTE_CAP = 65_536;
@@ -34,6 +41,8 @@ const PROBE_TIMEOUT_MS = 5_000;
 /** Successes stay cached longer; failures expire quickly so transient blips recover. */
 const PROBE_CACHE_SUCCESS_TTL_MS = 10 * 60 * 1000;
 const PROBE_CACHE_FAILURE_TTL_MS = 90 * 1000;
+/** Keep a rejected preview out of concurrent/cache merges for the signed-URL lifetime. */
+const TRUNCATED_SOURCE_TTL_MS = 30 * 60 * 1000;
 const PROBE_MAX_CONCURRENT = 3;
 const PROBE_MAX_PER_SCRAPE = 8;
 const PROBE_GLOBAL_BUDGET_MS = 12_000;
@@ -60,6 +69,7 @@ interface CacheEntry {
 }
 
 const probeCache = new Map<string, CacheEntry>();
+const truncatedSourceCache = new Map<string, number>();
 
 export interface ProbeBatchSummary {
   at: number;
@@ -513,22 +523,73 @@ async function probeHls(entry: ProbeableEntry): Promise<ProbeResult> {
     const realHeaders = buildHeaders(entry, realSeg);
     const seg = await timedFetch(realSeg, realHeaders, { range: true });
     const ok = isLikelyMediaSegment(seg.bytes, seg.status);
+    const durationS = hlsMediaDurationSeconds(nested.text);
     return {
       ok,
       ttfbMs: Math.round(seg.ttfbMs),
       bytesPerSec: Math.round(seg.bytesPerSec),
       speedScore: ok ? computeSpeedScore(seg.ttfbMs, seg.bytesPerSec) : 0,
       error: ok ? undefined : seg.error || `http ${seg.status}`,
+      ...(durationS > 0 ? { durationS } : {}),
     };
   }
 
   const ok = isLikelyMediaSegment(peek.bytes, peek.status, peek.text);
+  const durationS = hlsMediaDurationSeconds(media.text);
   return {
     ok,
     ttfbMs: Math.round(peek.ttfbMs),
     bytesPerSec: Math.round(peek.bytesPerSec),
     speedScore: ok ? computeSpeedScore(peek.ttfbMs, peek.bytesPerSec) : 0,
     error: ok ? undefined : peek.error || `http ${peek.status}`,
+    ...(durationS > 0 ? { durationS } : {}),
+  };
+}
+
+export function isKnownTruncatedSource(url: string): boolean {
+  const key = urlCacheKey(url);
+  const expiresAt = truncatedSourceCache.get(key);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) {
+    truncatedSourceCache.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function rememberTruncatedSource(url: string): void {
+  truncatedSourceCache.set(urlCacheKey(url), Date.now() + TRUNCATED_SOURCE_TTL_MS);
+}
+
+function applyDurationExpectation(
+  sourceUrl: string,
+  result: ProbeResult,
+  mediaType: MediaType | undefined,
+  expectedDurationS: number | undefined
+): ProbeResult {
+  if (
+    !result.ok ||
+    !mediaType ||
+    !expectedDurationS ||
+    !result.durationS
+  ) {
+    return result;
+  }
+  const assessment = assessMediaDuration(
+    result.durationS,
+    expectedDurationS,
+    mediaType
+  );
+  if (assessment.plausible) {
+    truncatedSourceCache.delete(urlCacheKey(sourceUrl));
+    return result;
+  }
+  rememberTruncatedSource(sourceUrl);
+  return {
+    ...result,
+    ok: false,
+    speedScore: 0,
+    error: "implausibly_short_duration",
   };
 }
 
@@ -565,10 +626,6 @@ async function probeOne(entry: ProbeableEntry): Promise<ProbeResult> {
       cacheProbeResult(key, result);
       return result;
     }
-    if (sniff.ok && sniff.text?.includes("<MPD")) {
-      lower; // keep for dash branch below
-    }
-
     if (lower.includes(".mpd") || sniff.text?.includes("<MPD")) {
       const mpd = sniff.text?.includes("<MPD")
         ? sniff
@@ -659,7 +716,11 @@ async function mapPool<T, R>(
  */
 export async function probeSourceBatch(
   entries: ProbeableEntry[],
-  options: { maxSources?: number } = {}
+  options: {
+    maxSources?: number;
+    mediaType?: MediaType;
+    expectedDurationS?: number;
+  } = {}
 ): Promise<Map<string, ProbeResult>> {
   const maxSources = options.maxSources ?? PROBE_MAX_PER_SCRAPE;
   const selected = entries.slice(0, maxSources);
@@ -677,7 +738,15 @@ export async function probeSourceBatch(
       return;
     }
     const result = await probeOne(entry);
-    out.set(entry.url, result);
+    out.set(
+      entry.url,
+      applyDurationExpectation(
+        entry.url,
+        result,
+        options.mediaType,
+        options.expectedDurationS
+      )
+    );
   });
 
   const values = [...out.values()];

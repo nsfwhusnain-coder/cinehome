@@ -188,6 +188,19 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
 
   const images = meta?.images as TmdbImages | undefined;
 
+  const { data: seasonMeta } = useQuery({
+    queryKey: ["tmdb", "tv", "season", id, tvSeason],
+    queryFn: async () => {
+      const res = await fetch(`/api/tmdb/tv/${id}/season/${tvSeason}`);
+      if (!res.ok) return null;
+      return res.json() as Promise<{
+        episodes?: Array<{ episode_number: number; runtime?: number | null }>;
+      }>;
+    },
+    enabled: mounted && mediaType === "tv" && tvSeason != null,
+    staleTime: 10 * 60 * 1000,
+  });
+
   const { data: progressList } = useQuery({
     queryKey: ["progress"],
     queryFn: async () => {
@@ -503,16 +516,23 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
    * only duration on offer was one known to be wrong. TMDB's figure is accurate
    * to about a minute, which is far better than either alternative.
    *
-   * `episode_run_time` is a series-level average and TMDB often leaves it
-   * empty, so a missing value simply means no fallback — never a guess.
+   * TV uses the selected episode's runtime when TMDB provides it, then falls
+   * back to the series-level `episode_run_time` average. A missing value simply
+   * means no fallback — never a guess.
    */
   const tmdbRuntimeSeconds = useMemo(() => {
-    const raw =
+    const exactEpisodeRuntime =
       mediaType === "tv"
-        ? (meta?.episode_run_time as number[] | undefined)?.[0]
-        : (meta?.runtime as number | undefined);
+        ? seasonMeta?.episodes?.find(
+            (candidate) => candidate.episode_number === tvEpisode
+          )?.runtime
+        : null;
+    const raw = mediaType === "tv"
+      ? exactEpisodeRuntime ??
+        (meta?.episode_run_time as number[] | undefined)?.[0]
+      : (meta?.runtime as number | undefined);
     return typeof raw === "number" && raw > 0 ? raw * 60 : 0;
-  }, [mediaType, meta]);
+  }, [mediaType, meta, seasonMeta, tvEpisode]);
 
   const goToNextEpisode = useCallback(() => {
     if (!nextEpisodeTarget) return;
