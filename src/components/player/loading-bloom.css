@@ -1,202 +1,311 @@
-/* Spectrum Bloom — loading screen. Hue comes from the poster (--bloom-hue).
-   Every animated property is transform/opacity/filter so the compositor can
-   own them; the TV profile below removes the filters entirely. */
+/* Orbit — loading screen.
+   The Absolute Cinema mark, alive: a glass globe holding the film's colour with
+   each discovered source entering orbit around it. Glass values are lifted
+   verbatim from brand-mark.css so the loading state and the logo are the same
+   material. Hue comes from the poster (--bloom-hue). */
 
 .bloom-stage {
   --bloom-hue: 280;
   --bloom-sat: 80%;
   --bloom-fill: 0;
+
+  /* brand-mark.css glass tokens */
+  --g-blur: 18px;
+  --g-sat: 180%;
+  --g-bright: 1.15;
+  --g-fill: rgba(255, 255, 255, 0.12);
+  --g-inset: inset 0 1px 1.5px rgba(255, 255, 255, 0.45);
+  --g-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+
+  /* Apple's spring — elements settle rather than stop. */
+  --spring: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-.bloom-wrap {
+/* The film's own artwork, defocused, giving the glass something to refract. */
+.bloom-art {
+  position: absolute;
+  inset: -10%;
+  width: 120%;
+  height: 120%;
+  object-fit: cover;
+  filter: blur(44px);
+  opacity: 0.62;
+  transform: scale(1.04);
+  transition:
+    opacity 900ms var(--spring),
+    filter 900ms var(--spring),
+    transform 1200ms var(--spring);
+}
+
+.bloom-veil {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    130% 120% at 50% 46%,
+    transparent 6%,
+    rgba(0, 0, 0, 0.62) 62%,
+    rgba(0, 0, 0, 0.9) 100%
+  );
+}
+
+/* Imperceptible dither. Large radial fills band visibly on a 65" OLED; this
+   breaks up the ramps without reading as texture. */
+.bloom-dither {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.bloom-system {
   position: relative;
-  width: min(46%, 300px);
+  width: min(40%, 280px);
   aspect-ratio: 1;
   display: grid;
   place-items: center;
+  perspective: 900px;
 }
 
-/* Wide diffuse halo — carries the "still hunting" character. */
-.bloom-halo {
+.bloom-aura {
   position: absolute;
-  inset: -34%;
+  inset: -30%;
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    hsl(var(--bloom-hue) var(--bloom-sat) 60% / 0.42) 0%,
-    hsl(var(--bloom-hue) var(--bloom-sat) 52% / 0.16) 34%,
-    transparent 68%
+    hsl(var(--bloom-hue) 100% 68% / 0.4) 0%,
+    hsl(var(--bloom-hue) var(--bloom-sat) 56% / 0.14) 38%,
+    transparent 70%
   );
-  filter: blur(26px);
-  animation: bloom-breathe 4.2s ease-in-out infinite;
+  filter: blur(30px);
   transition:
-    inset 900ms cubic-bezier(0.16, 1, 0.3, 1),
-    filter 900ms ease,
-    opacity 700ms ease;
+    inset 1000ms var(--spring),
+    opacity 800ms var(--spring),
+    filter 900ms ease;
 }
 
-.bloom-core {
+/* ── the globe ─────────────────────────────────────────────── */
+.bloom-globe {
   position: relative;
-  width: 46%;
+  width: 52%;
   aspect-ratio: 1;
   border-radius: 50%;
-  background: radial-gradient(
-    circle at 38% 32%,
-    hsl(var(--bloom-hue) 100% 88%) 0%,
-    hsl(var(--bloom-hue) var(--bloom-sat) 62%) 38%,
-    hsl(var(--bloom-hue) var(--bloom-sat) 44%) 72%,
-    hsl(calc(var(--bloom-hue) - 12) 80% 30%) 100%
-  );
+  background: var(--g-fill);
+  -webkit-backdrop-filter: blur(var(--g-blur)) saturate(var(--g-sat))
+    brightness(var(--g-bright));
+  backdrop-filter: blur(var(--g-blur)) saturate(var(--g-sat))
+    brightness(var(--g-bright));
   box-shadow:
-    0 0 44px hsl(var(--bloom-hue) var(--bloom-sat) 55% / 0.55),
-    inset 0 1px 2px rgba(255, 255, 255, 0.5);
-  animation: bloom-breathe 4.2s ease-in-out infinite;
+    var(--g-inset),
+    inset 0 -18px 34px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    var(--g-shadow),
+    0 0 50px hsl(var(--bloom-hue) var(--bloom-sat) 58% / 0.42);
+  animation: bloom-float 5.4s ease-in-out infinite;
   transition:
-    width 900ms cubic-bezier(0.16, 1, 0.3, 1),
-    filter 900ms ease,
-    box-shadow 900ms ease;
+    width 1000ms var(--spring),
+    box-shadow 900ms var(--spring);
 }
 
-/* Buffer fill — the only element on screen showing measurable progress. */
-.bloom-ring {
-  position: absolute;
-  inset: 6%;
-  border-radius: 50%;
-  opacity: 0;
-  transition: opacity 500ms ease;
-  background: conic-gradient(
-    hsl(var(--bloom-hue) 100% 72%) calc(var(--bloom-fill) * 1turn),
-    hsl(var(--bloom-hue) 30% 30% / 0.35) 0
-  );
-  -webkit-mask: radial-gradient(circle, transparent 70%, #000 71.5%);
-  mask: radial-gradient(circle, transparent 70%, #000 71.5%);
-}
-
-.bloom-chips {
+/* Broad specular — what stops it reading as a flat disc. */
+.bloom-globe::before {
+  content: "";
   position: absolute;
   inset: 0;
-  animation: bloom-spin 26s linear infinite;
+  border-radius: 50%;
+  background:
+    radial-gradient(
+      circle at 32% 24%,
+      rgba(255, 255, 255, 0.62) 0%,
+      rgba(255, 255, 255, 0.14) 24%,
+      transparent 46%
+    ),
+    radial-gradient(
+      circle at 70% 82%,
+      hsl(var(--bloom-hue) 100% 76% / 0.3) 0%,
+      transparent 40%
+    );
+  pointer-events: none;
 }
 
-.bloom-chip {
+/* Tight second catchlight. */
+.bloom-globe::after {
+  content: "";
+  position: absolute;
+  top: 15%;
+  left: 24%;
+  width: 16%;
+  height: 11%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  filter: blur(3px);
+  pointer-events: none;
+}
+
+/* Buffer band — the only genuinely measured progress on screen. */
+.bloom-ring {
+  position: absolute;
+  inset: -9%;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 600ms var(--spring);
+  background: conic-gradient(
+    from -90deg,
+    hsl(var(--bloom-hue) 100% 78%) calc(var(--bloom-fill) * 1turn),
+    rgba(255, 255, 255, 0.07) 0
+  );
+  -webkit-mask: radial-gradient(
+    circle,
+    transparent 73%,
+    #000 74.5%,
+    #000 79%,
+    transparent 80.5%
+  );
+  mask: radial-gradient(
+    circle,
+    transparent 73%,
+    #000 74.5%,
+    #000 79%,
+    transparent 80.5%
+  );
+}
+
+/* ── the planets ───────────────────────────────────────────── */
+.bloom-orbit {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(66deg);
+  animation: bloom-revolve 30s linear infinite;
+}
+
+.bloom-planet {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 13px;
-  height: 13px;
-  margin: -6.5px;
+  width: 16px;
+  height: 16px;
+  margin: -8px;
   border-radius: 50%;
-  background: hsl(var(--bloom-hue) 70% 72% / 0.3);
-  border: 1px solid hsl(var(--bloom-hue) 80% 80% / 0.45);
-  box-shadow: 0 0 10px hsl(var(--bloom-hue) var(--bloom-sat) 60% / 0.4);
-  opacity: 0;
+  background: rgba(255, 255, 255, 0.16);
+  -webkit-backdrop-filter: blur(6px) saturate(160%);
+  backdrop-filter: blur(6px) saturate(160%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 3px 10px rgba(0, 0, 0, 0.45),
+    0 0 14px hsl(var(--bloom-hue) 100% 70% / 0.45);
+  /* Place on the ring, then stand upright again so it stays a sphere
+     rather than squashing into the tilted plane. */
   transform: rotate(var(--chip-a)) translateX(var(--chip-r))
-    rotate(calc(-1 * var(--chip-a))) scale(0.4);
+    rotate(calc(-1 * var(--chip-a))) rotateX(-66deg);
+  opacity: 0;
   transition:
-    opacity 520ms ease,
-    transform 620ms cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 620ms var(--spring),
+    width 500ms var(--spring),
+    height 500ms var(--spring),
+    box-shadow 500ms var(--spring);
 }
 
-.bloom-chip[data-on="1"] {
+.bloom-planet[data-on="1"] {
   opacity: 1;
-  transform: rotate(var(--chip-a)) translateX(var(--chip-r))
-    rotate(calc(-1 * var(--chip-a))) scale(1);
 }
 
 /* Premium 4K tier — Poseidon / Hades. */
-.bloom-chip[data-premium="1"] {
-  width: 17px;
-  height: 17px;
-  margin: -8.5px;
-  background: hsl(var(--bloom-hue) 95% 82% / 0.55);
-  border-color: hsl(var(--bloom-hue) 100% 92% / 0.9);
-  box-shadow: 0 0 18px hsl(var(--bloom-hue) 100% 70% / 0.75);
+.bloom-planet[data-premium="1"] {
+  width: 22px;
+  height: 22px;
+  margin: -11px;
+  background: hsl(var(--bloom-hue) 90% 80% / 0.34);
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.7),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.32),
+    0 4px 14px rgba(0, 0, 0, 0.5),
+    0 0 24px hsl(var(--bloom-hue) 100% 74% / 0.8);
 }
 
 /* The source being attached right now. */
-.bloom-chip[data-chosen="1"] {
-  background: #fff;
-  border-color: #fff;
+.bloom-planet[data-chosen="1"] {
+  width: 24px;
+  height: 24px;
+  margin: -12px;
+  background: rgba(255, 255, 255, 0.85);
   box-shadow:
-    0 0 24px hsl(var(--bloom-hue) 100% 78% / 0.95),
-    0 0 44px hsl(var(--bloom-hue) 100% 60% / 0.5);
+    inset 0 1px 2px rgba(255, 255, 255, 0.9),
+    0 0 24px #fff,
+    0 0 46px hsl(var(--bloom-hue) 100% 70% / 0.75);
 }
 
-/* ── phase characters ─────────────────────────────────────── */
-.bloom-stage[data-phase="searching"] .bloom-halo {
-  inset: -40%;
-  filter: blur(34px);
-  opacity: 0.85;
-}
-.bloom-stage[data-phase="searching"] .bloom-core {
-  width: 40%;
-  filter: saturate(0.55) blur(1px);
-}
+/* ── phases ────────────────────────────────────────────────── */
+.bloom-stage[data-phase="searching"] .bloom-globe { width: 46%; }
+.bloom-stage[data-phase="searching"] .bloom-aura { inset: -38%; opacity: 0.8; }
+.bloom-stage[data-phase="searching"] .bloom-art { filter: blur(48px); opacity: 0.5; }
 
-.bloom-stage[data-phase="connecting"] .bloom-halo {
-  inset: -20%;
-  filter: blur(20px);
-  opacity: 1;
-}
-.bloom-stage[data-phase="connecting"] .bloom-core {
-  width: 50%;
-  filter: saturate(1.15);
-}
+.bloom-stage[data-phase="connecting"] .bloom-globe { width: 54%; }
+.bloom-stage[data-phase="connecting"] .bloom-aura { inset: -24%; opacity: 1; }
+.bloom-stage[data-phase="connecting"] .bloom-art { filter: blur(38px); opacity: 0.72; }
 
-.bloom-stage[data-phase="buffering"] .bloom-halo {
-  inset: -10%;
-  filter: blur(14px);
-  opacity: 1;
-}
-.bloom-stage[data-phase="buffering"] .bloom-core {
-  width: 54%;
-  filter: saturate(1.35) brightness(1.12);
-  animation-duration: 2.1s;
-}
-.bloom-stage[data-phase="buffering"] .bloom-ring {
-  opacity: 1;
-}
+.bloom-stage[data-phase="buffering"] .bloom-globe { width: 57%; }
+.bloom-stage[data-phase="buffering"] .bloom-aura { inset: -18%; opacity: 1; }
+.bloom-stage[data-phase="buffering"] .bloom-art { filter: blur(30px); opacity: 0.84; }
+.bloom-stage[data-phase="buffering"] .bloom-ring { opacity: 1; }
 
-@keyframes bloom-breathe {
+@keyframes bloom-float {
   0%,
   100% {
-    transform: scale(1);
+    transform: translateY(0) scale(1);
   }
   50% {
-    transform: scale(1.055);
+    transform: translateY(-2.5%) scale(1.02);
   }
 }
 
-@keyframes bloom-spin {
+@keyframes bloom-revolve {
   to {
-    transform: rotate(360deg);
+    transform: rotateX(66deg) rotate(360deg);
   }
 }
 
-/* ── TV profile ───────────────────────────────────────────────
-   webOS/Tizen tabs pay heavily for backdrop and filter blur, and this
-   screen is on-screen exactly when the player is at its busiest. Strip
-   the filters, stop the orbit, slow the breathe: transform and opacity
-   only, which the compositor handles without repainting. */
-.bloom-stage[data-device="tv"] .bloom-halo {
+/* ── TV profile ────────────────────────────────────────────────
+   backdrop-filter is the most expensive thing on webOS and this overlay is
+   on screen exactly when the player is at its busiest. Swap live glass for a
+   painted approximation: same read, no per-frame filtering. */
+.bloom-stage[data-device="tv"] .bloom-globe {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background:
+    radial-gradient(
+      circle at 34% 26%,
+      rgba(255, 255, 255, 0.26),
+      rgba(255, 255, 255, 0.08) 46%,
+      rgba(255, 255, 255, 0.03) 70%
+    ),
+    hsl(var(--bloom-hue) 60% 42% / 0.3);
+  animation-duration: 8s;
+}
+
+.bloom-stage[data-device="tv"] .bloom-planet {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.bloom-stage[data-device="tv"] .bloom-art {
   filter: none;
-  animation-duration: 6s;
+  opacity: 0.34;
 }
-.bloom-stage[data-device="tv"] .bloom-core {
-  animation-duration: 6s;
-  box-shadow: 0 0 30px hsl(var(--bloom-hue) var(--bloom-sat) 55% / 0.45);
+
+.bloom-stage[data-device="tv"] .bloom-aura {
+  filter: none;
 }
-.bloom-stage[data-device="tv"] .bloom-chips {
-  animation: none;
-}
-.bloom-stage[data-device="tv"][data-phase="searching"] .bloom-core {
-  filter: saturate(0.55);
+
+.bloom-stage[data-device="tv"] .bloom-orbit {
+  animation-duration: 48s;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bloom-halo,
-  .bloom-core,
-  .bloom-chips {
+  .bloom-globe,
+  .bloom-orbit {
     animation: none;
   }
 }

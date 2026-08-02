@@ -12,9 +12,9 @@ import {
 } from "@/lib/playback/bloom-visuals";
 import "./loading-bloom.css";
 
-/** Chip ring radius, in px, at the wrapper's own scale. */
-const CHIP_RADIUS_INNER = 82;
-const CHIP_RADIUS_OUTER = 96;
+/** Orbit radii, in px. Two rings so a full roster reads as a system, not a ring. */
+const CHIP_RADIUS_INNER = 96;
+const CHIP_RADIUS_OUTER = 112;
 const FULL_TURN_DEGREES = 360;
 
 export interface LoadingScreenProps {
@@ -126,23 +126,19 @@ export function LoadingScreen({
       aria-label={`Loading ${title}`}
     >
       {backdropUrl ? (
+        // The glass refracts this, so it must sit behind and stay defocused.
         // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={backdropUrl}
-          alt=""
-          className="pointer-events-none absolute inset-0 h-full w-full scale-105 object-cover"
-          draggable={false}
-        />
+        <img src={backdropUrl} alt="" className="bloom-art" draggable={false} />
       ) : null}
-      <div className="absolute inset-0 bg-black/[0.86]" />
+      <div className="bloom-veil" />
 
-      <div className="bloom-wrap relative z-10">
-        <div className="bloom-halo" />
-        <div className="bloom-chips">
+      <div className="bloom-system relative z-10">
+        <div className="bloom-aura" />
+        <div className="bloom-orbit">
           {chips.map((chip) => (
             <div
               key={chip.index}
-              className="bloom-chip"
+              className="bloom-planet"
               data-on="1"
               data-premium={chip.premium ? "1" : "0"}
               data-chosen={chip.chosen ? "1" : "0"}
@@ -157,14 +153,16 @@ export function LoadingScreen({
             />
           ))}
         </div>
-        <div className="bloom-core">
+        <div className="bloom-globe">
           <div className="bloom-ring" />
         </div>
       </div>
 
-      <p className="relative z-10 max-w-xl truncate px-6 text-center text-lg font-semibold tracking-tight text-white drop-shadow-[0_2px_20px_rgba(0,0,0,0.9)] sm:text-2xl">
+      <p className="relative z-10 max-w-xl truncate px-6 text-center text-lg font-semibold tracking-tight text-white drop-shadow-[0_2px_26px_rgba(0,0,0,0.9)] sm:text-2xl">
         {title}
       </p>
+
+      <div className="bloom-dither" />
     </div>
   );
 }
