@@ -38,6 +38,7 @@ import {
   toLogicalTime,
   toMediaTime,
 } from "@/lib/playback/remux-timeline";
+import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
 import {
@@ -100,6 +101,9 @@ const SWIPE_SEEK_SECONDS = 10;
 const SWIPE_MIN_PX = 40;
 const SWIPE_HINT_VISIBLE_MS = 2200;
 const SWIPE_HINT_FADE_MS = 500;
+const REMUX_SEEK_DEBOUNCE_MS = 160;
+const REMUX_SEEK_NOTICE_MS = 12_000;
+const REMUX_SEEK_TIMEOUT_MS = 70_000;
 const ALL_SOURCES_FAILED_MSG =
   "No playable server for this title right now. Retry full for a fresh resolve.";
 
@@ -4163,7 +4167,7 @@ export function VideoPlayer({
 
       pendingRemuxSeekTargetRef.current = target;
       setCurrentTime(target);
-      showStatusNotice("Preparing requested position…", 2_500);
+      showStatusNotice("Preparing requested position…", REMUX_SEEK_NOTICE_MS);
 
       remuxSeekTimerRef.current = setTimeout(() => {
         remuxSeekTimerRef.current = null;
@@ -4172,7 +4176,11 @@ export function VideoPlayer({
         const startAtSeconds = normalizeRemuxStart(target, fullDuration);
         const controller = new AbortController();
         remuxSeekAbortRef.current = controller;
-        const timeout = window.setTimeout(() => controller.abort(), 70_000);
+        let timedOut = false;
+        const timeout = window.setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, REMUX_SEEK_TIMEOUT_MS);
         const prewarmUrl = buildRemuxUrl({
           source,
           mediaType: mediaType ?? "movie",
@@ -4183,17 +4191,8 @@ export function VideoPlayer({
           prewarm: true,
           startAtSeconds,
         });
-        void fetch(prewarmUrl, {
-          cache: "no-store",
-          credentials: "include",
-          signal: controller.signal,
-        })
-          .then(async (response) => {
-            if (!response.ok) throw new Error(`seek prewarm ${response.status}`);
-            // Consuming the body verifies that a complete, rewritten manifest
-            // reached the browser; the attach immediately reuses this cache key.
-            const body = await response.text();
-            if (!body.includes("#EXTM3U")) throw new Error("invalid seek manifest");
+        void prewarmRemuxPosition(prewarmUrl, { signal: controller.signal })
+          .then(() => {
             if (
               controller.signal.aborted ||
               generation !== remuxSeekGenerationRef.current ||
@@ -4220,8 +4219,9 @@ export function VideoPlayer({
           })
           .catch(() => {
             if (
-              !controller.signal.aborted &&
-              generation === remuxSeekGenerationRef.current
+              generation === remuxSeekGenerationRef.current &&
+              activeSourceRef.current?.id === source.id &&
+              (timedOut || !controller.signal.aborted)
             ) {
               setCurrentTime(logicalPlayhead(video.currentTime));
               pendingRemuxSeekTargetRef.current = null;
@@ -4234,7 +4234,7 @@ export function VideoPlayer({
               remuxSeekAbortRef.current = null;
             }
           });
-      }, 160);
+      }, REMUX_SEEK_DEBOUNCE_MS);
     },
     [
       logicalPlayhead,

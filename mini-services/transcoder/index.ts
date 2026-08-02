@@ -990,7 +990,14 @@ const server = createServer(async (req, res) => {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log(`transcode failed mode=${mode}: ${msg}`);
-      return sendText(res, 502, "transcode failed");
+      const temporarilyBusy =
+        mode === "remux" && msg.startsWith("remux at capacity:");
+      if (temporarilyBusy) res.setHeader("Retry-After", "2");
+      return sendText(
+        res,
+        temporarilyBusy ? 503 : 502,
+        temporarilyBusy ? "remux temporarily busy" : "transcode failed"
+      );
     }
     return;
   }

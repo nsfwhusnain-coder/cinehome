@@ -4,7 +4,6 @@ import {
   useCallback,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { cn } from "@/lib/utils";
@@ -72,9 +71,8 @@ export function ProgressBar({
     (e: ReactPointerEvent<HTMLDivElement>) => {
       const ratio = ratioFromClientX(e.clientX);
       setHoverRatio(ratio);
-      if (dragging) seekFromClientX(e.clientX);
     },
-    [dragging, ratioFromClientX, seekFromClientX]
+    [ratioFromClientX]
   );
 
   const onPointerDown = useCallback(
@@ -85,27 +83,32 @@ export function ProgressBar({
       setHovering(true);
       const ratio = ratioFromClientX(e.clientX);
       setHoverRatio(ratio);
+    },
+    [ratioFromClientX]
+  );
+
+  const onPointerUp = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      setHoverRatio(ratioFromClientX(e.clientX));
+      setDragging(false);
       seekFromClientX(e.clientX);
     },
     [ratioFromClientX, seekFromClientX]
   );
 
-  const onPointerUp = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+  const onPointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
     setDragging(false);
   }, []);
 
-  const onClick = useCallback(
-    (e: ReactMouseEvent<HTMLDivElement>) => {
-      seekFromClientX(e.clientX);
-    },
-    [seekFromClientX]
-  );
-
   const showChrome = hovering || dragging;
   const tooltipRatio = showChrome ? hoverRatio : playedRatio;
+  const thumbRatio = dragging ? hoverRatio : playedRatio;
   const tooltipTime = safeDuration * tooltipRatio;
   const barHeight = showChrome ? 5 : 3;
   const thumbSize = 12;
@@ -128,8 +131,7 @@ export function ProgressBar({
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      onClick={onClick}
+      onPointerCancel={onPointerCancel}
       onKeyDown={(e) => {
         if (safeDuration <= 0) return;
         if (e.key === "ArrowRight") {
@@ -184,7 +186,7 @@ export function ProgressBar({
           showChrome ? "opacity-100" : "opacity-0"
         )}
         style={{
-          left: `${playedRatio * 100}%`,
+          left: `${thumbRatio * 100}%`,
           width: thumbSize,
           height: thumbSize,
           backgroundColor: "#ffffff",

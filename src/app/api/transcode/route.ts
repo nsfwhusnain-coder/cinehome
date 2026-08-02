@@ -150,9 +150,15 @@ export async function GET(req: NextRequest) {
 
   if (!tcRes.ok) {
     const body = await tcRes.text().catch(() => "");
+    const temporarilyBusy = tcRes.status === 429 || tcRes.status === 503;
     return NextResponse.json(
       { error: `transcoder ${tcRes.status}`, detail: body.slice(0, 200) },
-      { status: 502 }
+      {
+        status: temporarilyBusy ? 503 : 502,
+        headers: temporarilyBusy
+          ? { "Retry-After": tcRes.headers.get("Retry-After") || "2" }
+          : undefined,
+      }
     );
   }
 
