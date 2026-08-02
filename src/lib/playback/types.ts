@@ -133,6 +133,27 @@ export type IdentityEvidence =
 
 export type DeliveryRoute = "direct" | "remux" | "unavailable";
 
+export type TimelineCoverage =
+  | "complete"
+  | "growing"
+  | "bounded"
+  | "sliding"
+  | "unknown";
+
+export type RandomAccessMethod =
+  | "byte_range"
+  | "segment_index"
+  | "offset_remux"
+  | "none";
+
+export interface SeekabilityInfo {
+  coverage: TimelineCoverage;
+  randomAccess: RandomAccessMethod;
+  logicalStartSeconds?: number;
+  logicalDurationSeconds?: number;
+  generatedEndSeconds?: number;
+}
+
 export interface PlaybackCandidate {
   source: PlaybackSource;
   readiness: CandidateReadiness;
@@ -142,6 +163,7 @@ export interface PlaybackCandidate {
   rejectionReason?: string;
   resolvedAtMs?: number;
   transportVerifiedAtMs?: number;
+  seekability?: SeekabilityInfo;
 }
 
 export interface PlaybackResolveContext {

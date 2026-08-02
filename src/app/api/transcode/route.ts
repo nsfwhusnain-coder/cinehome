@@ -89,6 +89,11 @@ export async function GET(req: NextRequest) {
   };
   const originalLanguage = languageParam("originalLanguage");
   const audioLanguage = languageParam("audioLanguage") || "en";
+  const requestedStartAt = Number(url.searchParams.get("startAt") || "0");
+  const startAt =
+    mode === "remux" && Number.isFinite(requestedStartAt) && requestedStartAt > 0
+      ? Math.min(24 * 60 * 60, Math.floor(requestedStartAt))
+      : 0;
 
   if (!sourceId || (type !== "movie" && type !== "tv") || !id) {
     return NextResponse.json(
@@ -131,6 +136,9 @@ export async function GET(req: NextRequest) {
   if (originalLanguage) {
     workerParams.set("originalLanguage", originalLanguage);
   }
+  if (startAt > 0) {
+    workerParams.set("startAt", String(startAt));
+  }
   const tcUrl = `${TRANSCODER_URL}/transcode?${workerParams.toString()}`;
   const tcRes = await fetch(tcUrl, {
     signal: AbortSignal.timeout(TRANSCODER_TIMEOUT_MS),
@@ -171,6 +179,7 @@ export async function GET(req: NextRequest) {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Cache-Control": "no-store",
+        "X-Cinehome-Remux-Start": String(startAt),
       },
     });
   }
@@ -185,6 +194,7 @@ export async function GET(req: NextRequest) {
     headers: {
       "Content-Type": "application/vnd.apple.mpegurl",
       "Cache-Control": "no-store",
+      "X-Cinehome-Remux-Start": String(startAt),
     },
   });
 }

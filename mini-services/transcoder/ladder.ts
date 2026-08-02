@@ -115,9 +115,12 @@ export function buildRemuxArgs(input: {
   segmentDurationS?: number;
   /** Zero-based audio-stream ordinal from ffprobe (`0:a:N`). */
   audioStreamIndex?: number;
+  /** Original-title offset. Input seek keeps resume/random access fast. */
+  startAtSeconds?: number;
 }): string[] {
   const seg = input.segmentDurationS ?? DEFAULT_SEGMENT_DURATION_S;
   const audioStreamIndex = Math.max(0, Math.floor(input.audioStreamIndex ?? 0));
+  const startAtSeconds = Math.max(0, Math.floor(input.startAtSeconds ?? 0));
   return [
     "-hide_banner",
     "-loglevel", "error",
@@ -143,6 +146,7 @@ export function buildRemuxArgs(input: {
      */
     "-readrate_initial_burst", String(REMUX_INITIAL_BURST_S),
     "-readrate", String(REMUX_READ_RATE),
+    ...(startAtSeconds > 0 ? ["-ss", String(startAtSeconds)] : []),
     "-i", input.inputUrl,
     // The whole point: copy, never encode — the VIDEO, which is where all the
     // cost and all the resolution is.
@@ -175,6 +179,9 @@ export function buildRemuxArgs(input: {
     // subtitle/attachment stream will otherwise fail the mux into fMP4.
     "-map", "0:v:0",
     "-map", `0:a:${audioStreamIndex}?`,
+    // Input seeking can expose negative stream timestamps around the preceding
+    // keyframe. Rebase the suffix playlist to a clean local zero timeline.
+    "-avoid_negative_ts", "make_zero",
     "-f", "hls",
     "-hls_time", String(seg),
     "-hls_playlist_type", "event",

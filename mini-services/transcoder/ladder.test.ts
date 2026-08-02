@@ -421,6 +421,17 @@ describe("buildRemuxArgs", () => {
     expect(valueAfter("-hls_list_size")).toBe("0");
     expect(valueAfter("-hls_playlist_type")).toBe("event");
   });
+
+  it("seeks the input before opening it and rebases the suffix at zero", () => {
+    const offsetArgs = buildRemuxArgs({
+      inputUrl: "https://cdn.example/movie.mkv",
+      outDir: "/out",
+      startAtSeconds: 3594,
+    });
+    expect(offsetArgs[offsetArgs.indexOf("-ss") + 1]).toBe("3594");
+    expect(offsetArgs.indexOf("-ss")).toBeLessThan(offsetArgs.indexOf("-i"));
+    expect(offsetArgs[offsetArgs.indexOf("-avoid_negative_ts") + 1]).toBe("make_zero");
+  });
 });
 
 /**

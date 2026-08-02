@@ -167,9 +167,10 @@ export function PlayerControls({
   const controlsVisible =
     showControls || alwaysShowControls || !!settingsOpen || showEpisodes || controlsFocused;
   const expectedRuntime =
-    durationProvisional && expectedDurationS > duration
+    durationProvisional && expectedDurationS > 0
       ? expectedDurationS
       : 0;
+  const timelineDuration = expectedRuntime || duration;
 
   const onControlsBlur = (event: React.FocusEvent<HTMLElement>) => {
     if (
@@ -283,7 +284,7 @@ export function PlayerControls({
         <div className="w-full px-0">
           <ProgressBar
             currentTime={currentTime}
-            duration={duration || 0}
+            duration={timelineDuration || 0}
             buffered={buffered}
             onSeek={onSeekTo}
           />
@@ -331,7 +332,9 @@ export function PlayerControls({
               {formatTime(currentTime)}
               <span className="text-white/50"> / </span>
               <span className="text-white/80">
-                {expectedRuntime > 0 ? `~${formatTime(expectedRuntime)}` : formatTime(duration)}
+                {expectedRuntime > 0
+                  ? `~${formatTime(expectedRuntime)}`
+                  : formatTime(timelineDuration)}
               </span>
               {expectedRuntime > 0 && (
                 <span className="ml-1.5 text-[11px] font-medium text-white/55">

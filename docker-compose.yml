@@ -17,6 +17,8 @@ services:
         # Optional builder DNS escape hatch. scripts/deploy.sh resolves this
         # through CineHome's explicit DNS when the host overlay resolver fails.
         NODE_DOWNLOAD_IP: ${NODE_DOWNLOAD_IP:-}
+        # Compile-time browser kill switch for logical-timeline remux seeking.
+        NEXT_PUBLIC_PLAYBACK_RANDOM_ACCESS_REMUX: ${NEXT_PUBLIC_PLAYBACK_RANDOM_ACCESS_REMUX:-1}
     ports:
       # ONLY publish the Next.js app. Port 3030 (stream-scraper) must NEVER be published.
       # Scraper stays container-internal; app reaches it via SCRAPER_URL=http://127.0.0.1:3030/scrape.

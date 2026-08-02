@@ -28,8 +28,16 @@ import { pickClientStartupSource } from "@/lib/playback/client-ranking";
 import {
   PLAYBACK_4K_PREWARM_ENABLED,
   PLAYBACK_FAST_4K_ENABLED,
+  PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED,
   PLAYBACK_TRACK_POLICY_ENABLED,
 } from "@/lib/playback/features";
+import {
+  isLogicalTimeSeekable,
+  logicalDuration,
+  normalizeRemuxStart,
+  toLogicalTime,
+  toMediaTime,
+} from "@/lib/playback/remux-timeline";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
 import {
@@ -422,6 +430,7 @@ function buildRemuxUrl(options: {
   episode?: number;
   audio: AudioTrackSelection;
   prewarm?: boolean;
+  startAtSeconds?: number;
 }): string {
   const params = new URLSearchParams({
     type: options.mediaType,
@@ -439,6 +448,9 @@ function buildRemuxUrl(options: {
     params.set("episode", String(options.episode));
   }
   if (options.prewarm) params.set("prewarm", "1");
+  if (options.startAtSeconds && options.startAtSeconds > 0) {
+    params.set("startAt", String(Math.floor(options.startAtSeconds)));
+  }
   return `/api/transcode?${params.toString()}`;
 }
 
@@ -1107,6 +1119,23 @@ export function VideoPlayer({
   const failedSourceIdsRef = useRef<Set<string>>(new Set());
   const resumeAtRef = useRef(0);
   const initialTimeAppliedRef = useRef(false);
+  const initialRemuxStart = PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED
+    ? normalizeRemuxStart(initialTime ?? 0, fallbackDurationS)
+    : 0;
+  const [remuxStartAtSeconds, setRemuxStartAtSeconds] = useState(initialRemuxStart);
+  const remuxStartAtRef = useRef(initialRemuxStart);
+  const remuxTimelineActiveRef = useRef(false);
+  const remuxSeekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remuxSeekAbortRef = useRef<AbortController | null>(null);
+  const remuxSeekGenerationRef = useRef(0);
+  const pendingRemuxSeekTargetRef = useRef<number | null>(null);
+  const remuxRollbackRef = useRef<{
+    sourceId: string;
+    startAtSeconds: number;
+    logicalTime: number;
+    targetSeconds: number;
+    confirming?: boolean;
+  } | null>(null);
   const prevSourceCount = useRef(0);
   /** User picked a server in the dock/settings — never auto-upgrade over that. */
   const userSelectedSourceRef = useRef(false);
@@ -1287,6 +1316,9 @@ export function VideoPlayer({
             season: tvSeason,
             episode: tvEpisode,
             audio: audioSelectionRef.current,
+            startAtSeconds: PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED
+              ? remuxStartAtSeconds
+              : 0,
           })
         : `/api/transcode?type=${mediaType ?? "movie"}&id=${tmdbId}` +
           `&sourceId=${encodeURIComponent(activeSource.id)}` +
@@ -1480,7 +1512,35 @@ export function VideoPlayer({
     isDiscoveringRef.current = Boolean(isDiscoveringSources);
     dockOpenRef.current = dockOpen;
     shortcutsOpenRef.current = shortcutsOpen;
+    remuxStartAtRef.current = remuxStartAtSeconds;
+    remuxTimelineActiveRef.current =
+      PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED && needsRemux;
   });
+  const setRemuxStart = useCallback((seconds: number) => {
+    const normalized = Math.max(0, Math.floor(seconds));
+    remuxStartAtRef.current = normalized;
+    setRemuxStartAtSeconds(normalized);
+  }, [setRemuxStartAtSeconds]);
+  const logicalPlayhead = useCallback((mediaSeconds: number): number => {
+    return remuxTimelineActiveRef.current
+      ? toLogicalTime(mediaSeconds, remuxStartAtRef.current)
+      : mediaSeconds;
+  }, []);
+  const prepareSourceTimeline = useCallback(
+    (source: PlaybackSource, logicalTargetSeconds: number) => {
+      const offset =
+        PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED &&
+        sourceDelivery(source) === "remux" &&
+        logicalTargetSeconds > RESUME_SLOW_THRESHOLD_S
+          ? normalizeRemuxStart(
+              logicalTargetSeconds,
+              fallbackDurationSRef.current
+            )
+          : 0;
+      setRemuxStart(offset);
+    },
+    [setRemuxStart]
+  );
   /** hls.js levels with ladder/maxHeight annotation from source metadata. */
   const levelsFromHls = useCallback((hls: Hls): QualityLevel[] => {
     const src = activeSourceRef.current;
@@ -1578,6 +1638,8 @@ export function VideoPlayer({
       if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
       if (newSourceNoticeTimerRef.current) clearTimeout(newSourceNoticeTimerRef.current);
       if (resumeNoticeTimerRef.current) clearTimeout(resumeNoticeTimerRef.current);
+      if (remuxSeekTimerRef.current) clearTimeout(remuxSeekTimerRef.current);
+      remuxSeekAbortRef.current?.abort();
     };
   }, []);
 
@@ -1615,6 +1677,20 @@ export function VideoPlayer({
     seenSourceIdsRef.current = new Set();
     // Always start the new title/episode at 0 unless continue-watching seeds initialTime.
     resumeAtRef.current = 0;
+    remuxSeekGenerationRef.current += 1;
+    if (remuxSeekTimerRef.current) {
+      clearTimeout(remuxSeekTimerRef.current);
+      remuxSeekTimerRef.current = null;
+    }
+    remuxSeekAbortRef.current?.abort();
+    remuxSeekAbortRef.current = null;
+    remuxRollbackRef.current = null;
+    pendingRemuxSeekTargetRef.current = null;
+    setRemuxStart(
+      PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED
+        ? normalizeRemuxStart(initialTime ?? 0, fallbackDurationS)
+        : 0
+    );
     setCurrentTime(0);
     setEverPlayed(false);
     setMediaFaulted(false);
@@ -1651,7 +1727,7 @@ export function VideoPlayer({
       resumeNoticeTimerRef.current = null;
     }
     // Deps: title/episode identity only — everything else here is a reset.
-  }, [mediaKey, setCurrentTime, setError, invalidateSourceAttempt]);
+  }, [mediaKey, setCurrentTime, setError, invalidateSourceAttempt, setRemuxStart]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -1717,7 +1793,7 @@ export function VideoPlayer({
         pendingUrlRefreshRef.current = false;
         // Preserve playhead — the dying/expired stream still reflects where the
         // owner was; without capturing it the fresh hls.js instance restarts at 0.
-        const t = videoRef.current?.currentTime ?? 0;
+        const t = logicalPlayhead(videoRef.current?.currentTime ?? 0);
         if (t > RESUME_CAPTURE_MIN_S) resumeAtRef.current = t;
         initialTimeAppliedRef.current = false;
         setActiveSource(refreshed);
@@ -1786,10 +1862,11 @@ export function VideoPlayer({
     // Re-pick when missing, dropped from list, or failed while better sources exist.
     if (!stillValid || (activeFailed && !userSelectedSourceRef.current)) {
       if (best && best.id !== activeSource?.id) {
-        const t = videoRef.current?.currentTime ?? 0;
+        const t = logicalPlayhead(videoRef.current?.currentTime ?? 0);
         if (t > RESUME_CAPTURE_MIN_S) {
           resumeAtRef.current = t;
         }
+        prepareSourceTimeline(best, t);
         initialTimeAppliedRef.current = false;
         setError(null);
         invalidateSourceAttempt();
@@ -1808,6 +1885,8 @@ export function VideoPlayer({
     setError,
     invalidateSourceAttempt,
     markEverPlayed,
+    logicalPlayhead,
+    prepareSourceTimeline,
   ]);
 
   /**
@@ -2012,7 +2091,10 @@ export function VideoPlayer({
   }, []);
 
   const handleSourceChange = useCallback(
-    (source: PlaybackSource, opts?: { userPick?: boolean }) => {
+    (
+      source: PlaybackSource,
+      opts?: { userPick?: boolean; remuxStartAtSeconds?: number }
+    ) => {
       // Always operate on the clean, server-data-only source. The Server list
       // renders `displaySources`, which may carry a coarse CLIENT-measured probe
       // (withClientHealthProbe); that must never become `activeSource.probe`,
@@ -2037,9 +2119,18 @@ export function VideoPlayer({
         setServerDisplayName(getServerDisplayName(resolved.provider, resolved.label));
         return;
       }
+      remuxSeekGenerationRef.current += 1;
+      if (remuxSeekTimerRef.current) {
+        clearTimeout(remuxSeekTimerRef.current);
+        remuxSeekTimerRef.current = null;
+      }
+      remuxSeekAbortRef.current?.abort();
+      remuxSeekAbortRef.current = null;
+      pendingRemuxSeekTargetRef.current = null;
+      remuxRollbackRef.current = null;
       // Capture live position when available; never wipe an existing resume target
       // with t≈0 (common when the element was already torn down mid-failover).
-      const t = video?.currentTime ?? 0;
+      const t = logicalPlayhead(video?.currentTime ?? 0);
       if (t > RESUME_CAPTURE_MIN_S) {
         resumeAtRef.current = t;
         // Keep store clock on the real playhead so chrome does not flash 0:00.
@@ -2049,6 +2140,18 @@ export function VideoPlayer({
       }
       // Allow a fresh seek apply on the new stream (resume target kept above).
       initialTimeAppliedRef.current = false;
+      if (
+        PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED &&
+        sourceDelivery(resolved) === "remux" &&
+        opts?.remuxStartAtSeconds != null
+      ) {
+        setRemuxStart(opts.remuxStartAtSeconds);
+      } else {
+        prepareSourceTimeline(
+          resolved,
+          t > RESUME_CAPTURE_MIN_S ? t : resumeAtRef.current
+        );
+      }
       invalidateSourceAttempt();
       setError(null);
       setBuffering(true);
@@ -2076,6 +2179,9 @@ export function VideoPlayer({
       setServerDisplayName,
       setCurrentTime,
       invalidateSourceAttempt,
+      logicalPlayhead,
+      prepareSourceTimeline,
+      setRemuxStart,
     ]
   );
 
@@ -2323,6 +2429,30 @@ export function VideoPlayer({
       if (!source || source.id !== attempt.sourceId) {
         return false;
       }
+      const rollback = remuxRollbackRef.current;
+      if (
+        PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED &&
+        rollback?.sourceId === source.id &&
+        remuxStartAtRef.current !== rollback.startAtSeconds
+      ) {
+        remuxRollbackRef.current = null;
+        pendingRemuxSeekTargetRef.current = null;
+        resumeAtRef.current = rollback.logicalTime;
+        initialTimeAppliedRef.current = false;
+        setRemuxStart(rollback.startAtSeconds);
+        setCurrentTime(rollback.logicalTime);
+        setError(null);
+        setBuffering(true);
+        setIsSwitchingServer(true);
+        showStatusNotice("Seek failed — returning to playback…", 2_500);
+        emitPlayerFeedback({
+          event: "handoff_failed",
+          sourceId: source.id,
+          provider: source.provider,
+          reason,
+        });
+        return true;
+      }
       markSourceFailed(attempt.sourceId);
       console.info(
         "[playback-failure]",
@@ -2357,6 +2487,11 @@ export function VideoPlayer({
       setBuffering,
       setError,
       requestAutomaticRosterRefresh,
+      setCurrentTime,
+      setRemuxStart,
+      showStatusNotice,
+      setLevelsPending,
+      setIsSwitchingServer,
     ]
   );
 
@@ -2493,7 +2628,9 @@ export function VideoPlayer({
       const target = resumeAtRef.current;
       if (target <= RESUME_CAPTURE_MIN_S) return false;
       try {
-        v.currentTime = target;
+        v.currentTime = remuxTimelineActiveRef.current
+          ? toMediaTime(target, remuxStartAtRef.current)
+          : target;
         resumeAtRef.current = 0;
         initialTimeAppliedRef.current = true;
         // Only the "real" continue-watching resume (not a sub-5s failover
@@ -2788,7 +2925,12 @@ export function VideoPlayer({
         });
     } else if (useHls) {
       if (Hls.isSupported()) {
-        const startPos = resumeAtRef.current > 1 ? resumeAtRef.current : -1;
+        const startPos =
+          resumeAtRef.current > 1
+            ? remuxTimelineActiveRef.current
+              ? toMediaTime(resumeAtRef.current, remuxStartAtRef.current)
+              : resumeAtRef.current
+            : -1;
         const hls = new Hls({
           // Workers break on some Chromium forks (Opera Air / GX) and stall on multi-audio masters.
           enableWorker: false,
@@ -2904,7 +3046,7 @@ export function VideoPlayer({
         armZeroProgressWatchdog(zeroProgressDelayForResume());
         onTimeProgress = () => {
           // Progress past cold start (or past resume target) means the source is alive.
-          const t = video.currentTime ?? 0;
+          const t = logicalPlayhead(video.currentTime ?? 0);
           const resumeTarget = resumeAtRef.current;
           const pastResume =
             resumeTarget > RESUME_SLOW_THRESHOLD_S
@@ -3023,6 +3165,16 @@ export function VideoPlayer({
           const provisional = needsRemux && Boolean(data.details?.live);
           durationProvisionalRef.current = provisional;
           setDurationProvisional(provisional);
+          if (remuxTimelineActiveRef.current) {
+            setDuration(
+              logicalDuration(
+                data.details?.totalduration ?? video.duration,
+                remuxStartAtRef.current,
+                fallbackDurationSRef.current,
+                provisional
+              )
+            );
+          }
           if (!provisional) {
             rejectImplausiblyShortDuration(data.details?.totalduration ?? 0);
           }
@@ -3378,6 +3530,7 @@ export function VideoPlayer({
     noteHardTransportFailure,
     recordDetectedHeight,
     rejectImplausiblyShortDuration,
+    logicalPlayhead,
   ]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -3396,6 +3549,23 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video || !hasStream) return;
 
+    if (PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED && needsRemux) {
+      const pendingTarget =
+        resumeAtRef.current > RESUME_CAPTURE_MIN_S
+          ? resumeAtRef.current
+          : initialTime;
+      const desiredStart = normalizeRemuxStart(
+        pendingTarget,
+        fallbackDurationS
+      );
+      if (remuxStartAtRef.current !== desiredStart) {
+        // Reattach to a suffix generated around the saved position. The next
+        // pass applies the small local seek after its manifest is ready.
+        setRemuxStart(desiredStart);
+        return;
+      }
+    }
+
     const seekIfEarly = (): void => {
       if (initialTimeAppliedRef.current) return;
       const target =
@@ -3403,7 +3573,7 @@ export function VideoPlayer({
       if (target == null || target <= RESUME_SLOW_THRESHOLD_S) return;
 
       // User scrubbed past resume target — don't yank them back.
-      if (video.currentTime > target + RESUME_ABANDON_SLACK_S) {
+      if (logicalPlayhead(video.currentTime) > target + RESUME_ABANDON_SLACK_S) {
         initialTimeAppliedRef.current = true;
         resumeAtRef.current = 0;
         return;
@@ -3411,7 +3581,9 @@ export function VideoPlayer({
 
       if (video.readyState < 1) return;
       try {
-        video.currentTime = target;
+        video.currentTime = remuxTimelineActiveRef.current
+          ? toMediaTime(target, remuxStartAtRef.current)
+          : target;
         initialTimeAppliedRef.current = true;
         resumeAtRef.current = 0;
         if (!everPlayedRef.current) showResumeNotice(target);
@@ -3431,7 +3603,15 @@ export function VideoPlayer({
       video.removeEventListener("durationchange", seekIfEarly);
       video.removeEventListener("canplay", seekIfEarly);
     };
-  }, [initialTime, hasStream, effectiveSrc]);
+  }, [
+    initialTime,
+    hasStream,
+    effectiveSrc,
+    logicalPlayhead,
+    needsRemux,
+    fallbackDurationS,
+    setRemuxStart,
+  ]);
 
   useEffect(() => {
     const hls = hlsRef.current;
@@ -3491,8 +3671,11 @@ export function VideoPlayer({
     const onTimeUpdate = () => {
       onProgressBuf();
       const now = Date.now();
-      const t = video.currentTime;
-      if (now - lastTimeUpdateRef.current >= 250) {
+      const t = logicalPlayhead(video.currentTime);
+      if (
+        pendingRemuxSeekTargetRef.current == null &&
+        now - lastTimeUpdateRef.current >= 250
+      ) {
         lastTimeUpdateRef.current = now;
         setCurrentTime(t);
       }
@@ -3518,9 +3701,16 @@ export function VideoPlayer({
        * lasts; if it is unknown, no progress is saved rather than a wrong
        * percentage, since a bad resume point is worse than none.
        */
-      const progressDuration = durationProvisionalRef.current
-        ? fallbackDurationSRef.current
-        : video.duration;
+      const progressDuration = remuxTimelineActiveRef.current
+        ? logicalDuration(
+            video.duration,
+            remuxStartAtRef.current,
+            fallbackDurationSRef.current,
+            durationProvisionalRef.current
+          )
+        : durationProvisionalRef.current
+          ? fallbackDurationSRef.current
+          : video.duration;
       if (
         onProgressRef.current &&
         now - lastProgressSave.current > progressIntervalMs &&
@@ -3537,8 +3727,8 @@ export function VideoPlayer({
         mediaType === "tv" &&
         tvId != null &&
         nextEpTarget &&
-        video.duration > 0 &&
-        t / video.duration >= NEXT_EP_PRELOAD_RATIO
+        progressDuration > 0 &&
+        t / progressDuration >= NEXT_EP_PRELOAD_RATIO
       ) {
         nextEpPreloadedRef.current = true;
         void preresolvePlayback({
@@ -3548,9 +3738,57 @@ export function VideoPlayer({
           episode: nextEpTarget.episode,
         });
       }
+
+      const rollback = remuxRollbackRef.current;
+      if (
+        rollback &&
+        !rollback.confirming &&
+        rollback.sourceId === activeSourceRef.current?.id &&
+        remuxStartAtRef.current !== rollback.startAtSeconds
+      ) {
+        if (t > rollback.targetSeconds + 2) {
+          failActiveSource(
+            "handoff_playhead_mismatch",
+            sourceAttemptControllerRef.current.currentToken()
+          );
+        } else if (
+          Math.abs(t - rollback.targetSeconds) <= 2 &&
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+        ) {
+          rollback.confirming = true;
+          const confirm = () => {
+            if (
+              remuxRollbackRef.current === rollback &&
+              activeSourceRef.current?.id === rollback.sourceId &&
+              Math.abs(logicalPlayhead(video.currentTime) - rollback.targetSeconds) <= 2
+            ) {
+              remuxRollbackRef.current = null;
+              pendingRemuxSeekTargetRef.current = null;
+              setIsSwitchingServer(false);
+              setBuffering(false);
+            } else if (remuxRollbackRef.current === rollback) {
+              rollback.confirming = false;
+            }
+          };
+          if (typeof video.requestVideoFrameCallback === "function") {
+            video.requestVideoFrameCallback(() => confirm());
+          } else {
+            window.requestAnimationFrame(confirm);
+          }
+        }
+      }
     };
     const onDurationChange = () => {
-      setDuration(video.duration);
+      setDuration(
+        remuxTimelineActiveRef.current
+          ? logicalDuration(
+              video.duration,
+              remuxStartAtRef.current,
+              fallbackDurationSRef.current,
+              durationProvisionalRef.current
+            )
+          : video.duration
+      );
       if (Number.isFinite(video.duration) && video.duration > 0) {
         rejectImplausiblyShortDuration(video.duration);
       }
@@ -3558,7 +3796,14 @@ export function VideoPlayer({
     const onProgressBuf = () => {
       try {
         if (video.buffered.length > 0) {
-          setBufferedEnd(video.buffered.end(video.buffered.length - 1));
+          setBufferedEnd(
+            remuxTimelineActiveRef.current
+              ? toLogicalTime(
+                  video.buffered.end(video.buffered.length - 1),
+                  remuxStartAtRef.current
+                )
+              : video.buffered.end(video.buffered.length - 1)
+          );
         }
       } catch {
         /* ignore */
@@ -3620,7 +3865,7 @@ export function VideoPlayer({
         if (sid) recordDetectedHeight(sid, decodedTier);
       }
       setBuffering(false);
-      setIsSwitchingServer(false);
+      if (!remuxRollbackRef.current) setIsSwitchingServer(false);
       if (video.readyState >= 2 && (video.currentTime > 0.25 || video.duration > 0)) {
         markEverPlayed();
       }
@@ -3784,6 +4029,7 @@ export function VideoPlayer({
     rejectImplausiblyShortDuration,
     mediaType,
     tvId,
+    logicalPlayhead,
   ]);
 
   const closeDock = useCallback(() => {
@@ -3864,27 +4110,169 @@ export function VideoPlayer({
     }
   }, []);
 
-  const seekRelative = useCallback((seconds: number) => {
-    const v = videoRef.current;
-    if (!v) return;
-    v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + seconds));
-  }, []);
+  const requestLogicalSeek = useCallback(
+    (requestedSeconds: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const fullDuration =
+        fallbackDurationSRef.current > 0
+          ? fallbackDurationSRef.current
+          : usePlayerStore.getState().duration;
+      const target = Math.max(
+        0,
+        fullDuration > 0
+          ? Math.min(fullDuration - 0.1, requestedSeconds)
+          : requestedSeconds
+      );
+      remuxSeekGenerationRef.current += 1;
+      const generation = remuxSeekGenerationRef.current;
+      if (remuxSeekTimerRef.current) {
+        clearTimeout(remuxSeekTimerRef.current);
+        remuxSeekTimerRef.current = null;
+      }
+      remuxSeekAbortRef.current?.abort();
+      pendingRemuxSeekTargetRef.current = null;
+
+      if (
+        !PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED ||
+        !remuxTimelineActiveRef.current ||
+        !activeSourceRef.current ||
+        !tmdbId
+      ) {
+        video.currentTime = target;
+        setCurrentTime(target);
+        return;
+      }
+
+      try {
+        if (
+          isLogicalTimeSeekable(
+            video.seekable,
+            target,
+            remuxStartAtRef.current
+          )
+        ) {
+          video.currentTime = toMediaTime(target, remuxStartAtRef.current);
+          setCurrentTime(target);
+          return;
+        }
+      } catch {
+        // An unreadable TimeRanges object is treated as not seekable; the
+        // bounded offset handoff below is safer than guessing.
+      }
+
+      pendingRemuxSeekTargetRef.current = target;
+      setCurrentTime(target);
+      showStatusNotice("Preparing requested position…", 2_500);
+
+      remuxSeekTimerRef.current = setTimeout(() => {
+        remuxSeekTimerRef.current = null;
+        const source = activeSourceRef.current;
+        if (!source || sourceDelivery(source) !== "remux" || !tmdbId) return;
+        const startAtSeconds = normalizeRemuxStart(target, fullDuration);
+        const controller = new AbortController();
+        remuxSeekAbortRef.current = controller;
+        const timeout = window.setTimeout(() => controller.abort(), 70_000);
+        const prewarmUrl = buildRemuxUrl({
+          source,
+          mediaType: mediaType ?? "movie",
+          tmdbId,
+          season: tvSeason,
+          episode: tvEpisode,
+          audio: audioSelectionRef.current,
+          prewarm: true,
+          startAtSeconds,
+        });
+        void fetch(prewarmUrl, {
+          cache: "no-store",
+          credentials: "include",
+          signal: controller.signal,
+        })
+          .then(async (response) => {
+            if (!response.ok) throw new Error(`seek prewarm ${response.status}`);
+            // Consuming the body verifies that a complete, rewritten manifest
+            // reached the browser; the attach immediately reuses this cache key.
+            const body = await response.text();
+            if (!body.includes("#EXTM3U")) throw new Error("invalid seek manifest");
+            if (
+              controller.signal.aborted ||
+              generation !== remuxSeekGenerationRef.current ||
+              activeSourceRef.current?.id !== source.id
+            ) {
+              return;
+            }
+            const logicalTime = logicalPlayhead(video.currentTime);
+            remuxRollbackRef.current = {
+              sourceId: source.id,
+              startAtSeconds: remuxStartAtRef.current,
+              logicalTime,
+              targetSeconds: target,
+            };
+            resumeAtRef.current = target;
+            initialTimeAppliedRef.current = false;
+            setBuffering(true);
+            setIsSwitchingServer(true);
+            if (remuxStartAtRef.current === startAtSeconds) {
+              setSourceReloadGeneration((value) => value + 1);
+            } else {
+              setRemuxStart(startAtSeconds);
+            }
+          })
+          .catch(() => {
+            if (
+              !controller.signal.aborted &&
+              generation === remuxSeekGenerationRef.current
+            ) {
+              setCurrentTime(logicalPlayhead(video.currentTime));
+              pendingRemuxSeekTargetRef.current = null;
+              showStatusNotice("Couldn’t prepare that position — playback continued", 3_000);
+            }
+          })
+          .finally(() => {
+            window.clearTimeout(timeout);
+            if (remuxSeekAbortRef.current === controller) {
+              remuxSeekAbortRef.current = null;
+            }
+          });
+      }, 160);
+    },
+    [
+      logicalPlayhead,
+      mediaType,
+      setBuffering,
+      setCurrentTime,
+      setRemuxStart,
+      showStatusNotice,
+      tmdbId,
+      tvEpisode,
+      tvSeason,
+    ]
+  );
+
+  const seekRelative = useCallback(
+    (seconds: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      requestLogicalSeek(logicalPlayhead(video.currentTime) + seconds);
+    },
+    [logicalPlayhead, requestLogicalSeek]
+  );
 
   const seekTo = useCallback(
     (time: number) => {
-      const v = videoRef.current;
-      if (!v) return;
-      v.currentTime = time;
-      setCurrentTime(time);
+      requestLogicalSeek(time);
     },
-    [setCurrentTime]
+    [requestLogicalSeek]
   );
 
   const seekToPct = useCallback((pct: number) => {
-    const v = videoRef.current;
-    if (!v || !v.duration) return;
-    v.currentTime = v.duration * pct;
-  }, []);
+    const duration =
+      fallbackDurationSRef.current > 0
+        ? fallbackDurationSRef.current
+        : usePlayerStore.getState().duration;
+    if (duration <= 0) return;
+    requestLogicalSeek(duration * pct);
+  }, [requestLogicalSeek]);
 
   const toggleMute = useCallback(() => {
     const v = videoRef.current;
@@ -3952,6 +4340,10 @@ export function VideoPlayer({
     fourKPrewarmAttemptedRef.current.add(candidate.id);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 70_000);
+    const prewarmStartAt = normalizeRemuxStart(
+      logicalPlayhead(videoRef.current?.currentTime ?? 0),
+      fallbackDurationSRef.current
+    );
     const prewarmUrl = buildRemuxUrl({
       source: candidate,
       mediaType: mediaType ?? "movie",
@@ -3960,6 +4352,7 @@ export function VideoPlayer({
       episode: tvEpisode,
       audio: audioSelectionRef.current,
       prewarm: true,
+      startAtSeconds: prewarmStartAt,
     });
     void fetch(prewarmUrl, {
       cache: "no-store",
@@ -3976,7 +4369,9 @@ export function VideoPlayer({
           return;
         }
         showStatusNotice("4K ready — switching…", 2_200);
-        handleSourceChange(candidate);
+        handleSourceChange(candidate, {
+          remuxStartAtSeconds: prewarmStartAt,
+        });
       })
       .catch(() => {
         // The direct HD stream remains active; a failed prewarm is invisible.
@@ -3990,6 +4385,7 @@ export function VideoPlayer({
     activeSource,
     everPlayed,
     handleSourceChange,
+    logicalPlayhead,
     mediaType,
     orderedSources,
     showStatusNotice,

@@ -161,9 +161,15 @@ const REMUX_IDLE_CHECK_INTERVAL_MS = 30_000;
  * manifest that will not arrive.
  */
 const REMUX_MAX_CONCURRENT = Number(process.env.TRANSCODER_REMUX_MAX_CONCURRENT || 2);
+/** Bump whenever remux output semantics change so incompatible cache rows can
+ * never be reused across deployments. */
+const REMUX_PIPELINE_VERSION = "offset-v1";
+const REMUX_MAX_START_AT_S = 24 * 60 * 60;
 
 /** Keys with a remux ffmpeg currently running. */
 const activeRemuxes = new Set<string>();
+/** Jobs admitted but still opening/probing their input count against capacity. */
+const remuxReservations = new Set<string>();
 /**
  * A cache entry is protected from eviction for this long after its last read.
  * Without it, eviction is free to delete the very directory a viewer is
@@ -198,7 +204,8 @@ function sourceKey(
   inputUrl: string,
   maxHeight: number,
   mode: BuildMode = "transcode",
-  audioSelection: AudioTrackSelection = DEFAULT_REMUX_AUDIO_SELECTION
+  audioSelection: AudioTrackSelection = DEFAULT_REMUX_AUDIO_SELECTION,
+  startAtSeconds = 0
 ): string {
   // Height is dropped from a remux's identity because a remux HAS no target
   // height - it copies the bitstream, so the output is the source resolution
@@ -209,8 +216,12 @@ function sourceKey(
     mode === "remux"
       ? `${audioSelection.preference}|${audioSelection.originalLanguage ?? ""}|${audioSelection.preferredLanguage ?? ""}`
       : "default";
+  const offsetPart =
+    mode === "remux"
+      ? `${REMUX_PIPELINE_VERSION}|${Math.max(0, Math.floor(startAtSeconds))}`
+      : "whole";
   return createHash("sha256")
-    .update(`${inputUrl}|${heightPart}|${mode}|${audioPart}`)
+    .update(`${inputUrl}|${heightPart}|${mode}|${audioPart}|${offsetPart}`)
     .digest("hex")
     .slice(0, 24);
 }
@@ -242,6 +253,13 @@ function parseAudioSelection(url: URL): AudioTrackSelection {
     originalLanguage: safeLanguage(url.searchParams.get("originalLanguage")),
     preferredLanguage: safeLanguage(url.searchParams.get("audioLanguage")) ?? "en",
   };
+}
+
+function parseStartAt(raw: string | null, mode: BuildMode): number {
+  if (mode !== "remux") return 0;
+  const value = Number(raw ?? "0");
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(REMUX_MAX_START_AT_S, Math.floor(value));
 }
 
 function cacheDir(key: string): string {
@@ -584,7 +602,32 @@ async function waitForPlaylist(key: string, budgetMs: number): Promise<string> {
         master = "";
       }
       const variants = extractVariantPlaylistNames(master);
-      if (variants.length === 0 || existsSync(join(dir, variants[0]!))) {
+      const mediaPlaylistPath =
+        variants.length > 0 ? join(dir, variants[0]!) : path;
+      let mediaPlaylist = variants.length > 0 ? "" : master;
+      if (variants.length > 0 && existsSync(mediaPlaylistPath)) {
+        try {
+          mediaPlaylist = readFileSync(mediaPlaylistPath, "utf8");
+        } catch {
+          mediaPlaylist = "";
+        }
+      }
+      const initName = mediaPlaylist.match(/#EXT-X-MAP:.*URI="([^"?]+)"/)?.[1];
+      const mediaFiles = mediaPlaylist
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith("#"));
+      const initReady = !initName || existsSync(join(dir, basename(initName)));
+      // Offset remuxes use a six-second preroll. Waiting for two four-second
+      // fMP4 fragments means the requested local seek can land immediately;
+      // ordinary MPEG-TS ladders still need only their first fragment.
+      const requiredMediaFiles = initName ? mediaFiles.slice(0, 2) : mediaFiles.slice(0, 1);
+      const segmentReady =
+        requiredMediaFiles.length === (initName ? 2 : 1) &&
+        requiredMediaFiles.every((file) =>
+          existsSync(join(dir, basename(file.split("?", 1)[0]!)))
+        );
+      if (initReady && segmentReady) {
         return path;
       }
     }
@@ -601,22 +644,28 @@ async function getOrBuild(
   inputUrl: string,
   maxHeight: number,
   mode: BuildMode = "transcode",
-  audioSelection: AudioTrackSelection = DEFAULT_REMUX_AUDIO_SELECTION
+  audioSelection: AudioTrackSelection = DEFAULT_REMUX_AUDIO_SELECTION,
+  startAtSeconds = 0
 ): Promise<string> {
-  const key = sourceKey(inputUrl, maxHeight, mode, audioSelection);
+  const key = sourceKey(inputUrl, maxHeight, mode, audioSelection, startAtSeconds);
   touchKey(key);
 
   // Cache hit — ladder already built (transcode complete).
   const cached = playlistPath(key);
   if (existsSync(cached) && !inflight.has(key)) {
-    return cached;
+    const completeRemux =
+      mode !== "remux" || readFileSync(cached, "utf8").includes("#EXT-X-ENDLIST");
+    if (completeRemux) return cached;
+    // A remux with no writer and no ENDLIST was interrupted. Never expose a
+    // silently truncated suffix as a warm cache hit.
+    wipeOutDir(cacheDir(key));
   }
 
   // Already building? Don't start a second ffmpeg for the same key.
   const existing = inflight.get(key);
-  if (existing) {
+  if (existing || (mode === "remux" && remuxReservations.has(key))) {
     // Swallow — the work promise only tracks completion; we return early below.
-    existing.catch(() => {});
+    existing?.catch(() => {});
   } else if (mode === "remux") {
     /**
      * Remux needs none of the ladder machinery below: there are no rungs to
@@ -636,11 +685,12 @@ async function getOrBuild(
         );
       }
     }
-    if (activeRemuxes.size >= REMUX_MAX_CONCURRENT) {
+    if (activeRemuxes.size + remuxReservations.size >= REMUX_MAX_CONCURRENT) {
       throw new Error(
-        `remux at capacity: ${activeRemuxes.size}/${REMUX_MAX_CONCURRENT} running`
+        `remux at capacity: ${activeRemuxes.size + remuxReservations.size}/${REMUX_MAX_CONCURRENT} active or starting`
       );
     }
+    remuxReservations.add(key);
     /**
      * Start from an empty directory, always.
      *
@@ -654,40 +704,50 @@ async function getOrBuild(
      * measured at ~15s wasted before a 4K source dropped to a 1080p fallback.
      * The ladder path never hit this because it wipes between attempts.
      */
-    const outDir = cacheDir(key);
-    wipeOutDir(outDir);
-    mkdirSync(outDir, { recursive: true });
-    const audioStreamIndex = await probePreferredAudioStream(
-      inputUrl,
-      audioSelection
-    );
-    const args = buildRemuxArgs({
-      inputUrl,
-      outDir,
-      segmentDurationS: SEGMENT_DURATION_S,
-      audioStreamIndex,
-    });
-    log(
-      `${key} remux (stream copy, no video re-encode, audio stream ${audioStreamIndex})`
-    );
-    const work = (async () => {
-      const proc = await attemptTranscode("remux", key, outDir, args, null);
-      if (!proc) {
-        wipeOutDir(outDir);
-        throw new Error(`remux failed for key=${key}`);
-      }
-      activeRemuxes.add(key);
-      proc.once("close", () => activeRemuxes.delete(key));
-      watchRemuxSize(proc, outDir, key);
-      watchRemuxIdle(proc, outDir, key);
-      trackCompletion(key, proc);
-      return playlistPath(key);
-    })().catch((e) => {
-      log(`background remux failed key=${key}: ${e instanceof Error ? e.message : e}`);
-      inflight.delete(key);
-      throw e;
-    });
-    inflight.set(key, work);
+    try {
+      const outDir = cacheDir(key);
+      wipeOutDir(outDir);
+      mkdirSync(outDir, { recursive: true });
+      const audioStreamIndex = await probePreferredAudioStream(
+        inputUrl,
+        audioSelection
+      );
+      const args = buildRemuxArgs({
+        inputUrl,
+        outDir,
+        segmentDurationS: SEGMENT_DURATION_S,
+        audioStreamIndex,
+        startAtSeconds,
+      });
+      log(
+        `${key} remux startAt=${startAtSeconds}s (stream copy, audio stream ${audioStreamIndex})`
+      );
+      const work = (async () => {
+        const proc = await attemptTranscode("remux", key, outDir, args, null);
+        remuxReservations.delete(key);
+        if (!proc) {
+          wipeOutDir(outDir);
+          throw new Error(`remux failed for key=${key}`);
+        }
+        if (proc.exitCode === null && proc.signalCode === null) {
+          activeRemuxes.add(key);
+          proc.once("close", () => activeRemuxes.delete(key));
+        }
+        watchRemuxSize(proc, outDir, key);
+        watchRemuxIdle(proc, outDir, key);
+        trackCompletion(key, proc);
+        return playlistPath(key);
+      })().catch((e) => {
+        remuxReservations.delete(key);
+        log(`background remux failed key=${key}: ${e instanceof Error ? e.message : e}`);
+        inflight.delete(key);
+        throw e;
+      });
+      inflight.set(key, work);
+    } catch (error) {
+      remuxReservations.delete(key);
+      throw error;
+    }
   } else {
     const [sourceH, hasAudio] = await Promise.all([probeHeight(inputUrl), probeHasAudio(inputUrl)]);
     const fullRungs = computeRungs(sourceH, maxHeight);
@@ -763,6 +823,7 @@ function cacheBytes(): number {
 function cleanupCache(): void {
   try {
     const now = Date.now();
+    let bytes = cacheBytes();
     const entries: { dir: string; mtime: number; size: number }[] = [];
     for (const dir of readdirSync(CACHE_DIR)) {
       const d = join(CACHE_DIR, dir);
@@ -780,13 +841,16 @@ function cleanupCache(): void {
         // CACHE_ACTIVE_GRACE_MS. Applies to both eviction paths below.
         const accessed = lastAccess.get(dir) ?? 0;
         const inUse =
-          inflight.has(dir) || now - accessed < CACHE_ACTIVE_GRACE_MS;
+          inflight.has(dir) ||
+          remuxReservations.has(dir) ||
+          now - accessed < CACHE_ACTIVE_GRACE_MS;
         if (inUse) {
           continue;
         }
         if (now - st.mtimeMs > CACHE_TTL_MS) {
           rmSync(d, { recursive: true, force: true });
           lastAccess.delete(dir);
+          bytes -= size;
           log(`TTL-evicted ${dir}`);
         } else {
           entries.push({ dir: d, mtime: st.mtimeMs, size });
@@ -795,11 +859,17 @@ function cleanupCache(): void {
         /* ignore */
       }
     }
-    // Byte cap: evict oldest until under cap.
-    let bytes = entries.reduce((s, e) => s + e.size, 0);
+    // Preserve the free-space reserve even when the static cap would otherwise
+    // admit more. `bytes + free` is the current filesystem budget available to
+    // this cache; active/pinned entries remain included in `bytes`.
+    const free = freeBytes();
+    const effectiveMaxBytes =
+      free > 0
+        ? Math.max(0, Math.min(CACHE_MAX_BYTES, bytes + free - REMUX_MIN_FREE_BYTES))
+        : CACHE_MAX_BYTES;
     entries.sort((a, b) => a.mtime - b.mtime);
     for (const e of entries) {
-      if (bytes <= CACHE_MAX_BYTES) break;
+      if (bytes <= effectiveMaxBytes) break;
       rmSync(e.dir, { recursive: true, force: true });
       lastAccess.delete(basename(e.dir));
       bytes -= e.size;
@@ -883,11 +953,12 @@ const server = createServer(async (req, res) => {
     const maxHeight = Number(url.searchParams.get("maxHeight") || "1080");
     const mode = parseMode(url.searchParams.get("mode"));
     const audioSelection = parseAudioSelection(url);
+    const startAtSeconds = parseStartAt(url.searchParams.get("startAt"), mode);
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
     res.setHeader("Content-Type", "application/json");
     res.end(
       JSON.stringify({
-        key: sourceKey(inputUrl, maxHeight, mode, audioSelection),
+        key: sourceKey(inputUrl, maxHeight, mode, audioSelection, startAtSeconds),
       })
     );
     return;
@@ -901,6 +972,7 @@ const server = createServer(async (req, res) => {
     const maxHeight = Number(url.searchParams.get("maxHeight") || "1080");
     const mode = parseMode(url.searchParams.get("mode"));
     const audioSelection = parseAudioSelection(url);
+    const startAtSeconds = parseStartAt(url.searchParams.get("startAt"), mode);
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
 
     try {
@@ -908,7 +980,8 @@ const server = createServer(async (req, res) => {
         inputUrl,
         maxHeight,
         mode,
-        audioSelection
+        audioSelection,
+        startAtSeconds
       );
       const { readFile } = await import("node:fs/promises");
       const body = await readFile(playlist, "utf8");
@@ -916,7 +989,7 @@ const server = createServer(async (req, res) => {
       res.end(body);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      log(`transcode failed for ${inputUrl.slice(0, 50)}: ${msg}`);
+      log(`transcode failed mode=${mode}: ${msg}`);
       return sendText(res, 502, "transcode failed");
     }
     return;
@@ -973,6 +1046,7 @@ const server = createServer(async (req, res) => {
         device: existsSync(VA_API_DEVICE) ? VA_API_DEVICE : null,
         maxConcurrent: MAX_CONCURRENT,
         activeRemuxes: activeRemuxes.size,
+        startingRemuxes: remuxReservations.size,
         remuxMaxConcurrent: REMUX_MAX_CONCURRENT,
       })
     );

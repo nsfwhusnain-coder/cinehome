@@ -36,6 +36,8 @@ COPY . .
 
 # Generate Prisma client and build the Next.js standalone server
 RUN bunx prisma generate
+ARG NEXT_PUBLIC_PLAYBACK_RANDOM_ACCESS_REMUX=1
+ENV NEXT_PUBLIC_PLAYBACK_RANDOM_ACCESS_REMUX=${NEXT_PUBLIC_PLAYBACK_RANDOM_ACCESS_REMUX}
 RUN rm -rf .next && bun run build
 
 # Next's standalone tracing can miss the Prisma query engine binary — copy it in explicitly
