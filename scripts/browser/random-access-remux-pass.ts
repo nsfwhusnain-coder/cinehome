@@ -15,6 +15,7 @@ interface ProbeReport {
   watchPath: string;
   initial: Record<string, unknown>;
   targetSeconds: number;
+  secondTargetSeconds: number;
   offsetRequests: Array<{ startAt: number; status?: number }>;
   landed: Record<string, unknown>;
   errors: string[];
@@ -156,15 +157,18 @@ try {
   // remux slider after the source switch so the probe targets the same clock
   // the user actually sees.
   const remuxTimelineMax = Number(await slider.getAttribute("aria-valuemax"));
-  const midpoint = remuxTimelineMax * 0.5;
   const initialLogicalTime = Number(initial.logicalTime || 0);
   // Repeated QA runs save progress. Do not accidentally "seek" to the exact
-  // position already playing: choose a genuinely distant point so this proves
-  // random access rather than merely reattaching the current suffix.
-  const targetSeconds =
-    Math.abs(midpoint - initialLogicalTime) < Math.max(30, remuxTimelineMax * 0.02)
-      ? remuxTimelineMax * 0.35
-      : midpoint;
+  // position already playing: choose the farther quarter of the title, then
+  // seek to the opposite quarter. The second jump forces the same-viewer
+  // supersession path because the opening suffix and first seek fill both
+  // bounded remux slots.
+  const quarterTargets = [remuxTimelineMax * 0.25, remuxTimelineMax * 0.75];
+  quarterTargets.sort(
+    (a, b) => Math.abs(b - initialLogicalTime) - Math.abs(a - initialLogicalTime)
+  );
+  const targetSeconds = quarterTargets[0]!;
+  const secondTargetSeconds = quarterTargets[1]!;
   debug.remuxTimelineMax = remuxTimelineMax;
   await page.locator("video").evaluate((video: HTMLVideoElement) => {
     const scope = window as typeof window & { __remuxSeekEvents?: string[] };
@@ -196,92 +200,102 @@ try {
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
-  let matchingResponses = 0;
-  let resolveSecondResponse!: () => void;
-  const secondOffsetResponse = new Promise<void>((resolve) => {
-    resolveSecondResponse = resolve;
-  });
-  const countTargetResponse = (response: import("playwright").Response) => {
-    const url = new URL(response.url());
-    const startAt = Number(url.searchParams.get("startAt"));
-    if (
-      url.pathname === "/api/transcode" &&
-      response.status() === 200 &&
-      Math.abs(startAt - (targetSeconds - 6)) <= 2
-    ) {
-      matchingResponses += 1;
-      if (matchingResponses >= 2) resolveSecondResponse();
+  const seekAndVerify = async (
+    target: number,
+    label: string
+  ): Promise<Record<string, unknown>> => {
+    let matchingResponses = 0;
+    let resolveSecondResponse!: () => void;
+    const secondOffsetResponse = new Promise<void>((resolve) => {
+      resolveSecondResponse = resolve;
+    });
+    const countTargetResponse = (response: import("playwright").Response) => {
+      const url = new URL(response.url());
+      const startAt = Number(url.searchParams.get("startAt"));
+      if (
+        url.pathname === "/api/transcode" &&
+        response.status() === 200 &&
+        Math.abs(startAt - (target - 6)) <= 2
+      ) {
+        matchingResponses += 1;
+        if (matchingResponses >= 2) resolveSecondResponse();
+      }
+    };
+    page.on("response", countTargetResponse);
+    stage = `${label}_prewarm_and_attach`;
+    const sliderBounds = await slider.boundingBox();
+    if (!sliderBounds) throw new Error("Seek slider has no clickable bounds");
+    await page.mouse.click(
+      sliderBounds.x + sliderBounds.width * (target / remuxTimelineMax),
+      sliderBounds.y + sliderBounds.height / 2
+    );
+
+    let rejectOffsetTimeout!: (error: Error) => void;
+    const offsetTimeoutPromise = new Promise<never>((_, reject) => {
+      rejectOffsetTimeout = reject;
+    });
+    const offsetTimeoutHandle = setTimeout(
+      () => rejectOffsetTimeout(new Error(`${label} did not attach its prepared playlist`)),
+      90_000
+    );
+    try {
+      await Promise.race([secondOffsetResponse, offsetTimeoutPromise]);
+    } finally {
+      clearTimeout(offsetTimeoutHandle);
+      page.off("response", countTargetResponse);
     }
+
+    stage = `${label}_first_frame`;
+    await page.waitForFunction(
+      ({ expected }) => {
+        const video = document.querySelector("video");
+        const seek = document.querySelector('[role="slider"][aria-label="Seek"]');
+        const logical = Number(seek?.getAttribute("aria-valuenow") || 0);
+        return (
+          video instanceof HTMLVideoElement &&
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+          !video.paused &&
+          Math.abs(logical - expected) <= 3
+        );
+      },
+      { expected: target },
+      { timeout: 90_000 }
+    );
+
+    const beforeAdvance = Number(await slider.getAttribute("aria-valuenow"));
+    stage = `${label}_advancing`;
+    await page.waitForFunction(
+      ({ before }) => {
+        const seek = document.querySelector('[role="slider"][aria-label="Seek"]');
+        return Number(seek?.getAttribute("aria-valuenow") || 0) >= before + 0.75;
+      },
+      { before: beforeAdvance },
+      { timeout: 8_000 }
+    );
+
+    return page.locator("video").evaluate((video: HTMLVideoElement) => ({
+      currentSrc: video.currentSrc,
+      currentTime: video.currentTime,
+      duration: video.duration,
+      readyState: video.readyState,
+      paused: video.paused,
+      logicalTime: Number(
+        document.querySelector('[role="slider"][aria-label="Seek"]')?.getAttribute("aria-valuenow") || 0
+      ),
+    }));
   };
-  page.on("response", countTargetResponse);
-  stage = "offset_prewarm_and_attach";
-  const sliderBounds = await slider.boundingBox();
-  if (!sliderBounds) throw new Error("Seek slider has no clickable bounds");
-  const targetRatio = targetSeconds / remuxTimelineMax;
-  await page.mouse.click(
-    sliderBounds.x + sliderBounds.width * targetRatio,
-    sliderBounds.y + sliderBounds.height / 2
-  );
 
-  let rejectOffsetTimeout!: (error: Error) => void;
-  const offsetTimeoutPromise = new Promise<never>((_, reject) => {
-    rejectOffsetTimeout = reject;
-  });
-  const offsetTimeoutHandle = setTimeout(
-    () => rejectOffsetTimeout(new Error("Offset handoff did not attach its prepared playlist")),
-    90_000
-  );
-  await Promise.race([
-    secondOffsetResponse,
-    offsetTimeoutPromise,
-  ]);
-  clearTimeout(offsetTimeoutHandle);
-  page.off("response", countTargetResponse);
-
-  stage = "offset_first_frame";
-  await page.waitForFunction(
-    ({ target }) => {
-      const video = document.querySelector("video");
-      const seek = document.querySelector('[role="slider"][aria-label="Seek"]');
-      const logical = Number(seek?.getAttribute("aria-valuenow") || 0);
-      return (
-        video instanceof HTMLVideoElement &&
-        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-        !video.paused &&
-        Math.abs(logical - target) <= 3
-      );
-    },
-    { target: targetSeconds },
-    { timeout: 90_000 }
-  );
-
-  const beforeAdvance = Number(await slider.getAttribute("aria-valuenow"));
-  stage = "offset_advancing";
-  await page.waitForFunction(
-    ({ before }) => {
-      const seek = document.querySelector('[role="slider"][aria-label="Seek"]');
-      return Number(seek?.getAttribute("aria-valuenow") || 0) >= before + 0.75;
-    },
-    { before: beforeAdvance },
-    { timeout: 8_000 }
-  );
-
-  const landed = await page.locator("video").evaluate((video: HTMLVideoElement) => ({
-    currentSrc: video.currentSrc,
-    currentTime: video.currentTime,
-    duration: video.duration,
-    readyState: video.readyState,
-    paused: video.paused,
-    logicalTime: Number(
-      document.querySelector('[role="slider"][aria-label="Seek"]')?.getAttribute("aria-valuenow") || 0
-    ),
-  }));
-  const successfulOffset = offsetRequests.some(
-    (request) =>
-      request.status === 200 && Math.abs(request.startAt - (targetSeconds - 6)) <= 2
-  );
-  if (!successfulOffset) {
-    throw new Error(`No successful offset manifest near ${targetSeconds - 6}`);
+  const firstLanded = await seekAndVerify(targetSeconds, "first_offset");
+  debug.firstLanded = firstLanded;
+  const landed = await seekAndVerify(secondTargetSeconds, "second_offset");
+  for (const target of [targetSeconds, secondTargetSeconds]) {
+    const successfulOffset = offsetRequests.some(
+      (request) =>
+        request.status === 200 && Math.abs(request.startAt - (target - 6)) <= 2
+    );
+    if (!successfulOffset) {
+      throw new Error(`No successful offset manifest near ${target - 6}`);
+    }
   }
   if (errors.length > 0) throw new Error(errors.join(" | "));
 
@@ -291,6 +305,7 @@ try {
     watchPath,
     initial,
     targetSeconds,
+    secondTargetSeconds,
     offsetRequests,
     landed,
     errors,
