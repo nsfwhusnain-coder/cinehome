@@ -44,6 +44,9 @@ export function isLogicalTimeSeekable(
   remuxStartSeconds: number,
   toleranceSeconds = 0.5
 ): boolean {
+  if (logicalSeconds < Math.max(0, remuxStartSeconds) - toleranceSeconds) {
+    return false;
+  }
   const mediaSeconds = toMediaTime(logicalSeconds, remuxStartSeconds);
   for (let index = 0; index < ranges.length; index += 1) {
     if (
