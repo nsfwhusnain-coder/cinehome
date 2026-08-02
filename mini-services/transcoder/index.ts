@@ -55,6 +55,12 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import type { AudioPreference } from "../../src/lib/profile-preferences";
+import {
+  selectAudioTrack,
+  type AudioTrackSelection,
+  type SelectableMediaTrack,
+} from "../../src/lib/playback/track-selection";
 import {
   DEFAULT_SEGMENT_DURATION_S,
   buildFfmpegArgs,
@@ -188,22 +194,54 @@ function log(msg: string): void {
  * (fMP4 vs TS) and different playlists, and colliding them would serve a
  * half-written mixture.
  */
-function sourceKey(inputUrl: string, maxHeight: number, mode: BuildMode = "transcode"): string {
+function sourceKey(
+  inputUrl: string,
+  maxHeight: number,
+  mode: BuildMode = "transcode",
+  audioSelection: AudioTrackSelection = DEFAULT_REMUX_AUDIO_SELECTION
+): string {
   // Height is dropped from a remux's identity because a remux HAS no target
   // height - it copies the bitstream, so the output is the source resolution
   // whatever the caller asked for. Keeping it in would let two requests for the
   // same rewrap land on different keys and rebuild the same output twice.
   const heightPart = mode === "remux" ? "copy" : String(maxHeight);
+  const audioPart =
+    mode === "remux"
+      ? `${audioSelection.preference}|${audioSelection.originalLanguage ?? ""}|${audioSelection.preferredLanguage ?? ""}`
+      : "default";
   return createHash("sha256")
-    .update(`${inputUrl}|${heightPart}|${mode}`)
+    .update(`${inputUrl}|${heightPart}|${mode}|${audioPart}`)
     .digest("hex")
     .slice(0, 24);
 }
 
 export type BuildMode = "transcode" | "remux";
 
+const DEFAULT_REMUX_AUDIO_SELECTION: AudioTrackSelection = {
+  preference: "original",
+  originalLanguage: null,
+  preferredLanguage: "en",
+};
+
 function parseMode(raw: string | null): BuildMode {
   return raw === "remux" ? "remux" : "transcode";
+}
+
+function parseAudioPreference(raw: string | null): AudioPreference {
+  return raw === "english" || raw === "preferred" ? raw : "original";
+}
+
+function safeLanguage(raw: string | null): string | null {
+  const value = (raw ?? "").trim().toLowerCase();
+  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(value) ? value : null;
+}
+
+function parseAudioSelection(url: URL): AudioTrackSelection {
+  return {
+    preference: parseAudioPreference(url.searchParams.get("audioPreference")),
+    originalLanguage: safeLanguage(url.searchParams.get("originalLanguage")),
+    preferredLanguage: safeLanguage(url.searchParams.get("audioLanguage")) ?? "en",
+  };
 }
 
 function cacheDir(key: string): string {
@@ -261,6 +299,68 @@ function probeHasAudio(inputUrl: string): Promise<boolean> {
     proc.stdout.on("data", (d) => (out += d.toString()));
     proc.on("error", () => resolve(false));
     proc.on("close", (code) => resolve(code === 0 && out.trim().length > 0));
+  });
+}
+
+/**
+ * Bounded metadata-only audio probe for remux track choice. The remote file is
+ * never decoded; ffprobe reads just enough container metadata to enumerate
+ * audio streams. A slow/malformed source falls back to audio stream zero so
+ * track preference can never make an otherwise playable remux unavailable.
+ */
+function probePreferredAudioStream(
+  inputUrl: string,
+  selection: AudioTrackSelection
+): Promise<number> {
+  return new Promise((resolve) => {
+    const proc = spawn(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=index:stream_tags=language,title:stream_disposition=default",
+        "-of",
+        "json",
+        "-protocol_whitelist",
+        "https,tls,tcp,http,crypto",
+        inputUrl,
+      ],
+      { timeout: 5_000 }
+    );
+    let out = "";
+    let settled = false;
+    const finish = (value: number) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    proc.stdout.on("data", (chunk) => (out += chunk.toString()));
+    proc.on("error", () => finish(0));
+    proc.on("close", (code) => {
+      if (code !== 0) return finish(0);
+      try {
+        const parsed = JSON.parse(out) as {
+          streams?: Array<{
+            tags?: { language?: string; title?: string };
+            disposition?: { default?: number };
+          }>;
+        };
+        const tracks: SelectableMediaTrack[] = (parsed.streams ?? []).map(
+          (stream, ordinal) => ({
+            id: ordinal,
+            lang: stream.tags?.language,
+            name: stream.tags?.title,
+            default: stream.disposition?.default === 1,
+          })
+        );
+        finish(selectAudioTrack(tracks, selection)?.id ?? 0);
+      } catch {
+        finish(0);
+      }
+    });
   });
 }
 
@@ -500,9 +600,10 @@ async function waitForPlaylist(key: string, budgetMs: number): Promise<string> {
 async function getOrBuild(
   inputUrl: string,
   maxHeight: number,
-  mode: BuildMode = "transcode"
+  mode: BuildMode = "transcode",
+  audioSelection: AudioTrackSelection = DEFAULT_REMUX_AUDIO_SELECTION
 ): Promise<string> {
-  const key = sourceKey(inputUrl, maxHeight, mode);
+  const key = sourceKey(inputUrl, maxHeight, mode, audioSelection);
   touchKey(key);
 
   // Cache hit — ladder already built (transcode complete).
@@ -556,8 +657,19 @@ async function getOrBuild(
     const outDir = cacheDir(key);
     wipeOutDir(outDir);
     mkdirSync(outDir, { recursive: true });
-    const args = buildRemuxArgs({ inputUrl, outDir, segmentDurationS: SEGMENT_DURATION_S });
-    log(`${key} remux (stream copy, no re-encode)`);
+    const audioStreamIndex = await probePreferredAudioStream(
+      inputUrl,
+      audioSelection
+    );
+    const args = buildRemuxArgs({
+      inputUrl,
+      outDir,
+      segmentDurationS: SEGMENT_DURATION_S,
+      audioStreamIndex,
+    });
+    log(
+      `${key} remux (stream copy, no video re-encode, audio stream ${audioStreamIndex})`
+    );
     const work = (async () => {
       const proc = await attemptTranscode("remux", key, outDir, args, null);
       if (!proc) {
@@ -770,9 +882,14 @@ const server = createServer(async (req, res) => {
     const inputUrl = url.searchParams.get("u");
     const maxHeight = Number(url.searchParams.get("maxHeight") || "1080");
     const mode = parseMode(url.searchParams.get("mode"));
+    const audioSelection = parseAudioSelection(url);
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ key: sourceKey(inputUrl, maxHeight, mode) }));
+    res.end(
+      JSON.stringify({
+        key: sourceKey(inputUrl, maxHeight, mode, audioSelection),
+      })
+    );
     return;
   }
 
@@ -783,10 +900,16 @@ const server = createServer(async (req, res) => {
     const inputUrl = url.searchParams.get("u");
     const maxHeight = Number(url.searchParams.get("maxHeight") || "1080");
     const mode = parseMode(url.searchParams.get("mode"));
+    const audioSelection = parseAudioSelection(url);
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
 
     try {
-      const playlist = await getOrBuild(inputUrl, maxHeight, mode);
+      const playlist = await getOrBuild(
+        inputUrl,
+        maxHeight,
+        mode,
+        audioSelection
+      );
       const { readFile } = await import("node:fs/promises");
       const body = await readFile(playlist, "utf8");
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");

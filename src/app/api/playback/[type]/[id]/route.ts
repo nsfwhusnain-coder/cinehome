@@ -13,6 +13,8 @@ import {
 } from "@/lib/playback/refresh-mode";
 import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
 import { consumePlaybackResolveBudget } from "@/lib/playback/resolve-budget";
+import { PLAYBACK_COORDINATOR_SHADOW_ENABLED } from "@/lib/playback/features";
+import { buildCoordinatorShadowDecision } from "@/lib/playback/coordinator-shadow";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -285,6 +287,17 @@ export async function GET(
   if (result && result.status !== "error") {
     const ttl = result.partial ? PLAYBACK_PARTIAL_TTL_MS : PLAYBACK_TTL_MS;
     setCachedPlayback(cacheKey, result, ttl);
+  }
+
+  if (PLAYBACK_COORDINATOR_SHADOW_ENABLED && result.sources?.length) {
+    console.info(
+      JSON.stringify({
+        event: "playback_coordinator_shadow",
+        mediaType: type,
+        tmdbId,
+        ...buildCoordinatorShadowDecision(result.sources, profilePreferences),
+      })
+    );
   }
 
   return NextResponse.json({

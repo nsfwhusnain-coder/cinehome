@@ -24,7 +24,20 @@ import {
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
+import { pickClientStartupSource } from "@/lib/playback/client-ranking";
+import {
+  PLAYBACK_4K_PREWARM_ENABLED,
+  PLAYBACK_FAST_4K_ENABLED,
+  PLAYBACK_TRACK_POLICY_ENABLED,
+} from "@/lib/playback/features";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
+import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
+import {
+  normalizeTrackLanguage,
+  selectAudioTrack,
+  selectSubtitleTrack,
+  type AudioTrackSelection,
+} from "@/lib/playback/track-selection";
 import {
   SourceAttemptController,
   type SourceAttemptToken,
@@ -44,6 +57,9 @@ import {
   getPreferredProvider,
   getPreferredQualityHeight,
   getPreferredAudioLanguage,
+  getAudioPreference,
+  getFourKStartupPreference,
+  getSubtitlePreference,
   getSavedPlaybackSpeed,
   setPreferredProvider,
   setPreferredAudioLanguage,
@@ -51,6 +67,11 @@ import {
   getQualityFloorPolicy,
   type QualityFloorPolicy,
 } from "@/lib/player-preferences";
+import type {
+  AudioPreference,
+  FourKStartupPreference,
+  SubtitlePreference,
+} from "@/lib/profile-preferences";
 import Hls from "hls.js";
 import type { MediaPlayerClass } from "dashjs";
 import { Play, Loader2, RefreshCw, X, ArrowLeft, ArrowLeftRight, ArrowUpDown } from "lucide-react";
@@ -357,6 +378,12 @@ interface Props {
   isDiscoveringSources?: boolean;
   /** Authenticated profile default from the playback response. */
   profileQuality?: PlayerQualityTarget;
+  profileAudioPreference?: AudioPreference;
+  profileAudioLanguage?: string;
+  profileSubtitlePreference?: SubtitlePreference;
+  profileFourKStartup?: FourKStartupPreference;
+  /** TMDB original language, used only to choose among tracks actually exposed. */
+  originalLanguage?: string | null;
   /** Changes when a cache-bypassing roster recovery returns. */
   refreshNonce?: number;
   /** Progressive source count for loading status. */
@@ -385,6 +412,34 @@ interface Props {
   tvSeason?: number;
   tvEpisode?: number;
   onSelectEpisode?: (season: number, episode: number) => void;
+}
+
+function buildRemuxUrl(options: {
+  source: PlaybackSource;
+  mediaType: "movie" | "tv";
+  tmdbId: number;
+  season?: number;
+  episode?: number;
+  audio: AudioTrackSelection;
+  prewarm?: boolean;
+}): string {
+  const params = new URLSearchParams({
+    type: options.mediaType,
+    id: String(options.tmdbId),
+    sourceId: options.source.id,
+    mode: "remux",
+    audioPreference: options.audio.preference,
+  });
+  const originalLanguage = normalizeTrackLanguage(options.audio.originalLanguage);
+  const preferredLanguage = normalizeTrackLanguage(options.audio.preferredLanguage);
+  if (originalLanguage) params.set("originalLanguage", originalLanguage);
+  if (preferredLanguage) params.set("audioLanguage", preferredLanguage);
+  if (options.mediaType === "tv" && options.season && options.episode) {
+    params.set("season", String(options.season));
+    params.set("episode", String(options.episode));
+  }
+  if (options.prewarm) params.set("prewarm", "1");
+  return `/api/transcode?${params.toString()}`;
 }
 
 function isSessionExpiredError(data: { response?: { code?: number }; details?: string; reason?: string; url?: string }): boolean {
@@ -429,12 +484,6 @@ function formatClock(seconds: number): string {
   const s = total % 60;
   if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function isEnglishTrack(lang?: string, name?: string): boolean {
-  const l = (lang ?? "").toLowerCase();
-  const n = (name ?? "").toLowerCase();
-  return l.startsWith("en") || n.includes("english") || n.includes("eng");
 }
 
 /** Base label for an audio track (lang-aware); disambiguate duplicates with track index. */
@@ -955,20 +1004,37 @@ function findDashFloorBitrateKbps(levels: QualityLevel[], minHeight: number): nu
   return best > 0 ? Math.round(best / 1000) : 0;
 }
 
-function pickPreferredAudioId(hls: Hls): number {
-  const pref = getPreferredAudioLanguage().toLowerCase();
-  const match = hls.audioTracks.find((t) => {
-    const lang = (t.lang ?? "").toLowerCase();
-    const name = (t.name ?? "").toLowerCase();
-    if (pref === "en" || pref.startsWith("en")) {
-      return isEnglishTrack(t.lang, t.name);
-    }
-    return lang.startsWith(pref) || name.includes(pref);
-  });
-  if (match) return typeof match.id === "number" ? match.id : hls.audioTracks.indexOf(match);
+function pickPreferredAudioId(
+  hls: Hls,
+  selection: AudioTrackSelection
+): number {
+  const match = selectAudioTrack(
+    hls.audioTracks.map((track, index) => ({
+      id: typeof track.id === "number" ? track.id : index,
+      lang: track.lang,
+      name: track.name,
+      default: track.default,
+    })),
+    selection
+  );
+  if (match) return match.id;
   const first = hls.audioTracks[0];
   if (first && typeof first.id === "number") return first.id;
   return 0;
+}
+
+function pickPreferredSubtitle(
+  tracks: readonly MediaTrack[],
+  wantedLanguage: string | null
+): MediaTrack | null {
+  const wanted = normalizeTrackLanguage(wantedLanguage);
+  if (wanted && wanted !== "en") {
+    const exact = tracks.find(
+      (track) => normalizeTrackLanguage(track.lang) === wanted
+    );
+    if (exact) return exact;
+  }
+  return selectSubtitleTrack(tracks, "english") as MediaTrack | null;
 }
 
 function hlsHasTrackId(
@@ -985,6 +1051,11 @@ export function VideoPlayer({
   onRetrySources,
   isDiscoveringSources,
   profileQuality,
+  profileAudioPreference,
+  profileAudioLanguage,
+  profileSubtitlePreference,
+  profileFourKStartup,
+  originalLanguage,
   refreshNonce,
   sourceCount = 0,
   poster,
@@ -1005,6 +1076,25 @@ export function VideoPlayer({
   tvEpisode,
   onSelectEpisode,
 }: Props) {
+  const audioSelectionRef = useRef<AudioTrackSelection>({
+    preference: profileAudioPreference ?? getAudioPreference(),
+    originalLanguage,
+    preferredLanguage: profileAudioLanguage ?? getPreferredAudioLanguage(),
+  });
+  audioSelectionRef.current = {
+    preference: profileAudioPreference ?? getAudioPreference(),
+    originalLanguage,
+    preferredLanguage: profileAudioLanguage ?? getPreferredAudioLanguage(),
+  };
+  const subtitlePreferenceRef = useRef<SubtitlePreference>(
+    profileSubtitlePreference ?? getSubtitlePreference()
+  );
+  subtitlePreferenceRef.current =
+    profileSubtitlePreference ?? getSubtitlePreference();
+  const fourKStartupRef = useRef<FourKStartupPreference>(
+    profileFourKStartup ?? getFourKStartupPreference()
+  );
+  fourKStartupRef.current = profileFourKStartup ?? getFourKStartupPreference();
   const [activeSource, setActiveSource] = useState<PlaybackSource | null>(null);
   const [sourceReloadGeneration, setSourceReloadGeneration] = useState(0);
   const orderedSources = useMemo(() => {
@@ -1024,6 +1114,8 @@ export function VideoPlayer({
   const userSelectedQualityRef = useRef(false);
   /** At most one Luna→fast CDN auto-upgrade per watch session (pre-first-frame). */
   const autoUpgradedRef = useRef(false);
+  /** One background 4K remux preparation attempt per source and watch session. */
+  const fourKPrewarmAttemptedRef = useRef<Set<string>>(new Set());
   /**
    * One-shot "adopt a refreshed URL for the currently-active source id" flag.
    * Armed by the session-expired (410) retry path and the "Retry full" button —
@@ -1187,12 +1279,21 @@ export function VideoPlayer({
   const serverPath = needsRemux || needsTranscode;
   const serverUrl =
     serverPath && tmdbId && activeSource
-      ? `/api/transcode?type=${mediaType ?? "movie"}&id=${tmdbId}` +
-        `&sourceId=${encodeURIComponent(activeSource.id)}` +
-        (needsRemux ? `&mode=remux` : `&maxHeight=${transcodeMaxHeight}`) +
-        (mediaType === "tv" && tvSeason && tvEpisode
-          ? `&season=${tvSeason}&episode=${tvEpisode}`
-          : "")
+      ? needsRemux
+        ? buildRemuxUrl({
+            source: activeSource,
+            mediaType: mediaType ?? "movie",
+            tmdbId,
+            season: tvSeason,
+            episode: tvEpisode,
+            audio: audioSelectionRef.current,
+          })
+        : `/api/transcode?type=${mediaType ?? "movie"}&id=${tmdbId}` +
+          `&sourceId=${encodeURIComponent(activeSource.id)}` +
+          `&maxHeight=${transcodeMaxHeight}` +
+          (mediaType === "tv" && tvSeason && tvEpisode
+            ? `&season=${tvSeason}&episode=${tvEpisode}`
+            : "")
       : "";
   const effectiveSrc = serverPath && serverUrl ? serverUrl : src;
   const effectiveStreamType = serverPath && serverUrl ? "hls" : streamType;
@@ -1288,8 +1389,12 @@ export function VideoPlayer({
     ? totalSourceCount > 0
       ? `Found ${totalSourceCount} source${totalSourceCount === 1 ? "" : "s"} — choosing the best…`
       : null // no sources yet: let LoadingScreen run its "Finding sources…" rotation
-    : needsTranscode
-      ? (needsRemux ? "Repackaging for your browser…" : "Preparing stream — this can take a few seconds…")
+    : serverPath
+      ? needsRemux
+        ? activeSource && sourceMaxHeight(activeSource) >= 2160
+          ? "Preparing 4K…"
+          : "Repackaging for your browser…"
+        : "Preparing stream — this can take a few seconds…"
       : levelsPending
         ? activeSourceIndex > 0 && totalSourceCount > 1
           ? `Connecting… (source ${activeSourceIndex} of ${totalSourceCount})`
@@ -1356,6 +1461,8 @@ export function VideoPlayer({
    * during render (only `mediaFaulted` did, and it is state now).
    */
   const activeSourceRef = useRef(activeSource);
+  const playbackStartedAtRef = useRef<number>(Date.now());
+  const lastStallFeedbackAtRef = useRef(0);
   /** Stable roster snapshot — failActiveSource must not change identity on enrich. */
   const orderedSourcesRef = useRef(orderedSources);
   const onRetrySourcesRef = useRef(onRetrySources);
@@ -1403,9 +1510,16 @@ export function VideoPlayer({
    * this, captions silently turned off on every server change.
    */
   const subtitleIntentRef = useRef<{ on: boolean; lang: string | null }>({
-    on: false,
-    lang: null,
+    on:
+      PLAYBACK_TRACK_POLICY_ENABLED &&
+      subtitlePreferenceRef.current === "english",
+    lang:
+      PLAYBACK_TRACK_POLICY_ENABLED &&
+      subtitlePreferenceRef.current === "english"
+        ? "en"
+        : null,
   });
+  const userSelectedSubtitleRef = useRef(false);
   /** Latest onProgress/onEnded/nextEpisodeTarget — read via ref inside the media
    * listener effect so a new prop identity never forces a full listener re-attach. */
   const onProgressRef = useRef(onProgress);
@@ -1420,6 +1534,20 @@ export function VideoPlayer({
   const markEverPlayed = useCallback(() => {
     if (everPlayedRef.current) return;
     everPlayedRef.current = true;
+    const source = activeSourceRef.current;
+    const video = videoRef.current;
+    if (source) {
+      emitPlayerFeedback({
+        event: "first_frame",
+        sourceId: source.id,
+        provider: source.provider,
+        timeToFirstFrameMs: Math.max(0, Date.now() - playbackStartedAtRef.current),
+        decodedHeight:
+          video && video.videoHeight > 0
+            ? decodedQualityHeight(video.videoWidth, video.videoHeight)
+            : undefined,
+      });
+    }
     setEverPlayed(true);
     setIsSwitchingServer(false);
   }, []);
@@ -1476,7 +1604,14 @@ export function VideoPlayer({
     firstProgressSavedRef.current = false;
     userPausedRef.current = false;
     initialTimeAppliedRef.current = false;
-    subtitleIntentRef.current = { on: false, lang: null };
+    userSelectedSubtitleRef.current = false;
+    const defaultEnglishSubtitles =
+      PLAYBACK_TRACK_POLICY_ENABLED &&
+      subtitlePreferenceRef.current === "english";
+    subtitleIntentRef.current = {
+      on: defaultEnglishSubtitles,
+      lang: defaultEnglishSubtitles ? "en" : null,
+    };
     seenSourceIdsRef.current = new Set();
     // Always start the new title/episode at 0 unless continue-watching seeds initialTime.
     resumeAtRef.current = 0;
@@ -1487,6 +1622,8 @@ export function VideoPlayer({
     setDurationProvisional(false);
     setIsSwitchingServer(false);
     setActiveSource(null);
+    playbackStartedAtRef.current = Date.now();
+    lastStallFeedbackAtRef.current = 0;
     setError(null);
     setSleepMinutes(null);
     setAutoplayHint(null);
@@ -1603,7 +1740,13 @@ export function VideoPlayer({
       remaining = orderedSources;
     }
     const pool = remaining.length ? remaining : orderedSources;
-    const best = pickDefaultSource(pool, preferred, preferredHeight);
+    const best = PLAYBACK_FAST_4K_ENABLED
+      ? pickClientStartupSource(pool, {
+          preferredProvider: preferred,
+          preferredHeight,
+          fourKStartup: fourKStartupRef.current,
+        }).immediate
+      : pickDefaultSource(pool, preferred, preferredHeight);
 
     if (stillValid && !activeFailed && activeSource && best) {
       if (userSelectedSourceRef.current || everPlayedRef.current || autoUpgradedRef.current) {
@@ -1765,7 +1908,7 @@ export function VideoPlayer({
       setSubtitleTracks(subs);
 
       if (audio.length > 0) {
-        const audioId = pickPreferredAudioId(hls);
+        const audioId = pickPreferredAudioId(hls, audioSelectionRef.current);
         hls.audioTrack = audioId;
         setActiveAudioId(audioId);
       }
@@ -1776,14 +1919,13 @@ export function VideoPlayer({
       // a server switch, which was the "captions silently turn off" bug.
       if (subs.length > 0 && subtitleIntentRef.current.on) {
         const wantLang = subtitleIntentRef.current.lang;
-        const matched =
-          (wantLang && subs.find((t) => (t.lang ?? "").toLowerCase() === wantLang.toLowerCase())) ||
-          subs.find((t) => isEnglishTrack(t.lang, t.name)) ||
-          subs[0];
-        hls.subtitleTrack = matched.id;
-        hls.subtitleDisplay = true;
-        setActiveSubtitleId(matched.id);
-        setSubtitlesOn(true);
+        const matched = pickPreferredSubtitle(subs, wantLang);
+        if (matched) {
+          hls.subtitleTrack = matched.id;
+          hls.subtitleDisplay = true;
+          setActiveSubtitleId(matched.id);
+          setSubtitlesOn(true);
+        }
       } else {
         hls.subtitleTrack = -1;
         hls.subtitleDisplay = false;
@@ -1801,14 +1943,8 @@ export function VideoPlayer({
       setAudioTracks(audio);
       setSubtitleTracks(subs);
       if (audio.length > 0) {
-        const pref = getPreferredAudioLanguage().toLowerCase();
         const match =
-          audio.find((t) =>
-            pref === "en" || pref.startsWith("en")
-              ? isEnglishTrack(t.lang, t.name)
-              : (t.lang ?? "").toLowerCase().startsWith(pref) ||
-                t.name.toLowerCase().includes(pref)
-          ) ?? audio[0];
+          selectAudioTrack(audio, audioSelectionRef.current) ?? audio[0];
         setActiveAudioId(match.id);
         const media = video as HTMLVideoElement & {
           audioTracks?: { length: number; [i: number]: { enabled?: boolean } };
@@ -1826,11 +1962,7 @@ export function VideoPlayer({
       let matchedId: number | null = null;
       if (subtitleIntentRef.current.on && subs.length > 0) {
         const wantLang = subtitleIntentRef.current.lang;
-        const matched =
-          (wantLang && subs.find((t) => (t.lang ?? "").toLowerCase() === wantLang.toLowerCase())) ||
-          subs.find((t) => isEnglishTrack(t.lang, t.name)) ||
-          subs[0];
-        matchedId = matched.id;
+        matchedId = pickPreferredSubtitle(subs, wantLang)?.id ?? null;
       }
       for (let i = 0; i < video.textTracks.length; i++) {
         const t = video.textTracks[i];
@@ -1848,6 +1980,30 @@ export function VideoPlayer({
     },
     [setAudioTracks, setSubtitleTracks, setActiveAudioId, setActiveSubtitleId, setSubtitlesOn]
   );
+
+  /** Apply a profile that arrived after the player shell mounted. */
+  useEffect(() => {
+    if (!userSelectedSubtitleRef.current) {
+      const english =
+        PLAYBACK_TRACK_POLICY_ENABLED &&
+        subtitlePreferenceRef.current === "english";
+      subtitleIntentRef.current = {
+        on: english,
+        lang: english ? "en" : null,
+      };
+    }
+    const hls = hlsRef.current;
+    const video = videoRef.current;
+    if (hls) syncHlsTracks(hls);
+    else if (video) syncNativeTracks(video);
+  }, [
+    originalLanguage,
+    profileAudioLanguage,
+    profileAudioPreference,
+    profileSubtitlePreference,
+    syncHlsTracks,
+    syncNativeTracks,
+  ]);
 
   const markSourceFailed = useCallback((sourceId: string) => {
     if (failedSourceIdsRef.current.has(sourceId)) return;
@@ -2680,8 +2836,20 @@ export function VideoPlayer({
           levelLoadingMaxRetry: 4,
           fragLoadingTimeOut: HLS_FRAG_LOADING_TIMEOUT_MS,
           fragLoadingMaxRetry: 6,
-          // Prefer EN but do not block first frame if only other langs exist (Luna multi-audio).
-          audioPreference: { lang: getPreferredAudioLanguage() },
+          // Give hls.js the same first-request hint as the explicit track
+          // selector below; the explicit selector remains authoritative.
+          audioPreference: {
+            lang:
+              (audioSelectionRef.current.preference === "original"
+                ? normalizeTrackLanguage(
+                    audioSelectionRef.current.originalLanguage
+                  )
+                : audioSelectionRef.current.preference === "english"
+                  ? "en"
+                  : normalizeTrackLanguage(
+                      audioSelectionRef.current.preferredLanguage
+                    )) || "en",
+          },
           xhrSetup: (xhr) => {
             // Same-origin /api/hls needs session cookies (NextAuth).
             if (isHomeHlsProxy) xhr.withCredentials = true;
@@ -2780,20 +2948,17 @@ export function VideoPlayer({
           networkRecoveriesRef.current = 0;
           const levelList = levelsFromHls(hls);
           setLevels(levelList);
-          // English (or stored) audio when multi-lang tracks exist.
+          // Apply profile audio/subtitle policy as soon as media groups exist.
           syncHlsTracks(hls);
           // Luna-style multi-audio masters: pin a concrete track immediately so
           // first-frame is not blocked waiting for DEFAULT=Italian selection races.
           try {
             if (hls.audioTracks && hls.audioTracks.length > 0) {
-              const want = getPreferredAudioLanguage().toLowerCase().slice(0, 2);
-              const eng = hls.audioTracks.findIndex(
-                (t) => (t.lang || "").toLowerCase().startsWith(want)
+              hls.audioTrack = pickPreferredAudioId(
+                hls,
+                audioSelectionRef.current
               );
-              hls.audioTrack = eng >= 0 ? eng : 0;
             }
-            hls.subtitleDisplay = false;
-            hls.subtitleTrack = -1;
           } catch {
             /* ignore track pin failures */
           }
@@ -2882,7 +3047,7 @@ export function VideoPlayer({
           setAudioTracks(audio);
           if (audio.length === 0) return;
           // Re-apply preference when the track set changes (source / late media groups).
-          const audioId = pickPreferredAudioId(hls);
+          const audioId = pickPreferredAudioId(hls, audioSelectionRef.current);
           if (hls.audioTrack !== audioId) {
             hls.audioTrack = audioId;
           }
@@ -2894,7 +3059,7 @@ export function VideoPlayer({
           const audio = mapAudioTracks(hls);
           if (audio.length === 0) return;
           setAudioTracks(audio);
-          const audioId = pickPreferredAudioId(hls);
+          const audioId = pickPreferredAudioId(hls, audioSelectionRef.current);
           if (hls.audioTrack !== audioId) hls.audioTrack = audioId;
           setActiveAudioId(typeof hls.audioTrack === "number" ? hls.audioTrack : audioId);
         };
@@ -2965,12 +3130,8 @@ export function VideoPlayer({
             return;
           }
           const wantLang = subtitleIntentRef.current.lang;
-          const subId =
-            (wantLang
-              ? subs.find((t) => (t.lang ?? "").toLowerCase() === wantLang.toLowerCase())?.id
-              : undefined) ??
-            subs.find((t) => isEnglishTrack(t.lang, t.name))?.id ??
-            subs[0].id;
+          const subId = pickPreferredSubtitle(subs, wantLang)?.id;
+          if (subId == null) return;
           hls.subtitleTrack = subId;
           hls.subtitleDisplay = true;
           setActiveSubtitleId(subId);
@@ -3405,6 +3566,21 @@ export function VideoPlayer({
     };
     const onWaiting = () => {
       setBuffering(true);
+      if (
+        everPlayedRef.current &&
+        !video.seeking &&
+        Date.now() - lastStallFeedbackAtRef.current >= 30_000
+      ) {
+        const source = activeSourceRef.current;
+        if (source) {
+          lastStallFeedbackAtRef.current = Date.now();
+          emitPlayerFeedback({
+            event: "stall",
+            sourceId: source.id,
+            provider: source.provider,
+          });
+        }
+      }
       // Prolonged buffer stall: keep nudging hls.js to resume loading at the
       // 1080 floor — never fails the source over from this alone (owner's
       // absolute "buffer at 1080p, never false-fail" policy). Only hard
@@ -3741,6 +3917,87 @@ export function VideoPlayer({
     }
   }, []);
 
+  /**
+   * Explicit Ultra users get a quick direct-HD first frame while a cold 4K
+   * remux prepares behind it. The successful handoff uses the normal source
+   * switch path, which captures the live playhead and rolls back through
+   * ordinary failover if the prepared stream later fails to decode.
+   */
+  useEffect(() => {
+    if (
+      !PLAYBACK_4K_PREWARM_ENABLED ||
+      !PLAYBACK_FAST_4K_ENABLED ||
+      !everPlayed ||
+      qualityTargetRef.current !== 2160 ||
+      fourKStartupRef.current !== "fast" ||
+      !activeSource ||
+      !tmdbId ||
+      sourceDelivery(activeSource) !== "direct"
+    ) {
+      return;
+    }
+    const decision = pickClientStartupSource(orderedSources, {
+      preferredProvider: getPreferredProvider(),
+      preferredHeight: 2160,
+      fourKStartup: "fast",
+    });
+    const candidate = decision.deferredFourK;
+    if (
+      !candidate ||
+      failedSourceIdsRef.current.has(candidate.id) ||
+      fourKPrewarmAttemptedRef.current.has(candidate.id)
+    ) {
+      return;
+    }
+    fourKPrewarmAttemptedRef.current.add(candidate.id);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 70_000);
+    const prewarmUrl = buildRemuxUrl({
+      source: candidate,
+      mediaType: mediaType ?? "movie",
+      tmdbId,
+      season: tvSeason,
+      episode: tvEpisode,
+      audio: audioSelectionRef.current,
+      prewarm: true,
+    });
+    void fetch(prewarmUrl, {
+      cache: "no-store",
+      credentials: "include",
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok || controller.signal.aborted) return;
+        if (
+          qualityTargetRef.current !== 2160 ||
+          userSelectedSourceRef.current ||
+          activeSourceRef.current?.id !== activeSource.id
+        ) {
+          return;
+        }
+        showStatusNotice("4K ready — switching…", 2_200);
+        handleSourceChange(candidate);
+      })
+      .catch(() => {
+        // The direct HD stream remains active; a failed prewarm is invisible.
+      })
+      .finally(() => window.clearTimeout(timeout));
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [
+    activeSource,
+    everPlayed,
+    handleSourceChange,
+    mediaType,
+    orderedSources,
+    showStatusNotice,
+    tmdbId,
+    tvEpisode,
+    tvSeason,
+  ]);
+
   const togglePip = useCallback(async () => {
     const v = videoRef.current;
     if (!v) return;
@@ -3879,6 +4136,7 @@ export function VideoPlayer({
       const hls = hlsRef.current;
       const video = videoRef.current;
       if (trackId === null) {
+        userSelectedSubtitleRef.current = true;
         subtitleIntentRef.current = { on: false, lang: null };
         setSubtitlesOn(false);
         setActiveSubtitleId(null);
@@ -3899,6 +4157,7 @@ export function VideoPlayer({
         usePlayerStore.getState().subtitleTracks.find((t) => t.id === trackId)?.lang ?? null;
       // Persist intent so it survives resetStream() on the next source switch —
       // otherwise captions silently turn off on every server change.
+      userSelectedSubtitleRef.current = true;
       subtitleIntentRef.current = { on: true, lang: trackLang };
       setSubtitlesOn(true);
       setActiveSubtitleId(trackId);
@@ -3960,8 +4219,7 @@ export function VideoPlayer({
     // No empty-state chrome: do nothing when the stream has zero subtitle tracks.
     if (tracks.length === 0) return;
 
-    const preferred =
-      tracks.find((t) => isEnglishTrack(t.lang, t.name))?.id ?? tracks[0].id;
+    const preferred = pickPreferredSubtitle(tracks, "en")?.id ?? tracks[0].id;
     handleSubtitleChange(preferred);
   }, [subtitlesOn, handleSubtitleChange]);
 

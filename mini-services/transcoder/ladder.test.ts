@@ -407,6 +407,16 @@ describe("buildRemuxArgs", () => {
     expect(args).toContain("0:a:0?");
   });
 
+  it("maps the selected audio stream ordinal", () => {
+    const selected = buildRemuxArgs({
+      inputUrl: "https://cdn.example/movie.mkv",
+      outDir: "/out",
+      audioStreamIndex: 2,
+    });
+    expect(selected).toContain("0:a:2?");
+    expect(selected).not.toContain("0:a:0?");
+  });
+
   it("keeps the whole playlist so the film stays seekable", () => {
     expect(valueAfter("-hls_list_size")).toBe("0");
     expect(valueAfter("-hls_playlist_type")).toBe("event");

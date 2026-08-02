@@ -77,6 +77,18 @@ export async function GET(req: NextRequest) {
   const maxHeight = Number(url.searchParams.get("maxHeight") || "1080");
   const season = url.searchParams.get("season");
   const episode = url.searchParams.get("episode");
+  const requestedAudioPreference = url.searchParams.get("audioPreference");
+  const audioPreference =
+    requestedAudioPreference === "english" ||
+    requestedAudioPreference === "preferred"
+      ? requestedAudioPreference
+      : "original";
+  const languageParam = (name: string): string => {
+    const value = (url.searchParams.get(name) ?? "").trim().toLowerCase();
+    return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(value) ? value : "";
+  };
+  const originalLanguage = languageParam("originalLanguage");
+  const audioLanguage = languageParam("audioLanguage") || "en";
 
   if (!sourceId || (type !== "movie" && type !== "tv") || !id) {
     return NextResponse.json(
@@ -109,9 +121,17 @@ export async function GET(req: NextRequest) {
 
   // Ask the transcoder to build (or fetch cached) the HLS ladder. It returns
   // the master.m3u8 once the first segment exists (live), not after full encode.
-  const tcUrl = `${TRANSCODER_URL}/transcode?u=${encodeURIComponent(
-    source.url
-  )}&maxHeight=${maxHeight}&mode=${mode}`;
+  const workerParams = new URLSearchParams({
+    u: source.url,
+    maxHeight: String(maxHeight),
+    mode,
+    audioPreference,
+    audioLanguage,
+  });
+  if (originalLanguage) {
+    workerParams.set("originalLanguage", originalLanguage);
+  }
+  const tcUrl = `${TRANSCODER_URL}/transcode?${workerParams.toString()}`;
   const tcRes = await fetch(tcUrl, {
     signal: AbortSignal.timeout(TRANSCODER_TIMEOUT_MS),
     headers: { Accept: "application/vnd.apple.mpegurl" },
@@ -132,10 +152,9 @@ export async function GET(req: NextRequest) {
   // The transcoder emits seg_00000.ts; we point them at /api/transcode/seg.
   // We also need the cache key for the seg route — ask the transcoder for it.
   const rawPlaylist = await tcRes.text();
-  const keyResp = await fetch(
-    `${TRANSCODER_URL}/key?u=${encodeURIComponent(source.url)}&maxHeight=${maxHeight}&mode=${mode}`,
-    { signal: AbortSignal.timeout(5_000) }
-  ).catch(() => null);
+  const keyResp = await fetch(`${TRANSCODER_URL}/key?${workerParams.toString()}`, {
+    signal: AbortSignal.timeout(5_000),
+  }).catch(() => null);
   let cacheKey = "";
   if (keyResp && keyResp.ok) {
     try {

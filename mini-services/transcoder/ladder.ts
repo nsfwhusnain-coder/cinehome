@@ -113,8 +113,11 @@ export function buildRemuxArgs(input: {
   inputUrl: string;
   outDir: string;
   segmentDurationS?: number;
+  /** Zero-based audio-stream ordinal from ffprobe (`0:a:N`). */
+  audioStreamIndex?: number;
 }): string[] {
   const seg = input.segmentDurationS ?? DEFAULT_SEGMENT_DURATION_S;
+  const audioStreamIndex = Math.max(0, Math.floor(input.audioStreamIndex ?? 0));
   return [
     "-hide_banner",
     "-loglevel", "error",
@@ -168,10 +171,10 @@ export function buildRemuxArgs(input: {
     "-c:a", "aac",
     "-b:a", String(REMUX_AUDIO_BITRATE_K) + "k",
     "-ac", "2",
-    // First audio + first video only. Multi-track MKVs are common and a stray
+    // One chosen audio + first video only. Multi-track MKVs are common and a stray
     // subtitle/attachment stream will otherwise fail the mux into fMP4.
     "-map", "0:v:0",
-    "-map", "0:a:0?",
+    "-map", `0:a:${audioStreamIndex}?`,
     "-f", "hls",
     "-hls_time", String(seg),
     "-hls_playlist_type", "event",

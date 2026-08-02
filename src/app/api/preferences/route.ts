@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import {
   normalizeAudioLanguage,
+  parseAudioPreference,
+  parseFourKStartupPreference,
   parsePlaybackQualityPreference,
+  parseSubtitlePreference,
 } from "@/lib/profile-preferences";
 import {
   getUserPlaybackPreferences,
@@ -25,7 +28,13 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { playbackQuality?: unknown; audioLanguage?: unknown };
+  let body: {
+    playbackQuality?: unknown;
+    audioLanguage?: unknown;
+    audioPreference?: unknown;
+    subtitlePreference?: unknown;
+    fourKStartup?: unknown;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -34,17 +43,32 @@ export async function PATCH(req: NextRequest) {
 
   const playbackQuality = parsePlaybackQualityPreference(body.playbackQuality);
   const audioLanguage = normalizeAudioLanguage(body.audioLanguage);
-  if (playbackQuality == null || audioLanguage == null) {
+  const audioPreference = parseAudioPreference(body.audioPreference);
+  const subtitlePreference = parseSubtitlePreference(body.subtitlePreference);
+  const fourKStartup = parseFourKStartupPreference(body.fourKStartup);
+  if (
+    playbackQuality == null ||
+    audioLanguage == null ||
+    audioPreference == null ||
+    subtitlePreference == null ||
+    fourKStartup == null
+  ) {
     return NextResponse.json(
       {
         error:
-          "Playback quality must be Auto, 4K, 1440p, 1080p, 720p, 480p, or 360p and audio language must be valid.",
+          "Playback quality, audio, subtitle, or 4K startup preference is invalid.",
       },
       { status: 400 }
     );
   }
 
-  const preferences = { playbackQuality, audioLanguage };
+  const preferences = {
+    playbackQuality,
+    audioLanguage,
+    audioPreference,
+    subtitlePreference,
+    fourKStartup,
+  };
   await saveUserPlaybackPreferences(userId, preferences);
   return NextResponse.json(preferences, {
     headers: { "Cache-Control": "private, no-store" },

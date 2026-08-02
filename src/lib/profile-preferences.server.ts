@@ -1,11 +1,17 @@
 import "server-only";
 import { db } from "@/lib/db";
 import {
+  AUDIO_PREFERENCE_SETTING_KEY,
   AUDIO_LANGUAGE_SETTING_KEY,
   DEFAULT_PROFILE_PLAYBACK_PREFERENCES,
+  FOUR_K_STARTUP_SETTING_KEY,
   PLAYBACK_QUALITY_SETTING_KEY,
+  SUBTITLE_PREFERENCE_SETTING_KEY,
   normalizeAudioLanguage,
+  parseAudioPreference,
+  parseFourKStartupPreference,
   parsePlaybackQualityPreference,
+  parseSubtitlePreference,
   type ProfilePlaybackPreferences,
 } from "@/lib/profile-preferences";
 
@@ -15,7 +21,15 @@ export async function getUserPlaybackPreferences(
   const rows = await db.userSetting.findMany({
     where: {
       userId,
-      key: { in: [PLAYBACK_QUALITY_SETTING_KEY, AUDIO_LANGUAGE_SETTING_KEY] },
+      key: {
+        in: [
+          PLAYBACK_QUALITY_SETTING_KEY,
+          AUDIO_LANGUAGE_SETTING_KEY,
+          AUDIO_PREFERENCE_SETTING_KEY,
+          SUBTITLE_PREFERENCE_SETTING_KEY,
+          FOUR_K_STARTUP_SETTING_KEY,
+        ],
+      },
     },
     select: { key: true, value: true },
   });
@@ -27,6 +41,15 @@ export async function getUserPlaybackPreferences(
     audioLanguage:
       normalizeAudioLanguage(values.get(AUDIO_LANGUAGE_SETTING_KEY)) ??
       DEFAULT_PROFILE_PLAYBACK_PREFERENCES.audioLanguage,
+    audioPreference:
+      parseAudioPreference(values.get(AUDIO_PREFERENCE_SETTING_KEY)) ??
+      DEFAULT_PROFILE_PLAYBACK_PREFERENCES.audioPreference,
+    subtitlePreference:
+      parseSubtitlePreference(values.get(SUBTITLE_PREFERENCE_SETTING_KEY)) ??
+      DEFAULT_PROFILE_PLAYBACK_PREFERENCES.subtitlePreference,
+    fourKStartup:
+      parseFourKStartupPreference(values.get(FOUR_K_STARTUP_SETTING_KEY)) ??
+      DEFAULT_PROFILE_PLAYBACK_PREFERENCES.fourKStartup,
   };
 }
 
@@ -55,6 +78,39 @@ export async function saveUserPlaybackPreferences(
         userId,
         key: AUDIO_LANGUAGE_SETTING_KEY,
         value: preferences.audioLanguage,
+      },
+    }),
+    db.userSetting.upsert({
+      where: {
+        userId_key: { userId, key: AUDIO_PREFERENCE_SETTING_KEY },
+      },
+      update: { value: preferences.audioPreference },
+      create: {
+        userId,
+        key: AUDIO_PREFERENCE_SETTING_KEY,
+        value: preferences.audioPreference,
+      },
+    }),
+    db.userSetting.upsert({
+      where: {
+        userId_key: { userId, key: SUBTITLE_PREFERENCE_SETTING_KEY },
+      },
+      update: { value: preferences.subtitlePreference },
+      create: {
+        userId,
+        key: SUBTITLE_PREFERENCE_SETTING_KEY,
+        value: preferences.subtitlePreference,
+      },
+    }),
+    db.userSetting.upsert({
+      where: {
+        userId_key: { userId, key: FOUR_K_STARTUP_SETTING_KEY },
+      },
+      update: { value: preferences.fourKStartup },
+      create: {
+        userId,
+        key: FOUR_K_STARTUP_SETTING_KEY,
+        value: preferences.fourKStartup,
       },
     }),
   ]);

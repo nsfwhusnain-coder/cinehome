@@ -104,6 +104,9 @@ export interface PlaybackResponse {
   preferences?: {
     playbackQuality: import("@/lib/profile-preferences").PlaybackQualityPreference;
     audioLanguage: string;
+    audioPreference: import("@/lib/profile-preferences").AudioPreference;
+    subtitlePreference: import("@/lib/profile-preferences").SubtitlePreference;
+    fourKStartup: import("@/lib/profile-preferences").FourKStartupPreference;
   };
   /** Fresh-roster generation returned only by an explicit recovery resolve. */
   refreshNonce?: number;
@@ -113,4 +116,128 @@ export interface PlaybackProvider {
   id: string;
   name: string;
   resolve(req: PlaybackRequest): Promise<PlaybackResponse>;
+}
+
+/** Cross-resolver lifecycle. Only transport-verified candidates may be ranked. */
+export type CandidateReadiness =
+  | "discovered"
+  | "resolved"
+  | "transport_verified"
+  | "client_decoded";
+
+export type IdentityEvidence =
+  | "selected_file"
+  | "release_title"
+  | "exact_media_route"
+  | "unlabelled_capture";
+
+export type DeliveryRoute = "direct" | "remux" | "unavailable";
+
+export interface PlaybackCandidate {
+  source: PlaybackSource;
+  readiness: CandidateReadiness;
+  identityEvidence: IdentityEvidence;
+  delivery: DeliveryRoute;
+  eligible: boolean;
+  rejectionReason?: string;
+  resolvedAtMs?: number;
+  transportVerifiedAtMs?: number;
+}
+
+export interface PlaybackResolveContext {
+  signal: AbortSignal;
+  qualityFloor: "auto" | number;
+  originalLanguage?: string | null;
+}
+
+/** Boundary exposed by mini-services/stream-scraper to the coordinator. */
+export interface FreeProviderResolver {
+  resolve(
+    request: PlaybackRequest,
+    context: PlaybackResolveContext
+  ): AsyncIterable<PlaybackCandidate>;
+}
+
+/** Boundary exposed by Torrentio/Comet-backed debrid discovery. */
+export interface DebridResolver {
+  resolve(
+    request: PlaybackRequest,
+    context: PlaybackResolveContext
+  ): AsyncIterable<PlaybackCandidate>;
+}
+
+export interface ClientPlaybackCapabilities {
+  hevc: boolean;
+  av1: boolean;
+  mse: boolean;
+  nativeHls: boolean;
+  effectiveRttMs?: number;
+  estimatedDownlinkMbps?: number;
+}
+
+export interface ClientRankingContext {
+  capabilities: ClientPlaybackCapabilities;
+  qualityFloor: "auto" | number;
+  fourKStartup: import("@/lib/profile-preferences").FourKStartupPreference;
+}
+
+export interface ClientRanker {
+  pick(
+    candidates: readonly PlaybackCandidate[],
+    context: ClientRankingContext
+  ): PlaybackCandidate | null;
+}
+
+export type PlayerFeedbackEvent =
+  | "first_frame"
+  | "decoded_resolution"
+  | "stall"
+  | "handoff_failed"
+  | "decode_error";
+
+export interface PlayerFeedback {
+  event: PlayerFeedbackEvent;
+  sourceId: string;
+  provider: string;
+  occurredAt: number;
+  timeToFirstFrameMs?: number;
+  decodedHeight?: number;
+  reason?: string;
+}
+
+export interface PlayerFeedbackEmitter {
+  emit(feedback: PlayerFeedback): void;
+}
+
+export interface ProviderHealthSnapshot {
+  successRate: number;
+  sampleCount: number;
+  medianTtfbMs?: number;
+  medianFirstSegmentMs?: number;
+  cooldownUntil?: number;
+}
+
+export interface ProviderHealthKey {
+  provider: string;
+  contentClass?: "movie" | "tv" | "anime";
+  domain?: string;
+  route?: "api" | "browser_intercept" | "direct" | "remux";
+  cdnFamily?: string;
+}
+
+export interface HealthRegistry {
+  lookup(key: ProviderHealthKey): ProviderHealthSnapshot;
+  observe(key: ProviderHealthKey, feedback: PlayerFeedback): void;
+}
+
+export type PlaybackCoordinatorEvent =
+  | { type: "candidate"; candidate: PlaybackCandidate }
+  | { type: "decision"; candidate: PlaybackCandidate; atMs: number }
+  | { type: "complete"; atMs: number };
+
+export interface PlaybackCoordinator {
+  coordinate(
+    request: PlaybackRequest,
+    context: PlaybackResolveContext
+  ): AsyncIterable<PlaybackCoordinatorEvent>;
 }

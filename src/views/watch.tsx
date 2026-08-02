@@ -637,6 +637,11 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
             onRetrySources={() => void retryFull()}
             isDiscoveringSources={isDiscoveringSources}
             profileQuality={playback?.preferences?.playbackQuality}
+            profileAudioPreference={playback?.preferences?.audioPreference}
+            profileAudioLanguage={playback?.preferences?.audioLanguage}
+            profileSubtitlePreference={playback?.preferences?.subtitlePreference}
+            profileFourKStartup={playback?.preferences?.fourKStartup}
+            originalLanguage={meta?.original_language ?? null}
             refreshNonce={playback?.refreshNonce}
             sourceCount={
               playableSourceCount > 0

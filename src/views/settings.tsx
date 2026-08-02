@@ -8,7 +8,10 @@ import { useTheme } from "next-themes";
 import { useNavigate } from "@/hooks/use-navigate";
 import { transitionView } from "@/lib/motion";
 import {
+  getAudioPreference,
+  getFourKStartupPreference,
   getPreferredAudioLanguage,
+  getSubtitlePreference,
   syncProfilePlaybackPreferences,
 } from "@/lib/player-preferences";
 import type { ProfilePlaybackPreferences } from "@/lib/profile-preferences";
@@ -421,6 +424,11 @@ function StatusRow({ label, ok, okLabel, badLabel }: { label: string; ok: boolea
 function PlaybackPreferencesSection() {
   const [qualityOverride, setQualityOverride] = useState<string | null>(null);
   const [audioLanguageOverride, setAudioLanguageOverride] = useState<string | null>(null);
+  const [audioPreferenceOverride, setAudioPreferenceOverride] = useState<string | null>(null);
+  const [subtitlePreferenceOverride, setSubtitlePreferenceOverride] = useState<
+    string | null
+  >(null);
+  const [fourKStartupOverride, setFourKStartupOverride] = useState<string | null>(null);
 
   const preferencesQuery = useQuery<ProfilePlaybackPreferences>({
     queryKey: ["profile-playback-preferences"],
@@ -441,6 +449,18 @@ function PlaybackPreferencesSection() {
     audioLanguageOverride ??
     preferencesQuery.data?.audioLanguage ??
     getPreferredAudioLanguage();
+  const audioPreference =
+    audioPreferenceOverride ??
+    preferencesQuery.data?.audioPreference ??
+    getAudioPreference();
+  const subtitlePreference =
+    subtitlePreferenceOverride ??
+    preferencesQuery.data?.subtitlePreference ??
+    getSubtitlePreference();
+  const fourKStartup =
+    fourKStartupOverride ??
+    preferencesQuery.data?.fourKStartup ??
+    getFourKStartupPreference();
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -450,6 +470,9 @@ function PlaybackPreferencesSection() {
         body: JSON.stringify({
           playbackQuality: quality === "auto" ? "auto" : Number(quality),
           audioLanguage: audioLang.trim() || "en",
+          audioPreference,
+          subtitlePreference,
+          fourKStartup,
         }),
       });
       const json = (await response.json()) as ProfilePlaybackPreferences & {
@@ -462,6 +485,9 @@ function PlaybackPreferencesSection() {
       syncProfilePlaybackPreferences(preferences);
       setQualityOverride(String(preferences.playbackQuality));
       setAudioLanguageOverride(preferences.audioLanguage);
+      setAudioPreferenceOverride(preferences.audioPreference);
+      setSubtitlePreferenceOverride(preferences.subtitlePreference);
+      setFourKStartupOverride(preferences.fourKStartup);
       toast.success("Playback preferences saved to your profile");
     },
     onError: (error) => {
@@ -498,7 +524,23 @@ function PlaybackPreferencesSection() {
           </Select>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="pref-audio">Preferred audio language</Label>
+          <Label htmlFor="pref-audio-mode">Audio track</Label>
+          <Select value={audioPreference} onValueChange={setAudioPreferenceOverride}>
+            <SelectTrigger id="pref-audio-mode" className="w-full max-w-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="original">Original language, then English</SelectItem>
+              <SelectItem value="english">English first</SelectItem>
+              <SelectItem value="preferred">Preferred language first</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Commentary and audio-description tracks are avoided when a normal track exists.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="pref-audio">Preferred/fallback language</Label>
           <Select value={audioLang} onValueChange={setAudioLanguageOverride}>
             <SelectTrigger id="pref-audio" className="w-full max-w-xs">
               <SelectValue />
@@ -514,6 +556,37 @@ function PlaybackPreferencesSection() {
               <SelectItem value="pt">Portuguese</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="pref-subtitles">Subtitles</Label>
+          <Select
+            value={subtitlePreference}
+            onValueChange={setSubtitlePreferenceOverride}
+          >
+            <SelectTrigger id="pref-subtitles" className="w-full max-w-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="english">English when available</SelectItem>
+              <SelectItem value="off">Off by default</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="pref-4k-startup">4K startup</Label>
+          <Select value={fourKStartup} onValueChange={setFourKStartupOverride}>
+            <SelectTrigger id="pref-4k-startup" className="w-full max-w-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="fast">Fast start — play direct HD while 4K prepares</SelectItem>
+              <SelectItem value="maximum">Maximum quality — wait for 4K</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Native 4K always starts immediately. Only 4K files that need server repackaging
+            use this choice.
+          </p>
         </div>
         <Button
           type="button"
