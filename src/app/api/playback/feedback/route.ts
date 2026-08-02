@@ -43,6 +43,24 @@ export async function POST(req: NextRequest) {
   )
     ? (body.engine as "hlsjs" | "native_hls" | "native_file" | "dash")
     : undefined;
+  // Coarse device attribution. Without it a television session and a laptop
+  // session are identical in the logs, which is why cross-device playback
+  // differences stayed invisible. Never the raw UA — a bounded token only.
+  const rawPlatform =
+    typeof body.platform === "object" && body.platform !== null
+      ? (body.platform as Record<string, unknown>)
+      : null;
+  const platform = rawPlatform
+    ? {
+        deviceClass:
+          rawPlatform.deviceClass === "tv" ? ("tv" as const) : ("desktop" as const),
+        uaPlatform: text(rawPlatform.uaPlatform, 24),
+        heapLimitMb: finite(rawPlatform.heapLimitMb, 65_536),
+        cores: finite(rawPlatform.cores, 512),
+        screenWidth: finite(rawPlatform.screenWidth, 16_384),
+      }
+    : undefined;
+
   const feedback = {
     event,
     sourceId,
@@ -61,6 +79,7 @@ export async function POST(req: NextRequest) {
     JSON.stringify({
       userId,
       ...feedback,
+      ...(platform ? { platform } : {}),
       event: "player_feedback",
       feedbackEvent: feedback.event,
     })

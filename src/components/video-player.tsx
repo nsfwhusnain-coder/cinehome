@@ -39,6 +39,7 @@ import {
   toMediaTime,
 } from "@/lib/playback/remux-timeline";
 import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
+import { activeBufferProfile } from "@/lib/playback/device-profile";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
 import {
@@ -3009,6 +3010,10 @@ export function VideoPlayer({
               ? toMediaTime(resumeAtRef.current, remuxStartAtRef.current)
               : resumeAtRef.current
             : -1;
+        // Living-room TV browsers get a quarter of the desktop memory
+        // envelope — see src/lib/playback/device-profile.ts. Desktop values
+        // are unchanged; only a positive TV match differs.
+        const bufferProfile = activeBufferProfile();
         const hls = new Hls({
           enableWorker: hlsWorkerSupportedHere(),
           // VOD only (no live edge to chase) — verified false; low-latency mode
@@ -3024,17 +3029,17 @@ export function VideoPlayer({
           // request is still in flight — shaves the cold-start gap before any
           // buffering can begin, no downside for VOD.
           startFragPrefetch: true,
-          abrEwmaDefaultEstimate: HLS_ABR_DEFAULT_ESTIMATE_BPS,
+          abrEwmaDefaultEstimate: bufferProfile.abrInitialEstimateBps,
           abrEwmaFastVoD: 3,
           abrEwmaSlowVoD: 9,
           abrMaxWithRealBitrate: true,
           // Never cap by CSS box size — that was the 1080 label / 720 reality bug.
           capLevelToPlayerSize: false,
-          maxBufferLength: HLS_MAX_BUFFER_LENGTH_S,
-          maxMaxBufferLength: HLS_MAX_MAX_BUFFER_LENGTH_S,
-          maxBufferSize: HLS_MAX_BUFFER_SIZE_BYTES,
+          maxBufferLength: bufferProfile.maxBufferLengthS,
+          maxMaxBufferLength: bufferProfile.maxMaxBufferLengthS,
+          maxBufferSize: bufferProfile.maxBufferSizeBytes,
           maxBufferHole: 0.8,
-          backBufferLength: HLS_BACK_BUFFER_LENGTH_S,
+          backBufferLength: bufferProfile.backBufferLengthS,
           nudgeMaxRetry: 8,
           highBufferWatchdogPeriod: 1,
           // Faster recovery from double-hop underruns across browsers.
