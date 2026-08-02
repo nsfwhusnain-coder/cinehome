@@ -107,7 +107,12 @@ try {
     );
   }
 
-  const targetSeconds = max * 0.5;
+  // A direct/embed source may report its measured cut duration while the remux
+  // uses the TMDB logical runtime during its growing phase. Read the active
+  // remux slider after the source switch so the probe targets the same clock
+  // the user actually sees.
+  const remuxTimelineMax = Number(await slider.getAttribute("aria-valuemax"));
+  const targetSeconds = remuxTimelineMax * 0.5;
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
