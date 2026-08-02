@@ -93,6 +93,7 @@ import { Play, Loader2, RefreshCw, X, ArrowLeft, ArrowLeftRight, ArrowUpDown } f
 import { usePlayerStore, type MediaTrack, type QualityLevel } from "@/stores/player-store";
 import { PlayerControls } from "@/components/player-controls";
 import { LoadingScreen } from "@/components/player/LoadingScreen";
+import { premiumSourceCount } from "@/lib/playback/bloom-visuals";
 import { PlayerErrorCard, type PlayerErrorAction } from "@/components/player/PlayerErrorCard";
 import { SkipIntroButton } from "@/components/player/SkipIntroButton";
 import type { DockSection } from "@/components/player-dock";
@@ -198,6 +199,8 @@ const HLS_BACK_BUFFER_LENGTH_S = 30;
  */
 /** ~10 Mbps — start ABR near 1080p instead of hls.js default 500 kbps. */
 const HLS_ABR_DEFAULT_ESTIMATE_BPS = 10_000_000;
+/** Pre-roll seconds the bloom's core ring treats as a full buffer. */
+const BLOOM_TARGET_BUFFER_S = 8;
 /** Preload next TV episode sources at this progress ratio. */
 const NEXT_EP_PRELOAD_RATIO = 0.8;
 /** Hard floor — never load below this when a ≥1080 rung exists. */
@@ -1462,6 +1465,21 @@ export function VideoPlayer({
   const activeSourceIndex = activeSource
     ? orderedSources.findIndex((s) => s.id === activeSource.id) + 1
     : 0;
+  /**
+   * Core-ring fill: how full the pre-roll buffer is, 0..1. The bloom's only
+   * true progress indicator, so it must come from measured buffer and never
+   * from a timer. BLOOM_TARGET_BUFFER_S is the pre-roll depth the ring reads
+   * as "full" — matching it to the TV/desktop forward-buffer target would make
+   * the ring sit near empty for the whole wait on desktop.
+   */
+  const bloomBufferFill = (() => {
+    const video = videoRef.current;
+    if (!video) return 0;
+    const ahead = bufferedAheadSeconds(video);
+    if (ahead < 0) return 0;
+    return Math.min(1, ahead / BLOOM_TARGET_BUFFER_S);
+  })();
+
   const loadingStatus: string | null = !hasStream
     ? totalSourceCount > 0
       ? `Found ${totalSourceCount} source${totalSourceCount === 1 ? "" : "s"} — choosing the best…`
@@ -5208,6 +5226,11 @@ export function VideoPlayer({
         sourceCount={Math.max(sourceCount, healthySourceCount)}
         discovering={Boolean(isDiscoveringSources)}
         status={resumeNotice ?? loadingStatus}
+        /* Bloom visuals: the roster carries stage and tier in light, so the
+           chips need the same facts the Servers panel already has. */
+        premiumCount={premiumSourceCount(orderedSources)}
+        chosenIndex={activeSourceIndex - 1}
+        bufferFill={bloomBufferFill}
       />
 
       {failoverNotice && (

@@ -1,0 +1,202 @@
+/* Spectrum Bloom — loading screen. Hue comes from the poster (--bloom-hue).
+   Every animated property is transform/opacity/filter so the compositor can
+   own them; the TV profile below removes the filters entirely. */
+
+.bloom-stage {
+  --bloom-hue: 280;
+  --bloom-sat: 80%;
+  --bloom-fill: 0;
+}
+
+.bloom-wrap {
+  position: relative;
+  width: min(46%, 300px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+
+/* Wide diffuse halo — carries the "still hunting" character. */
+.bloom-halo {
+  position: absolute;
+  inset: -34%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    hsl(var(--bloom-hue) var(--bloom-sat) 60% / 0.42) 0%,
+    hsl(var(--bloom-hue) var(--bloom-sat) 52% / 0.16) 34%,
+    transparent 68%
+  );
+  filter: blur(26px);
+  animation: bloom-breathe 4.2s ease-in-out infinite;
+  transition:
+    inset 900ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 900ms ease,
+    opacity 700ms ease;
+}
+
+.bloom-core {
+  position: relative;
+  width: 46%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 38% 32%,
+    hsl(var(--bloom-hue) 100% 88%) 0%,
+    hsl(var(--bloom-hue) var(--bloom-sat) 62%) 38%,
+    hsl(var(--bloom-hue) var(--bloom-sat) 44%) 72%,
+    hsl(calc(var(--bloom-hue) - 12) 80% 30%) 100%
+  );
+  box-shadow:
+    0 0 44px hsl(var(--bloom-hue) var(--bloom-sat) 55% / 0.55),
+    inset 0 1px 2px rgba(255, 255, 255, 0.5);
+  animation: bloom-breathe 4.2s ease-in-out infinite;
+  transition:
+    width 900ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 900ms ease,
+    box-shadow 900ms ease;
+}
+
+/* Buffer fill — the only element on screen showing measurable progress. */
+.bloom-ring {
+  position: absolute;
+  inset: 6%;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 500ms ease;
+  background: conic-gradient(
+    hsl(var(--bloom-hue) 100% 72%) calc(var(--bloom-fill) * 1turn),
+    hsl(var(--bloom-hue) 30% 30% / 0.35) 0
+  );
+  -webkit-mask: radial-gradient(circle, transparent 70%, #000 71.5%);
+  mask: radial-gradient(circle, transparent 70%, #000 71.5%);
+}
+
+.bloom-chips {
+  position: absolute;
+  inset: 0;
+  animation: bloom-spin 26s linear infinite;
+}
+
+.bloom-chip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px;
+  border-radius: 50%;
+  background: hsl(var(--bloom-hue) 70% 72% / 0.3);
+  border: 1px solid hsl(var(--bloom-hue) 80% 80% / 0.45);
+  box-shadow: 0 0 10px hsl(var(--bloom-hue) var(--bloom-sat) 60% / 0.4);
+  opacity: 0;
+  transform: rotate(var(--chip-a)) translateX(var(--chip-r))
+    rotate(calc(-1 * var(--chip-a))) scale(0.4);
+  transition:
+    opacity 520ms ease,
+    transform 620ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.bloom-chip[data-on="1"] {
+  opacity: 1;
+  transform: rotate(var(--chip-a)) translateX(var(--chip-r))
+    rotate(calc(-1 * var(--chip-a))) scale(1);
+}
+
+/* Premium 4K tier — Poseidon / Hades. */
+.bloom-chip[data-premium="1"] {
+  width: 17px;
+  height: 17px;
+  margin: -8.5px;
+  background: hsl(var(--bloom-hue) 95% 82% / 0.55);
+  border-color: hsl(var(--bloom-hue) 100% 92% / 0.9);
+  box-shadow: 0 0 18px hsl(var(--bloom-hue) 100% 70% / 0.75);
+}
+
+/* The source being attached right now. */
+.bloom-chip[data-chosen="1"] {
+  background: #fff;
+  border-color: #fff;
+  box-shadow:
+    0 0 24px hsl(var(--bloom-hue) 100% 78% / 0.95),
+    0 0 44px hsl(var(--bloom-hue) 100% 60% / 0.5);
+}
+
+/* ── phase characters ─────────────────────────────────────── */
+.bloom-stage[data-phase="searching"] .bloom-halo {
+  inset: -40%;
+  filter: blur(34px);
+  opacity: 0.85;
+}
+.bloom-stage[data-phase="searching"] .bloom-core {
+  width: 40%;
+  filter: saturate(0.55) blur(1px);
+}
+
+.bloom-stage[data-phase="connecting"] .bloom-halo {
+  inset: -20%;
+  filter: blur(20px);
+  opacity: 1;
+}
+.bloom-stage[data-phase="connecting"] .bloom-core {
+  width: 50%;
+  filter: saturate(1.15);
+}
+
+.bloom-stage[data-phase="buffering"] .bloom-halo {
+  inset: -10%;
+  filter: blur(14px);
+  opacity: 1;
+}
+.bloom-stage[data-phase="buffering"] .bloom-core {
+  width: 54%;
+  filter: saturate(1.35) brightness(1.12);
+  animation-duration: 2.1s;
+}
+.bloom-stage[data-phase="buffering"] .bloom-ring {
+  opacity: 1;
+}
+
+@keyframes bloom-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.055);
+  }
+}
+
+@keyframes bloom-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── TV profile ───────────────────────────────────────────────
+   webOS/Tizen tabs pay heavily for backdrop and filter blur, and this
+   screen is on-screen exactly when the player is at its busiest. Strip
+   the filters, stop the orbit, slow the breathe: transform and opacity
+   only, which the compositor handles without repainting. */
+.bloom-stage[data-device="tv"] .bloom-halo {
+  filter: none;
+  animation-duration: 6s;
+}
+.bloom-stage[data-device="tv"] .bloom-core {
+  animation-duration: 6s;
+  box-shadow: 0 0 30px hsl(var(--bloom-hue) var(--bloom-sat) 55% / 0.45);
+}
+.bloom-stage[data-device="tv"] .bloom-chips {
+  animation: none;
+}
+.bloom-stage[data-device="tv"][data-phase="searching"] .bloom-core {
+  filter: saturate(0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bloom-halo,
+  .bloom-core,
+  .bloom-chips {
+    animation: none;
+  }
+}

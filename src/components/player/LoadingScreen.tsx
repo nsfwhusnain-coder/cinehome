@@ -1,21 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { detectDeviceClass } from "@/lib/playback/device-profile";
+import {
+  bloomChips,
+  bloomPhase,
+  FALLBACK_HUE,
+  hexToHue,
+  tmdbPathFromUrl,
+} from "@/lib/playback/bloom-visuals";
+import "./loading-bloom.css";
 
-const GENERIC_SERVER_NAMES = new Set(["servers", "server", "source", "sources"]);
-
-const STATUS_MESSAGES = [
-  "Connecting…",
-  "Resolving stream…",
-  "Buffering…",
-] as const;
-
-const STATUS_ROTATE_MS = 2400;
-
-/** The three real phases of getting a frame on screen, in order. */
-const STAGES = ["Finding", "Connecting", "Buffering"] as const;
+/** Chip ring radius, in px, at the wrapper's own scale. */
+const CHIP_RADIUS_INNER = 82;
+const CHIP_RADIUS_OUTER = 96;
+const FULL_TURN_DEGREES = 360;
 
 export interface LoadingScreenProps {
   backdropUrl?: string | null;
@@ -24,106 +24,109 @@ export interface LoadingScreenProps {
   serverName: string;
   title: string;
   visible: boolean;
-  /** Optional explicit status; when set, rotation is disabled. */
+  /** The player's own computed status line — read for phase, never displayed. */
   status?: string | null;
   /** Sources found so far (progressive discover). */
   sourceCount?: number;
   /** Still hunting more servers in the background. */
   discovering?: boolean;
+  /** Debrid 4K sources in the roster — rendered as the larger, brighter chips. */
+  premiumCount?: number;
+  /** Roster index of the source being attached, or -1 while still choosing. */
+  chosenIndex?: number;
+  /** Buffer fill 0..1. Drives the core ring — the only true progress on screen. */
+  bufferFill?: number;
 }
 
 /**
- * Full-bleed loading overlay: darkened backdrop, poster, title,
- * spinner + progress-aware status ("Finding sources… (3 found)").
+ * Spectrum Bloom — the full-bleed pre-first-frame overlay.
+ *
+ * Replaces the rotating status copy and the Finding/Connecting/Buffering rail
+ * with light: the halo's width carries the stage, saturation carries
+ * confidence, orbiting chips carry the roster, and the core ring carries the
+ * buffer. Hue is the film's own, from the poster.
+ *
+ * The honesty rule from the screen this replaces is unchanged — no element
+ * animates on a timer pretending to be progress. The ring is the only progress
+ * indicator and it is fed by real buffer state.
  */
 export function LoadingScreen({
   backdropUrl,
   posterUrl,
-  serverName,
   title,
   visible,
   status,
   sourceCount = 0,
-  discovering = false,
+  premiumCount = 0,
+  chosenIndex = -1,
+  bufferFill = 0,
 }: LoadingScreenProps) {
-  const [statusIdx, setStatusIdx] = useState(0);
+  const [hue, setHue] = useState<number>(FALLBACK_HUE);
 
-  const isGenericServer = useMemo(() => {
-    const n = serverName.trim().toLowerCase();
-    return !n || GENERIC_SERVER_NAMES.has(n);
-  }, [serverName]);
-
-  const statusPool = useMemo(() => {
-    if (sourceCount > 0) {
-      return [
-        `Found ${sourceCount} source${sourceCount === 1 ? "" : "s"}…`,
-        discovering
-          ? `Found ${sourceCount} — searching for more…`
-          : "Loading stream…",
-        "Buffering…",
-      ] as const;
-    }
-    if (isGenericServer) {
-      return ["Finding sources…", "Searching for streams…", ...STATUS_MESSAGES] as const;
-    }
-    return [
-      `Connecting to ${serverName}…`,
-      "Resolving stream…",
-      "Buffering…",
-    ] as const;
-  }, [isGenericServer, serverName, sourceCount, discovering]);
+  const artPath = useMemo(
+    () => tmdbPathFromUrl(posterUrl) ?? tmdbPathFromUrl(backdropUrl),
+    [posterUrl, backdropUrl]
+  );
 
   /**
-   * The rotation restarts from the first line whenever the screen (re)appears
-   * or the pool changes. Doing that reset during render rather than in the
-   * effect keeps the effect to what it is actually for — owning the interval —
-   * and avoids briefly showing whichever line the previous playback attempt
-   * happened to stop on.
+   * The endpoint returns a deliberately darkened tint; we keep only its hue and
+   * re-saturate in CSS. Failure is silent and simply keeps the brand neutral —
+   * a loading screen must never depend on a colour lookup succeeding.
    */
-  const rotationKey = visible && !status ? `${statusPool.length}` : null;
-  const [rotationFor, setRotationFor] = useState<string | null>(null);
-  if (rotationKey !== rotationFor) {
-    setRotationFor(rotationKey);
-    setStatusIdx(0);
-  }
-
   useEffect(() => {
-    if (!visible || status) return;
-    const id = window.setInterval(() => {
-      setStatusIdx((v) => (v + 1) % statusPool.length);
-    }, STATUS_ROTATE_MS);
-    return () => window.clearInterval(id);
-  }, [visible, status, statusPool]);
+    if (!visible || !artPath) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    void fetch(`/api/poster-color?path=${encodeURIComponent(artPath)}`, {
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json: { color?: string } | null) => {
+        if (cancelled || !json?.color) return;
+        const next = hexToHue(json.color);
+        if (next != null) setHue(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [visible, artPath]);
+
+  const phase = bloomPhase(status ?? null, sourceCount);
+  const chips = useMemo(
+    () => bloomChips(sourceCount, premiumCount, chosenIndex),
+    [sourceCount, premiumCount, chosenIndex]
+  );
+  const deviceClass = useMemo(
+    () => (visible ? detectDeviceClass() : "desktop"),
+    [visible]
+  );
 
   if (!visible) return null;
 
-  const displayStatus = status?.trim() || statusPool[statusIdx % statusPool.length];
-  const artUrl = posterUrl || backdropUrl || null;
-
-  /**
-   * Which of the three phases we are in, inferred from the status text the
-   * player already computes (see `loadingStatus` in video-player.tsx) plus the
-   * source count. Deliberately read-only: this reflects state that exists, it
-   * does not fabricate a progress percentage nobody can measure.
-   */
-  const lower = displayStatus.toLowerCase();
-  const stageIndex = /buffer/.test(lower)
-    ? 2
-    : /connect|preparing|resolv/.test(lower)
-      ? 1
-      : sourceCount > 0 && /choos|found/.test(lower)
-        ? 1
-        : 0;
+  const slots = Math.max(chips.length, 1);
 
   return (
     <div
-      className="pointer-events-none absolute inset-0 z-40 flex flex-col items-center justify-center overflow-hidden bg-black"
+      className={cn(
+        "bloom-stage pointer-events-none absolute inset-0 z-40",
+        "flex flex-col items-center justify-center gap-8 overflow-hidden bg-black"
+      )}
+      data-phase={phase}
+      data-device={deviceClass}
+      style={
+        {
+          "--bloom-hue": hue,
+          "--bloom-fill": Math.min(1, Math.max(0, bufferFill)),
+        } as React.CSSProperties
+      }
       role="status"
       aria-live="polite"
-      aria-label={displayStatus}
+      aria-label={`Loading ${title}`}
     >
       {backdropUrl ? (
-         
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={backdropUrl}
           alt=""
@@ -131,83 +134,37 @@ export function LoadingScreen({
           draggable={false}
         />
       ) : null}
+      <div className="absolute inset-0 bg-black/[0.86]" />
 
-      <div
-        className={cn(
-          "absolute inset-0",
-          backdropUrl
-            ? "bg-black/[0.85]"
-            : "bg-gradient-to-b from-zinc-950 via-black to-zinc-950"
-        )}
-      />
-
-      <div className="relative z-10 flex w-full max-w-md flex-col items-center px-6 text-center">
-        {artUrl ? (
-           
-          <img
-            src={artUrl}
-            alt=""
-            className="mb-5 h-36 w-24 rounded-lg object-cover shadow-2xl ring-1 ring-white/10 sm:h-44 sm:w-28"
-            draggable={false}
-          />
-        ) : (
-          <div className="mb-5 h-36 w-24 rounded-lg bg-white/5 ring-1 ring-white/10 sm:h-44 sm:w-28" />
-        )}
-
-        <p className="max-w-md truncate text-base font-semibold tracking-tight text-white sm:text-lg">
-          {title}
-        </p>
-
-        <div className="mt-4 flex items-center gap-2.5 text-white/80">
-          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-white/60" aria-hidden />
-          <p className="text-sm font-medium tracking-wide">{displayStatus}</p>
+      <div className="bloom-wrap relative z-10">
+        <div className="bloom-halo" />
+        <div className="bloom-chips">
+          {chips.map((chip) => (
+            <div
+              key={chip.index}
+              className="bloom-chip"
+              data-on="1"
+              data-premium={chip.premium ? "1" : "0"}
+              data-chosen={chip.chosen ? "1" : "0"}
+              style={
+                {
+                  "--chip-a": `${(chip.index * FULL_TURN_DEGREES) / slots}deg`,
+                  "--chip-r": `${
+                    chip.index % 2 ? CHIP_RADIUS_INNER : CHIP_RADIUS_OUTER
+                  }px`,
+                } as React.CSSProperties
+              }
+            />
+          ))}
         </div>
-
-        {/*
-          Stage rail. A single spinner cannot distinguish "still searching" from
-          "connected, filling the buffer" — which fail differently and take very
-          different amounts of time — so the three real phases are shown, with
-          the current one lit and completed ones ticked. This is derived purely
-          from props already passed in; it invents no progress it cannot see.
-        */}
-        <ol
-          className="mt-5 flex w-full items-center justify-center gap-2 text-[11px] font-medium"
-          aria-label="Loading progress"
-        >
-          {STAGES.map((label, i) => {
-            const state = i < stageIndex ? "done" : i === stageIndex ? "active" : "todo";
-            return (
-              <li key={label} className="flex flex-1 items-center gap-2">
-                <span
-                  className={cn(
-                    "h-1 w-full rounded-full transition-colors duration-500",
-                    state === "done" && "bg-white/55",
-                    state === "active" && "bg-white/85",
-                    state === "todo" && "bg-white/12"
-                  )}
-                />
-                <span
-                  className={cn(
-                    "whitespace-nowrap transition-colors duration-500",
-                    state === "done" && "text-white/45",
-                    state === "active" && "text-white/85",
-                    state === "todo" && "text-white/25"
-                  )}
-                >
-                  {label}
-                </span>
-              </li>
-            );
-          })}
-        </ol>
-
-        {sourceCount > 0 && (
-          <p className="mt-3 text-[11px] tracking-wide text-white/40">
-            {sourceCount} source{sourceCount === 1 ? "" : "s"} found
-            {discovering ? " · still looking for more" : ""}
-          </p>
-        )}
+        <div className="bloom-core">
+          <div className="bloom-ring" />
+        </div>
       </div>
+
+      <p className="relative z-10 max-w-xl truncate px-6 text-center text-lg font-semibold tracking-tight text-white drop-shadow-[0_2px_20px_rgba(0,0,0,0.9)] sm:text-2xl">
+        {title}
+      </p>
     </div>
   );
 }
