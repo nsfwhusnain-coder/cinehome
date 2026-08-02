@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import { resolveFullRoster } from "@/lib/playback/resolve-full";
 import { rewritePlaylist } from "@/lib/playback/transcode-playlist";
@@ -126,10 +127,31 @@ export async function GET(req: NextRequest) {
 
   // Ask the transcoder to build (or fetch cached) the HLS ladder. It returns
   // the master.m3u8 once the first segment exists (live), not after full encode.
+  const owner = createHash("sha256")
+    .update(userId)
+    .digest("hex")
+    .slice(0, 16);
+  const remuxFamily = createHash("sha256")
+    .update(
+      [
+        userId,
+        source.id,
+        audioPreference,
+        originalLanguage,
+        audioLanguage,
+      ].join("|")
+    )
+    .digest("hex")
+    .slice(0, 24);
   const workerParams = new URLSearchParams({
     u: source.url,
     maxHeight: String(maxHeight),
     mode,
+    // Opaque per-profile owner scope. The worker uses this only to supersede
+    // an older remux from the same viewer when a far seek needs a slot; it is
+    // not part of the shared media-cache identity.
+    owner,
+    family: remuxFamily,
     audioPreference,
     audioLanguage,
   });

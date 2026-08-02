@@ -151,14 +151,20 @@ const REMUX_WATCHDOG_INTERVAL_MS = 30_000;
  */
 const REMUX_IDLE_TIMEOUT_MS = 120_000;
 const REMUX_IDLE_CHECK_INTERVAL_MS = 30_000;
+/** Keep an interrupted old suffix readable long enough to roll back a seek. */
+const REMUX_SUPERSEDED_GRACE_MS = 30_000;
+/** A killed sibling normally releases its slot in milliseconds. */
+const REMUX_SUPERSEDE_WAIT_MS = 2_000;
+const REMUX_SLOT_POLL_MS = 50;
 /**
  * Concurrent remux ceiling, ENFORCED — unlike TRANSCODER_MAX_CONCURRENT, which
  * was declared and reported in /health but never actually checked anywhere.
  * Two households watching two different 4K titles is the realistic ceiling
  * here; beyond that the shared upstream link is the bottleneck and every
- * stream suffers. Over capacity the request is refused rather than queued, so
- * the player fails over to another source immediately instead of sitting on a
- * manifest that will not arrive.
+ * stream suffers. Over capacity an ordinary request is refused rather than
+ * queued. A far seek may supersede an older remux for the same profile and
+ * source, which keeps random access available without taking capacity from a
+ * different household viewer.
  */
 const REMUX_MAX_CONCURRENT = Number(process.env.TRANSCODER_REMUX_MAX_CONCURRENT || 2);
 /** Bump whenever remux output semantics change so incompatible cache rows can
@@ -170,6 +176,11 @@ const REMUX_MAX_START_AT_S = 24 * 60 * 60;
 const activeRemuxes = new Set<string>();
 /** Jobs admitted but still opening/probing their input count against capacity. */
 const remuxReservations = new Set<string>();
+/** Running process and per-viewer source family, used for seek supersession. */
+const remuxProcesses = new Map<string, ChildProcess>();
+const remuxSessionFamilyByKey = new Map<string, string>();
+/** Partial old suffixes remain readable briefly for handoff rollback. */
+const supersededRemuxUntil = new Map<string, number>();
 /**
  * A cache entry is protected from eviction for this long after its last read.
  * Without it, eviction is free to delete the very directory a viewer is
@@ -236,6 +247,69 @@ const DEFAULT_REMUX_AUDIO_SELECTION: AudioTrackSelection = {
 
 function parseMode(raw: string | null): BuildMode {
   return raw === "remux" ? "remux" : "transcode";
+}
+
+function remuxSessionFamilyKey(
+  inputUrl: string,
+  audioSelection: AudioTrackSelection,
+  owner: string,
+  familyHint: string
+): string {
+  return createHash("sha256")
+    .update(
+      [
+        owner,
+        familyHint || inputUrl,
+        audioSelection.preference,
+        audioSelection.originalLanguage ?? "",
+        audioSelection.preferredLanguage ?? "",
+      ].join("|")
+    )
+    .digest("hex")
+    .slice(0, 24);
+}
+
+async function supersedeOlderRemuxForSeek(
+  key: string,
+  familyKey: string
+): Promise<void> {
+  if (activeRemuxes.size + remuxReservations.size < REMUX_MAX_CONCURRENT) {
+    return;
+  }
+
+  const siblingKey = [...activeRemuxes]
+    .filter(
+      (candidate) =>
+        candidate !== key && remuxSessionFamilyByKey.get(candidate) === familyKey
+    )
+    .sort(
+      (a, b) => (lastAccess.get(a) ?? 0) - (lastAccess.get(b) ?? 0)
+    )[0];
+  if (!siblingKey) return;
+
+  const siblingProcess = remuxProcesses.get(siblingKey);
+  if (
+    !siblingProcess ||
+    siblingProcess.exitCode !== null ||
+    siblingProcess.signalCode !== null
+  ) {
+    return;
+  }
+
+  supersededRemuxUntil.set(
+    siblingKey,
+    Date.now() + REMUX_SUPERSEDED_GRACE_MS
+  );
+  log(`remux key=${siblingKey} superseded by seek key=${key}; releasing slot`);
+  siblingProcess.kill("SIGKILL");
+
+  const deadline = Date.now() + REMUX_SUPERSEDE_WAIT_MS;
+  while (
+    activeRemuxes.size + remuxReservations.size >= REMUX_MAX_CONCURRENT &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, REMUX_SLOT_POLL_MS));
+  }
 }
 
 function parseAudioPreference(raw: string | null): AudioPreference {
@@ -645,9 +719,17 @@ async function getOrBuild(
   maxHeight: number,
   mode: BuildMode = "transcode",
   audioSelection: AudioTrackSelection = DEFAULT_REMUX_AUDIO_SELECTION,
-  startAtSeconds = 0
+  startAtSeconds = 0,
+  owner = "shared",
+  familyHint = ""
 ): Promise<string> {
   const key = sourceKey(inputUrl, maxHeight, mode, audioSelection, startAtSeconds);
+  const familyKey = remuxSessionFamilyKey(
+    inputUrl,
+    audioSelection,
+    owner,
+    familyHint
+  );
   touchKey(key);
 
   // Cache hit — ladder already built (transcode complete).
@@ -656,6 +738,13 @@ async function getOrBuild(
     const completeRemux =
       mode !== "remux" || readFileSync(cached, "utf8").includes("#EXT-X-ENDLIST");
     if (completeRemux) return cached;
+    const supersededUntil = supersededRemuxUntil.get(key) ?? 0;
+    if (supersededUntil > Date.now()) {
+      // The viewer is moving to another offset. Keep serving the already
+      // listed old fragments during the handoff so rollback remains possible.
+      return cached;
+    }
+    supersededRemuxUntil.delete(key);
     // A remux with no writer and no ENDLIST was interrupted. Never expose a
     // silently truncated suffix as a warm cache hit.
     wipeOutDir(cacheDir(key));
@@ -685,12 +774,16 @@ async function getOrBuild(
         );
       }
     }
+    if (startAtSeconds > 0) {
+      await supersedeOlderRemuxForSeek(key, familyKey);
+    }
     if (activeRemuxes.size + remuxReservations.size >= REMUX_MAX_CONCURRENT) {
       throw new Error(
         `remux at capacity: ${activeRemuxes.size + remuxReservations.size}/${REMUX_MAX_CONCURRENT} active or starting`
       );
     }
     remuxReservations.add(key);
+    remuxSessionFamilyByKey.set(key, familyKey);
     /**
      * Start from an empty directory, always.
      *
@@ -731,7 +824,12 @@ async function getOrBuild(
         }
         if (proc.exitCode === null && proc.signalCode === null) {
           activeRemuxes.add(key);
-          proc.once("close", () => activeRemuxes.delete(key));
+          remuxProcesses.set(key, proc);
+          proc.once("close", () => {
+            activeRemuxes.delete(key);
+            remuxProcesses.delete(key);
+            remuxSessionFamilyByKey.delete(key);
+          });
         }
         watchRemuxSize(proc, outDir, key);
         watchRemuxIdle(proc, outDir, key);
@@ -739,6 +837,8 @@ async function getOrBuild(
         return playlistPath(key);
       })().catch((e) => {
         remuxReservations.delete(key);
+        remuxProcesses.delete(key);
+        remuxSessionFamilyByKey.delete(key);
         log(`background remux failed key=${key}: ${e instanceof Error ? e.message : e}`);
         inflight.delete(key);
         throw e;
@@ -746,6 +846,8 @@ async function getOrBuild(
       inflight.set(key, work);
     } catch (error) {
       remuxReservations.delete(key);
+      remuxProcesses.delete(key);
+      remuxSessionFamilyByKey.delete(key);
       throw error;
     }
   } else {
@@ -823,6 +925,9 @@ function cacheBytes(): number {
 function cleanupCache(): void {
   try {
     const now = Date.now();
+    for (const [key, expiresAt] of supersededRemuxUntil) {
+      if (expiresAt <= now) supersededRemuxUntil.delete(key);
+    }
     let bytes = cacheBytes();
     const entries: { dir: string; mtime: number; size: number }[] = [];
     for (const dir of readdirSync(CACHE_DIR)) {
@@ -973,6 +1078,10 @@ const server = createServer(async (req, res) => {
     const mode = parseMode(url.searchParams.get("mode"));
     const audioSelection = parseAudioSelection(url);
     const startAtSeconds = parseStartAt(url.searchParams.get("startAt"), mode);
+    const ownerParam = url.searchParams.get("owner") ?? "";
+    const owner = /^[a-f0-9]{16}$/.test(ownerParam) ? ownerParam : "shared";
+    const familyParam = url.searchParams.get("family") ?? "";
+    const familyHint = /^[a-f0-9]{24}$/.test(familyParam) ? familyParam : "";
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
 
     try {
@@ -981,7 +1090,9 @@ const server = createServer(async (req, res) => {
         maxHeight,
         mode,
         audioSelection,
-        startAtSeconds
+        startAtSeconds,
+        owner,
+        familyHint
       );
       const { readFile } = await import("node:fs/promises");
       const body = await readFile(playlist, "utf8");
