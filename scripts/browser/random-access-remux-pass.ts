@@ -18,6 +18,8 @@ interface ProbeReport {
   offsetRequests: Array<{ startAt: number; status?: number }>;
   landed: Record<string, unknown>;
   errors: string[];
+  stage: string;
+  debug: Record<string, unknown>;
 }
 
 if (!existsSync(storageState)) throw new Error(`Storage state missing: ${storageState}`);
@@ -33,6 +35,8 @@ const page = await context.newPage();
 page.setDefaultTimeout(90_000);
 const errors: string[] = [];
 const offsetRequests: Array<{ startAt: number; status?: number }> = [];
+const debug: Record<string, unknown> = {};
+let stage = "launch";
 
 page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
 page.on("response", (response) => {
@@ -43,7 +47,9 @@ page.on("response", (response) => {
 });
 
 try {
+  stage = "navigate";
   await page.goto(watchPath, { waitUntil: "domcontentloaded" });
+  stage = "initial_first_frame";
   await page.waitForFunction(
     () => {
       const video = document.querySelector("video");
@@ -79,8 +85,10 @@ try {
     sourceId: video.dataset.playbackSourceId || null,
     provider: video.dataset.playbackSourceProvider || null,
   }));
+  debug.initial = initial;
 
   if (initial.provider !== "Debrid" || !String(initial.sourceId).includes("2160")) {
+    stage = "select_remux_source";
     const bounds = await page.locator("video").boundingBox();
     if (bounds) await page.mouse.move(bounds.x + 20, bounds.y + 20);
     await page.getByRole("button", { name: "Sources", exact: true }).click();
@@ -89,8 +97,23 @@ try {
       .first();
     await remuxRow.waitFor({ state: "visible" });
     const remuxSourceId = await remuxRow.getAttribute("data-source-id");
+    debug.remuxRow = {
+      sourceId: remuxSourceId,
+      provider: await remuxRow.getAttribute("data-source-provider"),
+      label: (await remuxRow.textContent())?.trim(),
+      disabled: await remuxRow.isDisabled(),
+    };
     await remuxRow.click();
     await page.keyboard.press("Escape");
+    await page.waitForTimeout(1_000);
+    debug.afterRemuxClick = await page.locator("video").evaluate((video: HTMLVideoElement) => ({
+      sourceId: video.dataset.playbackSourceId || null,
+      provider: video.dataset.playbackSourceProvider || null,
+      currentTime: video.currentTime,
+      readyState: video.readyState,
+      paused: video.paused,
+    }));
+    stage = "remux_first_frame";
     await page.waitForFunction(
       (sourceId) => {
         const video = document.querySelector("video");
@@ -113,6 +136,7 @@ try {
   // the user actually sees.
   const remuxTimelineMax = Number(await slider.getAttribute("aria-valuemax"));
   const targetSeconds = remuxTimelineMax * 0.5;
+  debug.remuxTimelineMax = remuxTimelineMax;
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
@@ -134,6 +158,7 @@ try {
     }
   };
   page.on("response", countTargetResponse);
+  stage = "offset_prewarm_and_attach";
   await page.keyboard.press("5");
 
   let rejectOffsetTimeout!: (error: Error) => void;
@@ -151,6 +176,7 @@ try {
   clearTimeout(offsetTimeoutHandle);
   page.off("response", countTargetResponse);
 
+  stage = "offset_first_frame";
   await page.waitForFunction(
     ({ target }) => {
       const video = document.querySelector("video");
@@ -168,6 +194,7 @@ try {
   );
 
   const beforeAdvance = Number(await slider.getAttribute("aria-valuenow"));
+  stage = "offset_advancing";
   await page.waitForFunction(
     ({ before }) => {
       const seek = document.querySelector('[role="slider"][aria-label="Seek"]');
@@ -205,6 +232,8 @@ try {
     offsetRequests,
     landed,
     errors,
+    stage,
+    debug,
   };
   writeFileSync(join(outDir, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
@@ -215,6 +244,8 @@ try {
     error: error instanceof Error ? error.message : String(error),
     offsetRequests,
     errors,
+    stage,
+    debug,
   };
   await page.screenshot({ path: join(outDir, "failure.png") }).catch(() => undefined);
   writeFileSync(join(outDir, "report.json"), JSON.stringify(report, null, 2));
