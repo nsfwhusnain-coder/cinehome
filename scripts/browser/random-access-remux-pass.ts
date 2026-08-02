@@ -215,7 +215,13 @@ try {
   };
   page.on("response", countTargetResponse);
   stage = "offset_prewarm_and_attach";
-  await page.keyboard.press("5");
+  const sliderBounds = await slider.boundingBox();
+  if (!sliderBounds) throw new Error("Seek slider has no clickable bounds");
+  const targetRatio = targetSeconds / remuxTimelineMax;
+  await page.mouse.click(
+    sliderBounds.x + sliderBounds.width * targetRatio,
+    sliderBounds.y + sliderBounds.height / 2
+  );
 
   let rejectOffsetTimeout!: (error: Error) => void;
   const offsetTimeoutPromise = new Promise<never>((_, reject) => {
