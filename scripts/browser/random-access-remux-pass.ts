@@ -156,7 +156,15 @@ try {
   // remux slider after the source switch so the probe targets the same clock
   // the user actually sees.
   const remuxTimelineMax = Number(await slider.getAttribute("aria-valuemax"));
-  const targetSeconds = remuxTimelineMax * 0.5;
+  const midpoint = remuxTimelineMax * 0.5;
+  const initialLogicalTime = Number(initial.logicalTime || 0);
+  // Repeated QA runs save progress. Do not accidentally "seek" to the exact
+  // position already playing: choose a genuinely distant point so this proves
+  // random access rather than merely reattaching the current suffix.
+  const targetSeconds =
+    Math.abs(midpoint - initialLogicalTime) < Math.max(30, remuxTimelineMax * 0.02)
+      ? remuxTimelineMax * 0.35
+      : midpoint;
   debug.remuxTimelineMax = remuxTimelineMax;
   await page.locator("video").evaluate((video: HTMLVideoElement) => {
     const scope = window as typeof window & { __remuxSeekEvents?: string[] };
