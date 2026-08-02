@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import { Check, Loader2 } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { EpisodeStill } from "@/components/episode-still";
 
 export interface SeasonOption {
@@ -52,6 +52,7 @@ export function EpisodesPanel({
    */
   const [panelSeason, setPanelSeason] = useState(season);
   const [syncKey, setSyncKey] = useState<string | null>(null);
+  const seasonRailRef = useRef<HTMLDivElement>(null);
   const openKey = open ? String(season) : null;
   if (openKey !== syncKey) {
     setSyncKey(openKey);
@@ -92,6 +93,30 @@ export function EpisodesPanel({
     staleTime: 60 * 60 * 1000,
   });
 
+  const panelSeasonIndex = validSeasons.findIndex(
+    (candidate) => candidate.season_number === panelSeason
+  );
+
+  const selectAdjacentSeason = (direction: -1 | 1) => {
+    if (panelSeasonIndex < 0) return;
+    const next = validSeasons[panelSeasonIndex + direction];
+    if (next) setPanelSeason(next.season_number);
+  };
+
+  // Keep the selected season on screen after opening the panel, clicking a
+  // chevron, or navigating with a TV remote. `nearest` avoids needless motion
+  // when the chip is already visible while `inline:center` makes a long season
+  // roster understandable at a glance.
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      seasonRailRef.current
+        ?.querySelector<HTMLElement>(`[data-season-number="${panelSeason}"]`)
+        ?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, panelSeason]);
+
   if (!open) return null;
 
   const episodes = data?.episodes ?? [];
@@ -115,25 +140,64 @@ export function EpisodesPanel({
       >
         <div className="border-b border-white/10 px-3 py-2.5">
           <div className="text-sm font-semibold text-white">Episodes</div>
-          <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
-            {validSeasons.map((s) => {
-              const active = s.season_number === panelSeason;
-              return (
-                <button
-                  key={s.season_number}
-                  type="button"
-                  onClick={() => setPanelSeason(s.season_number)}
-                  className={cn(
-                    "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-                    active
-                      ? "bg-white text-black"
-                      : "bg-white/10 text-white/80 hover:bg-white/15"
-                  )}
-                >
-                  {s.name || `Season ${s.season_number}`}
-                </button>
-              );
-            })}
+          <div className="mt-2 flex min-w-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => selectAdjacentSeason(-1)}
+              disabled={panelSeasonIndex <= 0}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-25"
+              aria-label="Previous season"
+            >
+              <ChevronLeft className="h-4 w-4" aria-hidden />
+            </button>
+            <div
+              ref={seasonRailRef}
+              className="scrollbar-thin flex min-w-0 flex-1 touch-pan-x gap-1.5 overflow-x-auto overscroll-x-contain pb-1"
+              onWheel={(event) => {
+                const rail = event.currentTarget;
+                if (
+                  rail.scrollWidth <= rail.clientWidth ||
+                  Math.abs(event.deltaX) >= Math.abs(event.deltaY)
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                rail.scrollBy({ left: event.deltaY, behavior: "smooth" });
+              }}
+              aria-label="Seasons"
+            >
+              {validSeasons.map((s) => {
+                const active = s.season_number === panelSeason;
+                return (
+                  <button
+                    key={s.season_number}
+                    type="button"
+                    data-season-number={s.season_number}
+                    aria-current={active ? "true" : undefined}
+                    onClick={() => setPanelSeason(s.season_number)}
+                    className={cn(
+                      "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                      active
+                        ? "bg-white text-black"
+                        : "bg-white/10 text-white/80 hover:bg-white/15"
+                    )}
+                  >
+                    {s.name || `Season ${s.season_number}`}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => selectAdjacentSeason(1)}
+              disabled={
+                panelSeasonIndex < 0 || panelSeasonIndex >= validSeasons.length - 1
+              }
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-25"
+              aria-label="Next season"
+            >
+              <ChevronRight className="h-4 w-4" aria-hidden />
+            </button>
           </div>
         </div>
 

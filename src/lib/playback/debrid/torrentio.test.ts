@@ -444,3 +444,28 @@ describe("parseReleaseTitle — space-separated codec tokens", () => {
     expect(parseReleaseTitle("Movie.1265.2024.1080p.WEB-DL-GRP").codec).toBe("unknown");
   });
 });
+
+describe("parseReleaseTitle - audio evidence", () => {
+  it("recognises browser-unsafe lossless and cinema audio", () => {
+    expect(
+      parseReleaseTitle("Movie.2024.2160p.REMUX.TrueHD.7.1.Atmos.mkv")
+        .audioCodec
+    ).toBe("truehd");
+    expect(
+      parseReleaseTitle("Movie.2024.1080p.BluRay.DTS-HD.MA.5.1.mkv")
+        .audioCodec
+    ).toBe("dts");
+    expect(
+      parseReleaseTitle("Movie.2024.1080p.WEB-DL.DDP5.1.H264.mp4")
+        .audioCodec
+    ).toBe("eac3");
+  });
+
+  it("recognises direct-safe audio and multi-language releases", () => {
+    const release = parseReleaseTitle(
+      "Movie.2024.1080p.WEB-DL.DUAL-AUDIO.AAC.H264.mp4"
+    );
+    expect(release.audioCodec).toBe("aac");
+    expect(release.multiAudio).toBe(true);
+  });
+});

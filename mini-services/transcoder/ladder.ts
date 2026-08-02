@@ -146,7 +146,13 @@ export function buildRemuxArgs(input: {
      */
     "-readrate_initial_burst", String(REMUX_INITIAL_BURST_S),
     "-readrate", String(REMUX_READ_RATE),
-    ...(startAtSeconds > 0 ? ["-ss", String(startAtSeconds)] : []),
+    // Input seeking plus copied video and transcoded audio is otherwise
+    // asymmetric: accurate seek discards pre-target audio while stream-copy
+    // video begins at the preceding keyframe, producing several seconds of
+    // silent picture. Preserve both streams from the same keyframe boundary.
+    ...(startAtSeconds > 0
+      ? ["-noaccurate_seek", "-ss", String(startAtSeconds)]
+      : []),
     "-i", input.inputUrl,
     // The whole point: copy, never encode — the VIDEO, which is where all the
     // cost and all the resolution is.
@@ -178,7 +184,9 @@ export function buildRemuxArgs(input: {
     // One chosen audio + first video only. Multi-track MKVs are common and a stray
     // subtitle/attachment stream will otherwise fail the mux into fMP4.
     "-map", "0:v:0",
-    "-map", `0:a:${audioStreamIndex}?`,
+    // Required, never optional. Publishing silent video is worse than failing
+    // this release and letting the player choose another source.
+    "-map", `0:a:${audioStreamIndex}`,
     // Input seeking can expose negative stream timestamps around the preceding
     // keyframe. Rebase the suffix playlist to a clean local zero timeline.
     "-avoid_negative_ts", "make_zero",

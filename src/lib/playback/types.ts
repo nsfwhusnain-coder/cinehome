@@ -46,6 +46,24 @@ export interface PlaybackSource {
   /** Detected from upstream URL before proxy rewrite (proxy URL hides codec path). */
   codec?: "h264" | "hevc" | "av1" | "unknown";
   /**
+   * Best available audio evidence for this exact release. Debrid sources get
+   * this from the selected-file/release name and the remux worker confirms the
+   * actual stream before publishing output. It is intentionally optional fo
+   * opaque embed sources.
+   */
+  audioCodec?:
+    | "aac"
+    | "ac3"
+    | "eac3"
+    | "dts"
+    | "truehd"
+    | "flac"
+    | "opus"
+    | "mp3"
+    | "unknown";
+  /** Release evidence says more than one language/audio track is present. */
+  multiAudio?: boolean;
+  /**
    * Actual container format, when known. Debrid sources always drop MKV/WebM
    * before ever becoming a PlaybackSource (see
    * src/lib/playback/debrid/torrentio.ts `isBrowserPlayableContainer` +
@@ -224,6 +242,11 @@ export interface PlayerFeedback {
   occurredAt: number;
   timeToFirstFrameMs?: number;
   decodedHeight?: number;
+  selectedHeight?: number;
+  audioCodec?: string;
+  audioLanguage?: string;
+  engine?: "hlsjs" | "native_hls" | "native_file" | "dash";
+  errorDetail?: string;
   reason?: string;
 }
 

@@ -419,11 +419,47 @@ function codecDecodableHere(source: PlaybackSource): boolean {
   return source.compat !== "safari" || browserSupportsHevc();
 }
 
+/**
+ * Audio is an independent delivery constraint. A browser accepting the video
+ * codec says nothing about E-AC-3/DTS/TrueHD, and progressive multi-audio MP4
+ * selection is not exposed consistently enough to enforce the user's language
+ * choice. In either case the existing remux worker can copy video untouched
+ * while producing one selected AAC track.
+ */
+function audioCodecDecodableHere(source: PlaybackSource): boolean {
+  const codec = source.audioCodec;
+  if (!codec || codec === "unknown" || codec === "aac" || codec === "mp3") {
+    return true;
+  }
+  if (codec === "dts" || codec === "truehd" || codec === "flac") return false;
+  if (typeof document === "undefined") return false;
+  try {
+    const media = document.createElement("audio");
+    const mime =
+      codec === "eac3"
+        ? 'audio/mp4; codecs="ec-3"'
+        : codec === "ac3"
+          ? 'audio/mp4; codecs="ac-3"'
+          : 'audio/mp4; codecs="opus"';
+    const support = media.canPlayType(mime);
+    return support === "probably" || support === "maybe";
+  } catch {
+    return false;
+  }
+}
+
+function audioNeedsRemux(source: PlaybackSource): boolean {
+  // The exact selected language is guaranteed only after the remux worker has
+  // inspected the real file and mapped one track. Avoid browser-default dubbing.
+  if (source.origin === "debrid" && source.multiAudio) return true;
+  return !audioCodecDecodableHere(source);
+}
+
 export function sourceDelivery(source: PlaybackSource): SourceDelivery {
   const containerOk =
     !source.container || isBrowserPlayableContainer(source.container);
   if (!codecDecodableHere(source)) return "unavailable";
-  return containerOk ? "direct" : "remux";
+  return containerOk && !audioNeedsRemux(source) ? "direct" : "remux";
 }
 
 /**
@@ -438,6 +474,23 @@ export function sourceDelivery(source: PlaybackSource): SourceDelivery {
  */
 export function isSourcePlayableHere(source: PlaybackSource): boolean {
   return sourceDelivery(source) !== "unavailable";
+}
+
+/**
+ * Human-readable reason for inventory that exists but cannot be decoded on
+ * this device. Keeping the release visible is important: otherwise the same
+ * server response appears to contain 4K in Safari/webOS and no 4K in Chrome,
+ * when the real difference is only the browser's codec support.
+ */
+export function sourceUnavailableReason(source: PlaybackSource): string | null {
+  if (isSourcePlayableHere(source)) return null;
+  if (source.codec === "hevc" || isHevcSource(source)) {
+    return "HEVC is not supported by this browser";
+  }
+  if (source.codec === "av1") {
+    return "AV1 is not supported by this browser";
+  }
+  return "This video codec is not supported by this browser";
 }
 
 /**

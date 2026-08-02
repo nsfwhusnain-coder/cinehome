@@ -53,6 +53,11 @@ import {
 } from "@/lib/playback/source-attempt";
 import { preresolvePlayback } from "@/lib/playback-preresolve";
 import {
+  isTvLikeDevice,
+  moveSpatialFocus,
+  type SpatialDirection,
+} from "@/lib/tv-navigation";
+import {
   annotateLevelHeights,
   effectiveLevelHeight,
   findBestLevelForTarget,
@@ -92,6 +97,7 @@ import { SkipIntroButton } from "@/components/player/SkipIntroButton";
 import type { DockSection } from "@/components/player-dock";
 import {
   buildPlayerQualityOptions,
+  normalizePlayerQualityHeight,
   qualityLabel as playerQualityLabel,
   type PlayerQualityTarget,
 } from "@/lib/playback/quality-router";
@@ -116,6 +122,10 @@ type FullscreenContainer = HTMLDivElement & {
   webkitRequestFullscreen?: () => Promise<void> | void;
 };
 
+type WebkitFullscreenVideo = HTMLVideoElement & {
+  webkitEnterFullscreen?: () => void;
+};
+
 function fullscreenElement(): Element | null {
   const doc = document as FullscreenDocument;
   return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
@@ -130,6 +140,21 @@ function isInteractivePlayerTarget(target: EventTarget | null): boolean {
       )
     )
   );
+}
+
+function preferNativeHls(video: HTMLVideoElement): boolean {
+  return (
+    isTvLikeDevice() &&
+    Boolean(video.canPlayType("application/vnd.apple.mpegurl"))
+  );
+}
+
+function hlsWorkerSupportedHere(): boolean {
+  if (typeof navigator === "undefined") return true;
+  // A few Chromium forks have a known worker/MSE deadlock on multi-audio
+  // masters. Standard Chrome/Edge and non-native desktop browsers benefit
+  // substantially from parsing 4K manifests off the main UI thread.
+  return !/(?:OPR\/|Opera GX|Opera Air)/i.test(navigator.userAgent);
 }
 
 /**
@@ -479,11 +504,12 @@ function isSessionExpiredError(data: { response?: { code?: number }; details?: s
 function attemptAutoplay(
   video: HTMLVideoElement,
   onBlocked: () => void,
-  onMutedFallback?: () => void
+  onMutedFallback?: () => void,
+  allowMutedFallback = true
 ) {
   video.play().catch((err: unknown) => {
     const isNotAllowed = err instanceof DOMException && err.name === "NotAllowedError";
-    if (isNotAllowed && !video.muted && onMutedFallback) {
+    if (isNotAllowed && allowMutedFallback && !video.muted && onMutedFallback) {
       video.muted = true;
       video.play().then(onMutedFallback, () => onBlocked());
       return;
@@ -1092,16 +1118,25 @@ export function VideoPlayer({
   tvEpisode,
   onSelectEpisode,
 }: Props) {
+  const userSelectedAudioRef = useRef(false);
+  const manualAudioTrackRef = useRef<{
+    sourceId: string;
+    trackId: number;
+    lang: string | null;
+  } | null>(null);
   const audioSelectionRef = useRef<AudioTrackSelection>({
     preference: profileAudioPreference ?? getAudioPreference(),
     originalLanguage,
     preferredLanguage: profileAudioLanguage ?? getPreferredAudioLanguage(),
   });
-  audioSelectionRef.current = {
-    preference: profileAudioPreference ?? getAudioPreference(),
-    originalLanguage,
-    preferredLanguage: profileAudioLanguage ?? getPreferredAudioLanguage(),
-  };
+  useEffect(() => {
+    if (userSelectedAudioRef.current) return;
+    audioSelectionRef.current = {
+      preference: profileAudioPreference ?? getAudioPreference(),
+      originalLanguage,
+      preferredLanguage: profileAudioLanguage ?? getPreferredAudioLanguage(),
+    };
+  }, [profileAudioPreference, profileAudioLanguage, originalLanguage]);
   const subtitlePreferenceRef = useRef<SubtitlePreference>(
     profileSubtitlePreference ?? getSubtitlePreference()
   );
@@ -1340,6 +1375,11 @@ export function VideoPlayer({
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const dashRef = useRef<MediaPlayerClass | null>(null);
+  const playbackEngineRef = useRef<"hlsjs" | "native_hls" | "native_file" | "dash">(
+    "native_file"
+  );
+  const audiblePlaybackEstablishedRef = useRef(false);
+  const renditionFailureCountsRef = useRef<Map<string, number>>(new Map());
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastProgressSave = useRef(0);
   const firstProgressSavedRef = useRef(false);
@@ -1610,6 +1650,13 @@ export function VideoPlayer({
           video && video.videoHeight > 0
             ? decodedQualityHeight(video.videoWidth, video.videoHeight)
             : undefined,
+        selectedHeight: usePlayerStore.getState().playingHeight || undefined,
+        audioCodec: source.audioCodec,
+        audioLanguage:
+          usePlayerStore.getState().audioTracks.find(
+            (track) => track.id === usePlayerStore.getState().activeAudioId
+          )?.lang,
+        engine: playbackEngineRef.current,
       });
     }
     setEverPlayed(true);
@@ -1669,8 +1716,16 @@ export function VideoPlayer({
     everPlayedRef.current = false;
     firstProgressSavedRef.current = false;
     userPausedRef.current = false;
+    audiblePlaybackEstablishedRef.current = false;
     initialTimeAppliedRef.current = false;
     userSelectedSubtitleRef.current = false;
+    userSelectedAudioRef.current = false;
+    manualAudioTrackRef.current = null;
+    audioSelectionRef.current = {
+      preference: profileAudioPreference ?? getAudioPreference(),
+      originalLanguage,
+      preferredLanguage: profileAudioLanguage ?? getPreferredAudioLanguage(),
+    };
     const defaultEnglishSubtitles =
       PLAYBACK_TRACK_POLICY_ENABLED &&
       subtitlePreferenceRef.current === "english";
@@ -1991,7 +2046,13 @@ export function VideoPlayer({
       setSubtitleTracks(subs);
 
       if (audio.length > 0) {
-        const audioId = pickPreferredAudioId(hls, audioSelectionRef.current);
+        const manual = manualAudioTrackRef.current;
+        const audioId =
+          manual !== null &&
+          manual.sourceId === activeSourceRef.current?.id &&
+          hlsHasTrackId(hls.audioTracks, manual.trackId)
+            ? manual.trackId
+            : pickPreferredAudioId(hls, audioSelectionRef.current);
         hls.audioTrack = audioId;
         setActiveAudioId(audioId);
       }
@@ -2026,8 +2087,13 @@ export function VideoPlayer({
       setAudioTracks(audio);
       setSubtitleTracks(subs);
       if (audio.length > 0) {
+        const manual = manualAudioTrackRef.current;
         const match =
-          selectAudioTrack(audio, audioSelectionRef.current) ?? audio[0];
+          (manual !== null && manual.sourceId === activeSourceRef.current?.id
+            ? audio.find((track) => track.id === manual.trackId)
+            : null) ??
+          selectAudioTrack(audio, audioSelectionRef.current) ??
+          audio[0];
         setActiveAudioId(match.id);
         const media = video as HTMLVideoElement & {
           audioTracks?: { length: number; [i: number]: { enabled?: boolean } };
@@ -2675,6 +2741,7 @@ export function VideoPlayer({
     const sourceAttempt = sourceAttemptControllerRef.current.begin(
       activeSourceRef.current?.id ?? effectiveSrc
     );
+    renditionFailureCountsRef.current.clear();
     // A new attempt starts unfaulted — otherwise a failover onto a working
     // source would keep showing the blocking error left by the one before it.
     setMediaFaulted(false);
@@ -2767,6 +2834,7 @@ export function VideoPlayer({
     };
 
     if (useDash) {
+      playbackEngineRef.current = "dash";
       // Dynamically imported (not a static top-level import) — dashjs touches `window`
       // at module-load time, which crashes Next's SSR pass for this "use client"
       // component if imported statically. Loading it only here, client-side, inside
@@ -2911,7 +2979,12 @@ export function VideoPlayer({
             if (savedSpeed !== 1) video.playbackRate = savedSpeed;
             applyResumeSeekAndRearm(video);
             if (!userPausedRef.current) {
-              attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+              attemptAutoplay(
+                video,
+                onAutoplayBlocked,
+                onMutedAutoplayFallback,
+                !audiblePlaybackEstablishedRef.current
+              );
             }
           });
           // dash.js's ERROR event only fires for genuine hard failures (manifest/
@@ -2928,7 +3001,8 @@ export function VideoPlayer({
           failActiveSource("dash_initialize_error", sourceAttempt);
         });
     } else if (useHls) {
-      if (Hls.isSupported()) {
+      if (Hls.isSupported() && !preferNativeHls(video)) {
+        playbackEngineRef.current = "hlsjs";
         const startPos =
           resumeAtRef.current > 1
             ? remuxTimelineActiveRef.current
@@ -2936,8 +3010,7 @@ export function VideoPlayer({
               : resumeAtRef.current
             : -1;
         const hls = new Hls({
-          // Workers break on some Chromium forks (Opera Air / GX) and stall on multi-audio masters.
-          enableWorker: false,
+          enableWorker: hlsWorkerSupportedHere(),
           // VOD only (no live edge to chase) — verified false; low-latency mode
           // shrinks buffers/targets latency over throughput, the opposite of
           // what a double-hop residential proxy needs.
@@ -3094,20 +3167,10 @@ export function VideoPlayer({
           networkRecoveriesRef.current = 0;
           const levelList = levelsFromHls(hls);
           setLevels(levelList);
-          // Apply profile audio/subtitle policy as soon as media groups exist.
+          // Apply profile/manual audio and subtitle policy as soon as media
+          // groups exist. syncHlsTracks pins a concrete audio id immediately,
+          // avoiding a DEFAULT-language race on multi-audio masters.
           syncHlsTracks(hls);
-          // Luna-style multi-audio masters: pin a concrete track immediately so
-          // first-frame is not blocked waiting for DEFAULT=Italian selection races.
-          try {
-            if (hls.audioTracks && hls.audioTracks.length > 0) {
-              hls.audioTrack = pickPreferredAudioId(
-                hls,
-                audioSelectionRef.current
-              );
-            }
-          } catch {
-            /* ignore track pin failures */
-          }
           const qualityIdx = applyPreferredHlsQuality(
             hls,
             levelList,
@@ -3130,7 +3193,12 @@ export function VideoPlayer({
           if (savedSpeed !== 1) video.playbackRate = savedSpeed;
           applyResumeSeekAndRearm(video);
           if (!userPausedRef.current) {
-            attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+            attemptAutoplay(
+              video,
+              onAutoplayBlocked,
+              onMutedAutoplayFallback,
+              !audiblePlaybackEstablishedRef.current
+            );
           }
         });
 
@@ -3203,7 +3271,13 @@ export function VideoPlayer({
           setAudioTracks(audio);
           if (audio.length === 0) return;
           // Re-apply preference when the track set changes (source / late media groups).
-          const audioId = pickPreferredAudioId(hls, audioSelectionRef.current);
+          const manual = manualAudioTrackRef.current;
+          const audioId =
+            manual !== null &&
+            manual.sourceId === activeSourceRef.current?.id &&
+            hlsHasTrackId(hls.audioTracks, manual.trackId)
+              ? manual.trackId
+              : pickPreferredAudioId(hls, audioSelectionRef.current);
           if (hls.audioTrack !== audioId) {
             hls.audioTrack = audioId;
           }
@@ -3215,7 +3289,13 @@ export function VideoPlayer({
           const audio = mapAudioTracks(hls);
           if (audio.length === 0) return;
           setAudioTracks(audio);
-          const audioId = pickPreferredAudioId(hls, audioSelectionRef.current);
+          const manual = manualAudioTrackRef.current;
+          const audioId =
+            manual !== null &&
+            manual.sourceId === activeSourceRef.current?.id &&
+            hlsHasTrackId(hls.audioTracks, manual.trackId)
+              ? manual.trackId
+              : pickPreferredAudioId(hls, audioSelectionRef.current);
           if (hls.audioTrack !== audioId) hls.audioTrack = audioId;
           setActiveAudioId(typeof hls.audioTrack === "number" ? hls.audioTrack : audioId);
         };
@@ -3307,6 +3387,17 @@ export function VideoPlayer({
           const httpCode =
             typeof data.response?.code === "number" ? data.response.code : 0;
           const isHardHttp = HLS_HARD_HTTP_CODES.has(httpCode);
+          const levelList = levelsFromHls(hls);
+          const levelIndex =
+            typeof data.frag?.level === "number" && data.frag.level >= 0
+              ? data.frag.level
+              : hls.currentLevel >= 0
+                ? hls.currentLevel
+                : hls.loadLevel;
+          const level = levelList.find((candidate) => candidate.index === levelIndex);
+          const selectedHeight = level ? effectiveLevelHeight(level) : undefined;
+          const source = activeSourceRef.current;
+          const detail = String(data.details ?? data.type ?? "hls_error");
 
           // Non-fatal hard HTTP (403/502 segment denials) — storm → failover once.
           if (!data.fatal && isHardHttp) {
@@ -3324,11 +3415,77 @@ export function VideoPlayer({
               data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||
               data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT
             ) {
+              if (source) {
+                emitPlayerFeedback({
+                  event: "stall",
+                  sourceId: source.id,
+                  provider: source.provider,
+                  selectedHeight,
+                  audioCodec: source.audioCodec,
+                  audioLanguage:
+                    usePlayerStore.getState().audioTracks.find(
+                      (track) => track.id === usePlayerStore.getState().activeAudioId
+                    )?.lang,
+                  engine: playbackEngineRef.current,
+                  errorDetail: detail,
+                });
+              }
+
+              // A few providers expose a damaged 480p rendition while their
+              // 720p/1080p segments are healthy. Two independent failures on
+              // that low rung are enough evidence to move up one rung instead
+              // of repeatedly retrying the same broken files.
+              if (selectedHeight && selectedHeight <= 540) {
+                const key = `${source?.id ?? "unknown"}:${levelIndex}:${selectedHeight}`;
+                const failures =
+                  (renditionFailureCountsRef.current.get(key) ?? 0) + 1;
+                renditionFailureCountsRef.current.set(key, failures);
+                if (failures >= 2) {
+                  const next = levelList
+                    .filter(
+                      (candidate) => effectiveLevelHeight(candidate) > selectedHeight
+                    )
+                    .sort(
+                      (a, b) =>
+                        effectiveLevelHeight(a) - effectiveLevelHeight(b)
+                    )[0];
+                  const target = next
+                    ? normalizePlayerQualityHeight(effectiveLevelHeight(next))
+                    : null;
+                  if (next && target) {
+                    hls.nextLevel = next.index;
+                    hls.loadLevel = next.index;
+                    qualityTargetRef.current = target;
+                    setQualityTarget(target);
+                    setQuality(next.index);
+                    renditionFailureCountsRef.current.delete(key);
+                    showStatusNotice(
+                      `${selectedHeight}p stream unstable — using ${target}p`,
+                      4_000
+                    );
+                  }
+                }
+              }
               recoverHlsStall(hls);
             }
             return;
           }
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            if (source) {
+              emitPlayerFeedback({
+                event: "decode_error",
+                sourceId: source.id,
+                provider: source.provider,
+                selectedHeight,
+                audioCodec: source.audioCodec,
+                audioLanguage:
+                  usePlayerStore.getState().audioTracks.find(
+                    (track) => track.id === usePlayerStore.getState().activeAudioId
+                  )?.lang,
+                engine: playbackEngineRef.current,
+                errorDetail: detail,
+              });
+            }
             try {
               hls.recoverMediaError();
               return;
@@ -3367,6 +3524,7 @@ export function VideoPlayer({
           failActiveSource("hls_fatal_error", sourceAttempt);
         });
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        playbackEngineRef.current = "native_hls";
         // Native HLS (Safari/AVFoundation) — documented limitation (task 3):
         // there is no JS-level API to select or floor a specific rendition
         // here. `video.videoTracks`/`audioTracks` on Safari's native HLS
@@ -3432,7 +3590,12 @@ export function VideoPlayer({
           }
         };
         if (!userPausedRef.current) {
-          attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+          attemptAutoplay(
+            video,
+            onAutoplayBlocked,
+            onMutedAutoplayFallback,
+            !audiblePlaybackEstablishedRef.current
+          );
         }
       } else {
         setLevelsPending(false);
@@ -3440,6 +3603,7 @@ export function VideoPlayer({
         setError("Your browser can't play HLS streams.");
       }
     } else {
+      playbackEngineRef.current = "native_file";
       if (isHomeHlsProxy) {
         video.crossOrigin = "use-credentials";
       } else if (isWorkerProxy) {
@@ -3482,7 +3646,12 @@ export function VideoPlayer({
       };
       video.addEventListener("loadedmetadata", onMp4Loaded);
       if (!userPausedRef.current) {
-        attemptAutoplay(video, onAutoplayBlocked, onMutedAutoplayFallback);
+        attemptAutoplay(
+          video,
+          onAutoplayBlocked,
+          onMutedAutoplayFallback,
+          !audiblePlaybackEstablishedRef.current
+        );
       }
     }
 
@@ -3827,6 +3996,13 @@ export function VideoPlayer({
             event: "stall",
             sourceId: source.id,
             provider: source.provider,
+            selectedHeight: usePlayerStore.getState().playingHeight || undefined,
+            audioCodec: source.audioCodec,
+            audioLanguage:
+              usePlayerStore.getState().audioTracks.find(
+                (track) => track.id === usePlayerStore.getState().activeAudioId
+              )?.lang,
+            engine: playbackEngineRef.current,
           });
         }
       }
@@ -3854,6 +4030,9 @@ export function VideoPlayer({
         stallTimerRef.current = null;
       }
       networkRecoveriesRef.current = 0;
+      if (!video.muted && video.volume > 0) {
+        audiblePlaybackEstablishedRef.current = true;
+      }
       const attempt = sourceAttemptControllerRef.current.currentToken();
       if (attempt) sourceAttemptControllerRef.current.noteProgress(attempt);
       const decodedTier = decodedQualityHeight(
@@ -4102,6 +4281,26 @@ export function VideoPlayer({
     };
   }, [resetControlsTimer, setIsFullscreen]);
 
+  // Fullscreen event routing differs across Chromium, Safari/WebKit and TV
+  // engines: several of them retarget pointer activity to `document` instead
+  // of the React container. Listen in the capture phase while fullscreen so
+  // any real mouse/air-mouse activity wakes the chrome, even over the video or
+  // at a viewport edge. `mousemove` is retained for older webOS browsers that
+  // do not implement Pointer Events completely.
+  useEffect(() => {
+    const wakeControls = () => {
+      if (fullscreenElement()) resetControlsTimer();
+    };
+    document.addEventListener("pointermove", wakeControls, true);
+    document.addEventListener("mousemove", wakeControls, true);
+    document.addEventListener("pointerdown", wakeControls, true);
+    return () => {
+      document.removeEventListener("pointermove", wakeControls, true);
+      document.removeEventListener("mousemove", wakeControls, true);
+      document.removeEventListener("pointerdown", wakeControls, true);
+    };
+  }, [resetControlsTimer]);
+
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -4297,9 +4496,18 @@ export function VideoPlayer({
   const toggleFullscreen = useCallback(() => {
     const container = containerRef.current as FullscreenContainer | null;
     const doc = document as FullscreenDocument;
-    const operation = !fullscreenElement()
+    const video = videoRef.current as WebkitFullscreenVideo | null;
+    const entering = !fullscreenElement();
+    const operation = entering
       ? container?.requestFullscreen?.() ?? container?.webkitRequestFullscreen?.()
       : document.exitFullscreen?.() ?? doc.webkitExitFullscreen?.();
+    if (entering && !operation && video?.webkitEnterFullscreen) {
+      try {
+        video.webkitEnterFullscreen();
+      } catch {
+        /* unsupported outside a user gesture */
+      }
+    }
     if (operation && typeof operation.then === "function") {
       void operation.catch(() => undefined);
     }
@@ -4577,6 +4785,17 @@ export function VideoPlayer({
       const video = videoRef.current;
       setActiveAudioId(trackId);
       const track = usePlayerStore.getState().audioTracks.find((t) => t.id === trackId);
+      userSelectedAudioRef.current = true;
+      manualAudioTrackRef.current = {
+        sourceId: activeSourceRef.current?.id ?? "",
+        trackId,
+        lang: track?.lang ?? null,
+      };
+      audioSelectionRef.current = {
+        ...audioSelectionRef.current,
+        preference: "preferred",
+        preferredLanguage: track?.lang ?? audioSelectionRef.current.preferredLanguage,
+      };
       if (track?.lang) setPreferredAudioLanguage(track.lang);
       if (hls && hlsHasTrackId(hls.audioTracks, trackId)) {
         hls.audioTrack = trackId;
@@ -4633,7 +4852,22 @@ export function VideoPlayer({
       const tag = target?.tagName;
       const isEditable =
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable;
-      if (isEditable) return;
+      const tvMode = isTvLikeDevice();
+      const isBack = e.keyCode === 461 || e.key === "GoBack";
+
+      if (isBack) {
+        e.preventDefault();
+        if (shortcutsOpenRef.current) {
+          setShortcutsOpen(false);
+        } else if (dockOpenRef.current) {
+          closeDock();
+        } else {
+          if (onBack) onBack();
+          else window.history.back();
+        }
+        resetControlsTimer();
+        return;
+      }
       if (shortcutsOpenRef.current) {
         if (e.key === "Escape" || e.key === "?" || (e.key === "/" && e.shiftKey)) {
           e.preventDefault();
@@ -4645,6 +4879,67 @@ export function VideoPlayer({
       if (dockOpenRef.current) return;
       if (!hasStream) return;
 
+      // webOS/Tizen and many Android-TV browsers report media remotes as legacy
+      // key codes even when KeyboardEvent.key is empty.
+      if (e.keyCode === 415 || e.key === "MediaPlayPause" || e.key === "MediaPlay") {
+        e.preventDefault();
+        togglePlay();
+        resetControlsTimer();
+        return;
+      }
+      if (e.keyCode === 19 || e.key === "MediaPause") {
+        e.preventDefault();
+        const video = videoRef.current;
+        if (video && !video.paused) togglePlay();
+        resetControlsTimer();
+        return;
+      }
+      if (e.keyCode === 412 || e.key === "MediaRewind") {
+        e.preventDefault();
+        seekRelative(-10);
+        resetControlsTimer();
+        return;
+      }
+      if (e.keyCode === 417 || e.key === "MediaFastForward") {
+        e.preventDefault();
+        seekRelative(10);
+        resetControlsTimer();
+        return;
+      }
+
+      if (tvMode && /^Arrow(?:Left|Right|Up|Down)$/.test(e.key)) {
+        // Sliders own their left/right adjustment. Everything else uses spatial
+        // focus, so the D-pad never unexpectedly seeks or changes volume.
+        if (isEditable || target?.getAttribute("role") === "slider") return;
+        e.preventDefault();
+        setShowControls(true);
+        const root = containerRef.current;
+        const current =
+          target && root?.contains(target) && isInteractivePlayerTarget(target)
+            ? target
+            : null;
+        if (root && current) {
+          moveSpatialFocus(root, current, e.key as SpatialDirection);
+        } else {
+          requestAnimationFrame(() => {
+            const first = root?.querySelector<HTMLElement>(
+              "button[aria-label='Pause'], button[aria-label='Play'], button:not([disabled])"
+            );
+            first?.focus();
+          });
+        }
+        resetControlsTimer();
+        return;
+      }
+
+      if (isEditable) return;
+      if (
+        (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") &&
+        isInteractivePlayerTarget(target)
+      ) {
+        return;
+      }
+
       switch (e.key) {
         case " ":
         case "k":
@@ -4653,10 +4948,12 @@ export function VideoPlayer({
           break;
         case "ArrowLeft":
         case "j":
+          e.preventDefault();
           seekRelative(-10);
           break;
         case "ArrowRight":
         case "l":
+          e.preventDefault();
           seekRelative(10);
           break;
         case "ArrowUp":
@@ -4709,6 +5006,9 @@ export function VideoPlayer({
     seekToPct,
     hasNextEpisode,
     onNextEpisode,
+    onBack,
+    closeDock,
+    setShowControls,
     resetControlsTimer,
   ]);
 
@@ -4848,6 +5148,10 @@ export function VideoPlayer({
       onMouseMove={resetControlsTimer}
       onMouseLeave={() => {
         if (dockOpenRef.current || shortcutsOpenRef.current) return;
+        // In fullscreen, reaching the viewport edge can emit mouseleave even
+        // though the pointer never left the player. The document-level motion
+        // listener above owns visibility until fullscreen is exited.
+        if (fullscreenElement()) return;
         if (isPlaying) {
           setShowControls(false);
           closeDock();

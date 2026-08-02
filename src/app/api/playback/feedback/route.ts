@@ -34,32 +34,37 @@ export async function POST(req: NextRequest) {
       ? Math.min(number, max)
       : undefined;
   };
+  const text = (value: unknown, max: number): string | undefined =>
+    typeof value === "string" && value.trim()
+      ? value.trim().slice(0, max)
+      : undefined;
+  const engine = new Set(["hlsjs", "native_hls", "native_file", "dash"]).has(
+    String(body.engine)
+  )
+    ? (body.engine as "hlsjs" | "native_hls" | "native_file" | "dash")
+    : undefined;
+  const feedback = {
+    event,
+    sourceId,
+    provider,
+    occurredAt: finite(body.occurredAt, Date.now() + 60_000) ?? Date.now(),
+    timeToFirstFrameMs: finite(body.timeToFirstFrameMs, 180_000),
+    decodedHeight: finite(body.decodedHeight, 4320),
+    selectedHeight: finite(body.selectedHeight, 4320),
+    audioCodec: text(body.audioCodec, 32),
+    audioLanguage: text(body.audioLanguage, 32),
+    engine,
+    errorDetail: text(body.errorDetail, 180),
+    reason: text(body.reason, 120),
+  };
   console.info(
     JSON.stringify({
-      event: "player_feedback",
-      feedbackEvent: event,
       userId,
-      sourceId,
-      provider,
-      occurredAt: finite(body.occurredAt, Date.now() + 60_000) ?? Date.now(),
-      timeToFirstFrameMs: finite(body.timeToFirstFrameMs, 180_000),
-      decodedHeight: finite(body.decodedHeight, 4320),
-      reason:
-        typeof body.reason === "string" ? body.reason.slice(0, 120) : undefined,
+      ...feedback,
+      event: "player_feedback",
+      feedbackEvent: feedback.event,
     })
   );
-  providerHealthRegistry.observe(
-    { provider },
-    {
-      event,
-      sourceId,
-      provider,
-      occurredAt: finite(body.occurredAt, Date.now() + 60_000) ?? Date.now(),
-      timeToFirstFrameMs: finite(body.timeToFirstFrameMs, 180_000),
-      decodedHeight: finite(body.decodedHeight, 4320),
-      reason:
-        typeof body.reason === "string" ? body.reason.slice(0, 120) : undefined,
-    }
-  );
+  providerHealthRegistry.observe({ provider }, feedback);
   return new NextResponse(null, { status: 204 });
 }

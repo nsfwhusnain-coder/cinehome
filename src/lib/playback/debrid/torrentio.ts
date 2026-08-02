@@ -46,11 +46,23 @@ const TORRENTIO_TIMEOUT_MS = 8_000;
 export type ReleaseCodec = "h264" | "hevc" | "av1" | "unknown";
 export type ReleaseContainer = "mp4" | "mkv" | "webm" | "mov" | "unknown";
 export type ReleaseCompat = "native" | "safari";
+export type ReleaseAudioCodec =
+  | "aac"
+  | "ac3"
+  | "eac3"
+  | "dts"
+  | "truehd"
+  | "flac"
+  | "opus"
+  | "mp3"
+  | "unknown";
 
 export interface ParsedRelease {
   /** 2160, 1080, some lower value, or null when no resolution token was found. */
   resolutionHeight: number | null;
   codec: ReleaseCodec;
+  audioCodec: ReleaseAudioCodec;
+  multiAudio: boolean;
   hdr: boolean;
   container: ReleaseContainer;
   /**
@@ -125,6 +137,15 @@ interface TorrentioResponseRaw {
 const HEVC_PATTERN = /x\s?265|hevc|h[.\s_-]?265/i;
 const AV1_PATTERN = /\bav0?1\b/i;
 const H264_PATTERN = /x\s?264|h[.\s_-]?264|avc1?/i;
+const TRUEHD_AUDIO_PATTERN = /\btrue[ ._-]?hd\b/i;
+const DTS_AUDIO_PATTERN = /\bdts(?:[ ._-]?(?:hd|x|ma))?\b/i;
+const EAC3_AUDIO_PATTERN = /\be[ ._-]?ac[ ._-]?3\b|\bddp(?:\d|\b)|dolby[ ._-]?digital[ ._-]?plus/i;
+const AC3_AUDIO_PATTERN = /\bac[ ._-]?3\b|\bdd(?:2|5|7)(?:[ ._-]?1)?\b|dolby[ ._-]?digital\b/i;
+const FLAC_AUDIO_PATTERN = /\bflac\b/i;
+const OPUS_AUDIO_PATTERN = /\bopus\b/i;
+const AAC_AUDIO_PATTERN = /\baac(?:2|5|7)?(?:[ ._-]?1)?\b/i;
+const MP3_AUDIO_PATTERN = /\bmp3\b/i;
+const MULTI_AUDIO_PATTERN = /\bdual(?:[ ._-]?audio)?\b|\bmulti(?:[ ._-]?audio)?\b|\b2[ ._-]?audio\b/i;
 const HDR_PATTERN = /\bhdr(?:10\+?)?\b|dolby\s?vision|\bdv\b/i;
 const MKV_PATTERN = /\.mkv\b|\bmkv\b/i;
 const MP4_PATTERN = /\.mp4\b|\bmp4\b/i;
@@ -164,6 +185,27 @@ export function parseReleaseTitle(text: string): ParsedRelease {
       : H264_PATTERN.test(t)
         ? "h264"
         : "unknown";
+
+  // Order is significant: TrueHD/DTS/E-AC-3 names often also contain generic
+  // Dolby/DD tokens. Preserve the most specific codec evidence available.
+  const audioCodec: ReleaseAudioCodec = TRUEHD_AUDIO_PATTERN.test(t)
+    ? "truehd"
+    : DTS_AUDIO_PATTERN.test(t)
+      ? "dts"
+      : EAC3_AUDIO_PATTERN.test(t)
+        ? "eac3"
+        : AC3_AUDIO_PATTERN.test(t)
+          ? "ac3"
+          : FLAC_AUDIO_PATTERN.test(t)
+            ? "flac"
+            : OPUS_AUDIO_PATTERN.test(t)
+              ? "opus"
+              : AAC_AUDIO_PATTERN.test(t)
+                ? "aac"
+                : MP3_AUDIO_PATTERN.test(t)
+                  ? "mp3"
+                  : "unknown";
+  const multiAudio = MULTI_AUDIO_PATTERN.test(t);
 
   const hdr = HDR_PATTERN.test(t);
   let container: ReleaseContainer;
@@ -216,7 +258,15 @@ export function parseReleaseTitle(text: string): ParsedRelease {
           ? "safari"
           : "native";
 
-  return { resolutionHeight, codec, hdr, container, compat };
+  return {
+    resolutionHeight,
+    codec,
+    audioCodec,
+    multiAudio,
+    hdr,
+    container,
+    compat,
+  };
 }
 
 /**
