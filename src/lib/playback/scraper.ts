@@ -41,6 +41,8 @@ interface ScraperSourceEntry {
   maxHeight?: number;
   ladder?: number[];
   qualitySource?: "manifest" | "label" | "probe" | "unknown";
+  /** Manifest-declared bits/sec at maxHeight — separates same-height releases. */
+  bitrateBps?: number;
   probe?: {
     ok: boolean;
     ttfbMs: number;
@@ -176,6 +178,9 @@ function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): Playback
     ...(maxHeight > 0 ? { maxHeight } : entry.maxHeight != null ? { maxHeight: 0 } : {}),
     ...(ladder ? { ladder } : {}),
     ...(entry.qualitySource ? { qualitySource: entry.qualitySource } : {}),
+    ...(entry.bitrateBps != null && entry.bitrateBps > 0
+      ? { bitrateBps: entry.bitrateBps }
+      : {}),
     ...(codec !== "unknown" ? { codec } : {}),
     ...(entry.verified === false ? { verified: false } : entry.verified === true ? { verified: true } : {}),
     ...(entry.probe

@@ -43,6 +43,21 @@ export interface PlaybackSource {
   ladder?: number[];
   /** How maxHeight/ladder was obtained — scraper provenance for ranking honesty. */
   qualitySource?: "manifest" | "label" | "probe" | "unknown";
+  /**
+   * Declared bits/sec of the rendition at `maxHeight`, from the manifest only
+   * (HLS AVERAGE-BANDWIDTH/BANDWIDTH, DASH Representation bandwidth).
+   *
+   * Height says how many pixels arrive, not how good they look: a 1080p at
+   * 2 Mbps and a 1080p at 10 Mbps are the same number and visibly different
+   * releases. This is the only signal that separates them, and it is the
+   * tie-break `pickDefaultSource` applies once two sources are the same
+   * height. Never inferred — omitted when the manifest declares nothing, so
+   * unknown stays distinct from genuinely low.
+   *
+   * Only comparable at equal height AND after codec normalization — see
+   * `normalizedBitrate` in source-quality.ts.
+   */
+  bitrateBps?: number;
   /** Detected from upstream URL before proxy rewrite (proxy URL hides codec path). */
   codec?: "h264" | "hevc" | "av1" | "unknown";
   /**

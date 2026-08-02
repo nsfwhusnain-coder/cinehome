@@ -41,6 +41,14 @@ export interface QualityInfo {
   maxHeight: number;
   ladder: number[];
   qualitySource: QualitySource;
+  /**
+   * Declared bits/sec of the rendition at `maxHeight`. Two releases can both
+   * be 1080p and look nothing alike — a 2 Mbps encode is visibly mushy next to
+   * a 10 Mbps one — and height alone cannot express that. Omitted (never 0)
+   * when the manifest declares no bitrate, so "unknown" stays distinguishable
+   * from "genuinely low", matching how maxHeight treats 0.
+   */
+  bitrateBps?: number;
 }
 
 const QUALITY_PROBE_TIMEOUT_MS = 3_000;
@@ -146,6 +154,76 @@ export function parseHlsMasterLadder(manifestText: string): number[] {
   return Array.from(heights).sort((a, b) => b - a);
 }
 
+/** One EXT-X-STREAM-INF variant: the height it renders and the bits/sec it costs. */
+export interface HlsRendition {
+  height: number;
+  bandwidthBps: number;
+}
+
+/**
+ * AVERAGE-BANDWIDTH first: the plain BANDWIDTH attribute is a peak ceiling the
+ * packager guarantees never to exceed, so it overstates lightly-encoded streams
+ * and makes two very different 1080p variants look comparable. The average is
+ * what the stream actually sustains.
+ *
+ * The leading `[:,]` matters — a bare /BANDWIDTH=/ also matches the tail of
+ * AVERAGE-BANDWIDTH= and would read the average into the peak slot.
+ */
+function renditionBandwidth(line: string): number {
+  const avg = line.match(/AVERAGE-BANDWIDTH=(\d+)/i);
+  if (avg) return Number(avg[1]);
+  const peak = line.match(/[:,]\s*BANDWIDTH=(\d+)/i);
+  return peak ? Number(peak[1]) : 0;
+}
+
+/** Pure — every EXT-X-STREAM-INF variant with both its height and its bitrate. */
+export function parseHlsMasterRenditions(manifestText: string): HlsRendition[] {
+  const out: HlsRendition[] = [];
+  for (const raw of manifestText.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("#EXT-X-STREAM-INF")) continue;
+    const res = line.match(/RESOLUTION=\d+x(\d+)/i);
+    const height = res ? Number(res[1]) : 0;
+    const bandwidthBps = renditionBandwidth(line);
+    if (height > 0 || bandwidthBps > 0) out.push({ height, bandwidthBps });
+  }
+  return out;
+}
+
+/**
+ * Bitrate of the tallest rendition — the rung that decides how the source's
+ * advertised quality actually looks. Ties on height take the richer encode.
+ * Returns 0 when no variant declares a usable bitrate.
+ */
+export function topRenditionBitrate(renditions: readonly HlsRendition[]): number {
+  let best = 0;
+  let bestHeight = -1;
+  for (const r of renditions) {
+    if (r.bandwidthBps <= 0) continue;
+    if (r.height > bestHeight || (r.height === bestHeight && r.bandwidthBps > best)) {
+      bestHeight = r.height;
+      best = r.bandwidthBps;
+    }
+  }
+  return best;
+}
+
+/**
+ * DASH counterpart. Representations carry `bandwidth="N"` alongside `height`;
+ * the pair is positional within a Representation tag, so the highest declared
+ * bandwidth is the honest read without a full XML parse.
+ */
+export function parseDashTopBitrate(mpdText: string): number {
+  let best = 0;
+  const re = /bandwidth="(\d+)"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(mpdText))) {
+    const bps = Number(m[1]);
+    if (bps > best) best = bps;
+  }
+  return best;
+}
+
 export function isHlsMasterManifest(text: string): boolean {
   return text.split("\n").some((l) => l.trim().startsWith("#EXT-X-STREAM-INF"));
 }
@@ -225,12 +303,14 @@ async function probeQualityOne(entry: QualityProbeEntry): Promise<QualityInfo> {
     const headers = buildHeaders(entry.session, entry.url);
     const text = await fetchManifestText(entry.url, headers, DASH_BYTE_CAP);
     const ladder = text ? parseDashLadder(text) : [];
+    const dashBitrate = text ? parseDashTopBitrate(text) : 0;
     if (ladder.length > 0) {
       info = {
         type: "dash",
         maxHeight: ladder[0]!,
         ladder,
         qualitySource: "manifest",
+        ...(dashBitrate > 0 ? { bitrateBps: dashBitrate } : {}),
       };
     } else if (tokenHeight > 0) {
       // Network empty / failed; height still only from unambiguous tokens.
@@ -248,12 +328,14 @@ async function probeQualityOne(entry: QualityProbeEntry): Promise<QualityInfo> {
     const text = await fetchManifestText(entry.url, headers);
     if (text && isHlsMasterManifest(text)) {
       const ladder = parseHlsMasterLadder(text);
+      const bitrateBps = topRenditionBitrate(parseHlsMasterRenditions(text));
       if (ladder.length > 0) {
         info = {
           type: "hls",
           maxHeight: ladder[0]!,
           ladder,
           qualitySource: "manifest",
+          ...(bitrateBps > 0 ? { bitrateBps } : {}),
         };
       } else if (tokenHeight > 0) {
         info = {

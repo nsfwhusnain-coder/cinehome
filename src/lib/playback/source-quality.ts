@@ -545,6 +545,85 @@ const DEBRID_TRANSCODE_PENALTY = 220;
 const DEBRID_REMUX_PENALTY = 25;
 
 /**
+ * Bits/sec needed to match H.264's picture at the same height. Modern codecs
+ * hit the same quality on far less, so raw bitrate systematically flatters
+ * H.264 and would make every efficient encode look like the worse release.
+ * Comparing `bitrate * efficiency` puts them on one scale.
+ *
+ * Conservative on purpose: HEVC's headline claim is ~50% of H.264 and AV1's is
+ * better still, but those are best-case encoder figures. Under-crediting a
+ * modern codec costs a marginally wrong tie-break; over-crediting it promotes a
+ * genuinely thinner encode over a fatter one.
+ */
+const CODEC_BITRATE_EFFICIENCY: Record<string, number> = {
+  h264: 1,
+  hevc: 1.6,
+  av1: 1.8,
+};
+/** Unknown codec is assumed H.264 — the common embed case, and never inflates. */
+const DEFAULT_CODEC_EFFICIENCY = 1;
+/**
+ * How much richer one encode must be before it wins the tie. Encoder variance,
+ * per-title tuning and AVERAGE-vs-peak reporting all move declared bitrate by
+ * a few percent between otherwise identical releases; acting on that noise
+ * would just reshuffle the roster on every scrape. 25% is roughly where the
+ * difference stops being reportable and starts being visible.
+ */
+const BITRATE_MEANINGFUL_RATIO = 1.25;
+/**
+ * Score contribution ceiling for the bitrate term. Must stay under the 30-point
+ * gap between the 4K (120) and 1080p (90) height bands, so a fat 1080p encode
+ * can never score its way past a genuine 4K source. Bitrate breaks ties inside
+ * a resolution tier; it does not create one.
+ */
+const BITRATE_SCORE_MAX = 20;
+/** Bits/sec that earns the full `BITRATE_SCORE_MAX` — ~12 Mbps is a strong 1080p remux. */
+const BITRATE_SCORE_SATURATION_BPS = 12_000_000;
+
+/**
+ * Manifest-declared bitrate normalized to an H.264-equivalent, or 0 when the
+ * source declares none. 0 means unknown and must never be read as "low".
+ */
+export function normalizedBitrate(source: PlaybackSource): number {
+  const declared = source.bitrateBps ?? 0;
+  if (declared <= 0) return 0;
+  const efficiency =
+    CODEC_BITRATE_EFFICIENCY[source.codec ?? ""] ?? DEFAULT_CODEC_EFFICIENCY;
+  return declared * efficiency;
+}
+
+/**
+ * Tie-break for two sources of the SAME height: the richer encode wins.
+ *
+ * Returns 0 unless both declare a bitrate and the gap clears
+ * `BITRATE_MEANINGFUL_RATIO`, so a source that simply never reported one is
+ * never punished for the omission, and near-identical encodes fall through to
+ * the existing ordering untouched.
+ *
+ * Callers must have already established equal height — bitrate across
+ * different resolutions is meaningless (4K at 8 Mbps beats 1080p at 10).
+ */
+export function compareBitrateAtEqualHeight(
+  a: PlaybackSource,
+  b: PlaybackSource
+): number {
+  const aRate = normalizedBitrate(a);
+  const bRate = normalizedBitrate(b);
+  if (aRate <= 0 || bRate <= 0) return 0;
+  const [hi, lo] = aRate >= bRate ? [aRate, bRate] : [bRate, aRate];
+  if (hi < lo * BITRATE_MEANINGFUL_RATIO) return 0;
+  return bRate - aRate;
+}
+
+/** Bounded score contribution — richer encode scores higher inside its tier. */
+function bitrateScoreBonus(source: PlaybackSource): number {
+  const rate = normalizedBitrate(source);
+  if (rate <= 0) return 0;
+  const ratio = Math.min(1, rate / BITRATE_SCORE_SATURATION_BPS);
+  return Math.round(ratio * BITRATE_SCORE_MAX);
+}
+
+/**
  * PREMIUM debrid tier adjustment, scaled by how the source has to be delivered
  * (`sourceDelivery`): full bonus for a direct URL, a light tax for a stream
  * copy, and a penalty that wipes the bonus out for anything this browser
@@ -576,6 +655,7 @@ export function scoreSource(source: PlaybackSource): number {
     let score = source.probe.speedScore * 10;
     score -= hevcTax;
     score -= poisonTax;
+    score += bitrateScoreBonus(source);
     if (isDashSource(source) && hevc) score -= hevcTax > 0 ? 20 : 0;
     return score + prefBonus + debridAdj;
   }
@@ -588,6 +668,9 @@ export function scoreSource(source: PlaybackSource): number {
   else if (h > 0) score += 30;
   // Real multi-rendition adaptive ladder beats a single-rendition source at the same height.
   if (isMultiRendition(source)) score += 15;
+  // Encode richness inside the height band — capped below the band gap so it
+  // can never promote a 1080p past a 4K (see BITRATE_SCORE_MAX).
+  score += bitrateScoreBonus(source);
 
   const hls = isHlsSource(source);
   const dash = isDashSource(source);
@@ -1036,6 +1119,23 @@ export function pickDefaultSource(
     if (aTop !== bTop) return bTop - aTop;
 
     if (aH !== bH) return bH - aH;
+
+    /**
+     * Same height, so the number on the badge no longer separates these two —
+     * the encode does. A 1080p at 2 Mbps and a 1080p at 10 Mbps are the same
+     * "1080p" to every check above this line, and the roster routinely carries
+     * both. Codec-normalized so an efficient HEVC encode is not scored as the
+     * thinner release purely for needing fewer bits (`normalizedBitrate`), and
+     * gated on a 25% margin so encoder noise never reorders the roster.
+     *
+     * Sits below health, delivery and ladder deliberately: a richer encode on a
+     * CDN that stalls is still the worse watch, and this must not override the
+     * evidence that a source actually plays. It sits ABOVE failover priority
+     * and the speedScore deadband, which are proxies for quality — this is the
+     * real thing, when the manifest declares it.
+     */
+    const bitrateOrder = compareBitrateAtEqualHeight(a, b);
+    if (bitrateOrder !== 0) return bitrateOrder;
 
     const prio = sourceFailoverPriority(b) - sourceFailoverPriority(a);
     if (prio !== 0) return prio;
