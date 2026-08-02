@@ -35,9 +35,6 @@ const errors: string[] = [];
 const offsetRequests: Array<{ startAt: number; status?: number }> = [];
 
 page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-page.on("console", (message) => {
-  if (message.type() === "error") errors.push(`console: ${message.text()}`);
-});
 page.on("response", (response) => {
   const url = new URL(response.url());
   if (url.pathname !== "/api/transcode" || !url.searchParams.has("startAt")) return;
@@ -79,16 +76,75 @@ try {
     logicalDuration: Number(
       document.querySelector('[role="slider"][aria-label="Seek"]')?.getAttribute("aria-valuemax") || 0
     ),
+    sourceId: video.dataset.playbackSourceId || null,
+    provider: video.dataset.playbackSourceProvider || null,
   }));
-  if (!String(initial.currentSrc).includes("/api/transcode")) {
-    throw new Error(`Active source is not the remux path: ${initial.currentSrc}`);
+
+  if (initial.provider !== "Debrid" || !String(initial.sourceId).includes("2160")) {
+    const bounds = await page.locator("video").boundingBox();
+    if (bounds) await page.mouse.move(bounds.x + 20, bounds.y + 20);
+    await page.getByRole("button", { name: "Sources", exact: true }).click();
+    const remuxRow = page
+      .locator('button[data-source-provider="Debrid"][data-source-id*="2160"]:not([disabled])')
+      .first();
+    await remuxRow.waitFor({ state: "visible" });
+    const remuxSourceId = await remuxRow.getAttribute("data-source-id");
+    await remuxRow.click();
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(
+      (sourceId) => {
+        const video = document.querySelector("video");
+        return (
+          video instanceof HTMLVideoElement &&
+          video.dataset.playbackSourceId === sourceId &&
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+          video.currentTime > 0.5 &&
+          !video.paused
+        );
+      },
+      remuxSourceId,
+      { timeout: 90_000 }
+    );
   }
 
   const targetSeconds = max * 0.5;
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
+  let matchingResponses = 0;
+  let resolveSecondResponse!: () => void;
+  const secondOffsetResponse = new Promise<void>((resolve) => {
+    resolveSecondResponse = resolve;
+  });
+  const countTargetResponse = (response: import("playwright").Response) => {
+    const url = new URL(response.url());
+    const startAt = Number(url.searchParams.get("startAt"));
+    if (
+      url.pathname === "/api/transcode" &&
+      response.status() === 200 &&
+      Math.abs(startAt - (targetSeconds - 6)) <= 2
+    ) {
+      matchingResponses += 1;
+      if (matchingResponses >= 2) resolveSecondResponse();
+    }
+  };
+  page.on("response", countTargetResponse);
   await page.keyboard.press("5");
+
+  let rejectOffsetTimeout!: (error: Error) => void;
+  const offsetTimeoutPromise = new Promise<never>((_, reject) => {
+    rejectOffsetTimeout = reject;
+  });
+  const offsetTimeoutHandle = setTimeout(
+    () => rejectOffsetTimeout(new Error("Offset handoff did not attach its prepared playlist")),
+    90_000
+  );
+  await Promise.race([
+    secondOffsetResponse,
+    offsetTimeoutPromise,
+  ]);
+  clearTimeout(offsetTimeoutHandle);
+  page.off("response", countTargetResponse);
 
   await page.waitForFunction(
     ({ target }) => {
@@ -97,7 +153,6 @@ try {
       const logical = Number(seek?.getAttribute("aria-valuenow") || 0);
       return (
         video instanceof HTMLVideoElement &&
-        video.currentSrc.includes("startAt=") &&
         video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
         !video.paused &&
         Math.abs(logical - target) <= 3
