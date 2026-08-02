@@ -22,6 +22,12 @@ interface ProbeReport {
   debug: Record<string, unknown>;
 }
 
+interface NetworkObservation {
+  path: string;
+  status?: number;
+  failure?: string;
+}
+
 if (!existsSync(storageState)) throw new Error(`Storage state missing: ${storageState}`);
 mkdirSync(outDir, { recursive: true });
 
@@ -35,15 +41,30 @@ const page = await context.newPage();
 page.setDefaultTimeout(90_000);
 const errors: string[] = [];
 const offsetRequests: Array<{ startAt: number; status?: number }> = [];
+const segmentNetwork: NetworkObservation[] = [];
 const debug: Record<string, unknown> = {};
 let stage = "launch";
 
 page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
 page.on("response", (response) => {
   const url = new URL(response.url());
+  if (url.pathname.startsWith("/api/transcode/seg")) {
+    segmentNetwork.push({
+      path: `${url.pathname}?f=${url.searchParams.get("f") || ""}`,
+      status: response.status(),
+    });
+  }
   if (url.pathname !== "/api/transcode" || !url.searchParams.has("startAt")) return;
   const startAt = Number(url.searchParams.get("startAt"));
   if (Number.isFinite(startAt)) offsetRequests.push({ startAt, status: response.status() });
+});
+page.on("requestfailed", (request) => {
+  const url = new URL(request.url());
+  if (!url.pathname.startsWith("/api/transcode")) return;
+  segmentNetwork.push({
+    path: `${url.pathname}?f=${url.searchParams.get("f") || ""}`,
+    failure: request.failure()?.errorText || "request failed",
+  });
 });
 
 try {
@@ -137,6 +158,33 @@ try {
   const remuxTimelineMax = Number(await slider.getAttribute("aria-valuemax"));
   const targetSeconds = remuxTimelineMax * 0.5;
   debug.remuxTimelineMax = remuxTimelineMax;
+  await page.locator("video").evaluate((video: HTMLVideoElement) => {
+    const scope = window as typeof window & { __remuxSeekEvents?: string[] };
+    scope.__remuxSeekEvents = [];
+    for (const event of [
+      "abort",
+      "canplay",
+      "durationchange",
+      "emptied",
+      "ended",
+      "error",
+      "loadeddata",
+      "loadedmetadata",
+      "playing",
+      "progress",
+      "seeked",
+      "seeking",
+      "stalled",
+      "suspend",
+      "waiting",
+    ]) {
+      video.addEventListener(event, () => {
+        scope.__remuxSeekEvents?.push(
+          `${event}:t=${video.currentTime.toFixed(3)}:d=${video.duration}:r=${video.readyState}`
+        );
+      });
+    }
+  });
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
@@ -238,6 +286,34 @@ try {
   writeFileSync(join(outDir, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
+  debug.failureVideo = await page
+    .locator("video")
+    .evaluate((video: HTMLVideoElement) => {
+      const scope = window as typeof window & { __remuxSeekEvents?: string[] };
+      return {
+        currentSrc: video.currentSrc,
+        currentTime: video.currentTime,
+        duration: video.duration,
+        readyState: video.readyState,
+        networkState: video.networkState,
+        paused: video.paused,
+        ended: video.ended,
+        error: video.error
+          ? { code: video.error.code, message: video.error.message }
+          : null,
+        seekable: Array.from({ length: video.seekable.length }, (_, index) => [
+          video.seekable.start(index),
+          video.seekable.end(index),
+        ]),
+        buffered: Array.from({ length: video.buffered.length }, (_, index) => [
+          video.buffered.start(index),
+          video.buffered.end(index),
+        ]),
+        events: scope.__remuxSeekEvents || [],
+      };
+    })
+    .catch(() => null);
+  debug.segmentNetwork = segmentNetwork.slice(-100);
   const report = {
     passed: false,
     watchPath,
