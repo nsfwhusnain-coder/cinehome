@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import { decodeUpstream, getHlsSession } from "@/lib/hls-session";
-import { fetchProxied, isAllowedUpstreamUrl } from "@/lib/hls-proxy";
+import {
+  fetchProxied,
+  isAbortLikeError,
+  isAllowedUpstreamUrl,
+} from "@/lib/hls-proxy";
 
 /**
  * GET /api/hls/{sessionId}?u={base64url_upstream_url}
@@ -45,8 +49,15 @@ export async function GET(
   const rangeHeader = req.headers.get("range");
   // `media=1` marks the child of a synthetic single-rung master — skip re-wrap.
   const skipMediaWrap = req.nextUrl.searchParams.get("media") === "1";
-  const proxied = await fetchProxied(hlsSession, upstream, rangeHeader, req.signal, {
-    skipMediaWrap,
-  });
-  return proxied;
+  try {
+    return await fetchProxied(hlsSession, upstream, rangeHeader, req.signal, {
+      skipMediaWrap,
+    });
+  } catch (error) {
+    if (req.signal.aborted || isAbortLikeError(error)) {
+      // Non-standard but useful for observability; the client has already gone.
+      return new Response(null, { status: 499 });
+    }
+    throw error;
+  }
 }

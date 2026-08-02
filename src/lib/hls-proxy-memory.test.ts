@@ -2,12 +2,19 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  isAbortLikeError,
   readResponseBodyForCache,
   SEGMENT_BODY_CACHE_ENABLED,
   SEGMENT_CACHE_ENTRY_MAX_BYTES,
 } from "./hls-proxy";
 
 describe("HLS proxy cache memory envelope", () => {
+  it("recognizes deliberate stream cancellation errors", () => {
+    expect(isAbortLikeError(new DOMException("cancelled", "AbortError"))).toBe(true);
+    expect(isAbortLikeError({ name: "AbortError" })).toBe(true);
+    expect(isAbortLikeError(new Error("upstream failed"))).toBe(false);
+  });
+
   it("does not tee media bodies into the app heap in production", () => {
     expect(SEGMENT_BODY_CACHE_ENABLED).toBe(false);
   });

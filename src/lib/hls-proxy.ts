@@ -1723,27 +1723,63 @@ export async function readResponseBodyForCache(
  */
 function streamFromReader(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  prefix: Uint8Array
+  prefix: Uint8Array,
+  clientSignal?: AbortSignal
 ): ReadableStream<Uint8Array> {
-  let sentPrefix = false;
+  let sentPrefix = prefix.byteLength === 0;
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       if (!sentPrefix) {
         sentPrefix = true;
-        if (prefix.byteLength > 0) controller.enqueue(prefix);
+        controller.enqueue(prefix);
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) {
-        controller.close();
-        return;
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        // Switching source, seeking, or leaving the player aborts the incoming
+        // request on purpose. Treat that as normal stream completion so Bun/Next
+        // does not report an unhandled AbortError during a successful handoff.
+        if (clientSignal?.aborted || isAbortLikeError(error)) {
+          try {
+            controller.close();
+          } catch {
+            // The downstream may already have closed while the read was pending.
+          }
+          return;
+        }
+        controller.error(error);
       }
-      controller.enqueue(value);
     },
     cancel(reason) {
-      void reader.cancel(reason);
+      void reader.cancel(reason).catch(() => {
+        // Cancellation is best-effort; an already-aborted upstream reader rejects.
+      });
     },
   });
+}
+
+export function isAbortLikeError(error: unknown): boolean {
+  return (
+    error instanceof DOMException
+      ? error.name === "AbortError"
+      : typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        (error as { name?: unknown }).name === "AbortError"
+  );
+}
+
+function streamResponseBodySafely(
+  body: ReadableStream<Uint8Array>,
+  clientSignal?: AbortSignal
+): ReadableStream<Uint8Array> {
+  return streamFromReader(body.getReader(), new Uint8Array(0), clientSignal);
 }
 
 export interface FetchProxiedOptions {
@@ -1927,7 +1963,7 @@ export async function fetchProxied(
       // of buffering it all; bounded only by whatever we already peeked.
       const body = sniffed.complete
         ? toArrayBuffer(sniffed.bytes)
-        : streamFromReader(reader, sniffed.bytes);
+        : streamFromReader(reader, sniffed.bytes, clientSignal);
       return new Response(body, {
         status: upstreamRes.status,
         headers: segmentOutHeaders(
@@ -1997,7 +2033,7 @@ export async function fetchProxied(
         /* clone unavailable - still stream without caching */
       }
     }
-    return new Response(upstreamRes.body, {
+    return new Response(streamResponseBodySafely(upstreamRes.body, clientSignal), {
       status: upstreamRes.status,
       headers: outHeaders,
     });
@@ -2007,7 +2043,7 @@ export async function fetchProxied(
   // that don't match isSegmentUrl by extension): stream through untouched rather than
   // buffering a potentially large/unknown-size body into memory.
   if (upstreamRes.body) {
-    return new Response(upstreamRes.body, {
+    return new Response(streamResponseBodySafely(upstreamRes.body, clientSignal), {
       status: upstreamRes.status,
       headers: segmentOutHeaders(upstreamRes, contentType, isSegmentUrl(upstream)),
     });
