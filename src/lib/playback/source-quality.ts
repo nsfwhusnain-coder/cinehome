@@ -1,4 +1,5 @@
 import type { PlaybackSource, SourceProbeMetrics } from "./types";
+import { supportsAv1, supportsHevc } from "./decode-capability";
 import { DEFAULT_SOURCE_KEY } from "@/lib/player-preferences";
 import {
   isNeverAutoDefaultUrl,
@@ -331,28 +332,11 @@ function browserSupportsHevc(): boolean {
 }
 
 function detectHevcSupport(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const mse = typeof MediaSource !== "undefined" ? MediaSource : null;
-    if (
-      mse?.isTypeSupported &&
-      (mse.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.B0"') ||
-        mse.isTypeSupported('video/mp4; codecs="hev1.1.6.L93.B0"'))
-    ) {
-      return true;
-    }
-  } catch {
-    /* fall through to the <video> progressive check below */
-  }
-  if (typeof document === "undefined") return false;
-  try {
-    const video = document.createElement("video");
-    const hvc1 = video.canPlayType('video/mp4; codecs="hvc1"');
-    const hev1 = video.canPlayType('video/mp4; codecs="hev1"');
-    return hvc1 === "probably" || hvc1 === "maybe" || hev1 === "probably" || hev1 === "maybe";
-  } catch {
-    return false;
-  }
+  // Delegates to decode-capability.ts, which probes a MATRIX of HEVC strings
+  // across the tiers actually shipped. The single string this used to test
+  // (`hvc1.1.6.L93.B0`) is Main 8-bit at level 3.1 — roughly 720p — and its
+  // answer was being applied to 4K Main10, which is a different capability.
+  return supportsHevc();
 }
 
 /** Same cache pattern as `hevcSupportCache` — capability is static per session. */
@@ -375,23 +359,9 @@ function browserSupportsAv1(): boolean {
 }
 
 function detectAv1Support(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const mse = typeof MediaSource !== "undefined" ? MediaSource : null;
-    if (mse?.isTypeSupported && mse.isTypeSupported('video/mp4; codecs="av01.0.05M.08"')) {
-      return true;
-    }
-  } catch {
-    /* fall through to the <video> progressive check below */
-  }
-  if (typeof document === "undefined") return false;
-  try {
-    const video = document.createElement("video");
-    const av1 = video.canPlayType('video/mp4; codecs="av01.0.05M.08"');
-    return av1 === "probably" || av1 === "maybe";
-  } catch {
-    return false;
-  }
+  // Same correction as HEVC: `av01.0.05M.08` is level 5, 8-bit, and its answer
+  // was applied to 4K 10-bit HDR releases.
+  return supportsAv1();
 }
 
 /**

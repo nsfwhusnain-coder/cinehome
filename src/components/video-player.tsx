@@ -40,6 +40,7 @@ import {
 } from "@/lib/playback/remux-timeline";
 import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
 import { activeBufferProfile } from "@/lib/playback/device-profile";
+import { warmDecodeCapabilities } from "@/lib/playback/decode-capability";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
 import {
@@ -1653,6 +1654,16 @@ export function VideoPlayer({
     onEndedRef.current = onEnded;
     nextEpisodeTargetRef.current = nextEpisodeTarget;
   });
+
+  /**
+   * Ask mediaCapabilities whether 4K HEVC/AV1 decode actually works here. The
+   * synchronous string matrix already gave ranking an answer; this only ever
+   * upgrades it, and only for browsers that expose the API. Fire-and-forget by
+   * design — playback must never wait on a capability query.
+   */
+  useEffect(() => {
+    void warmDecodeCapabilities();
+  }, []);
 
   const markEverPlayed = useCallback(() => {
     if (everPlayedRef.current) return;
