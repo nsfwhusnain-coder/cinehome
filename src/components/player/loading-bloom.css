@@ -65,7 +65,7 @@
      tenth of the frame. vmin ties it to the smaller viewport axis instead, so
      it holds its proportion from a phone to a 65-inch panel. */
   --sys: min(46vmin, 620px);
-  --orbit-r: calc(var(--sys) * 0.40);
+  --orbit-r: calc(var(--sys) * 0.30);
   --tilt: 24deg;
   --orbit-dur: 32s;
   --phase: 0deg;
@@ -79,6 +79,9 @@
 }
 
 .bloom-aura {
+  /* Below everything — it is atmosphere, and at z-index 0 it cannot wash out
+     the far half of the orbit. */
+  z-index: 0;
   position: absolute;
   inset: -30%;
   border-radius: 50%;
@@ -97,6 +100,12 @@
 
 /* ── the globe ─────────────────────────────────────────────── */
 .bloom-globe {
+  /* Sits between the two halves of the orbit: far planets are painted at
+     z-index 1, this at 2, near planets at 3. Occlusion is the strongest depth
+     cue available and nothing was using it — with the planets orbiting wider
+     than the globe they never crossed it, so the whole system read as a ring of
+     dots rather than bodies going round something. */
+  z-index: 2;
   position: relative;
   width: 52%;
   aspect-ratio: 1;
@@ -199,6 +208,9 @@
   left: 50%;
   width: 0;
   height: 0;
+  /* No z-index here on purpose: an arm with its own stacking context would trap
+     the planet's z-index inside it and the globe could never come between two
+     planets. The arms stay flat so the planets sort against the globe directly. */
   animation: bloom-sweep var(--orbit-dur) linear infinite;
   animation-delay: var(--chip-delay, 0s);
 }
@@ -293,17 +305,31 @@
    the glass; 50% is the near side — larger, brighter, in front. The result is
    a body that recedes and returns rather than a dot on a fixed circle. */
 @keyframes bloom-depth {
+  /* z-index is a discrete property: it jumps at the midpoint of each half
+     rather than interpolating, which is exactly right here. The planet passes
+     behind the glass through the far half and in front through the near half,
+     switching at the two points where it crosses the globe's edge — where a
+     real body would disappear and reappear. */
   0% {
-    transform: translate(-50%, -50%) scale(0.58);
-    opacity: 0.34;
+    transform: translate(-50%, -50%) scale(0.52);
+    opacity: 0.3;
+    z-index: 1;
+  }
+  25% {
+    z-index: 1;
   }
   50% {
-    transform: translate(-50%, -50%) scale(1.18);
+    transform: translate(-50%, -50%) scale(1.24);
     opacity: 1;
+    z-index: 3;
+  }
+  75% {
+    z-index: 3;
   }
   100% {
-    transform: translate(-50%, -50%) scale(0.58);
-    opacity: 0.34;
+    transform: translate(-50%, -50%) scale(0.52);
+    opacity: 0.3;
+    z-index: 1;
   }
 }
 
