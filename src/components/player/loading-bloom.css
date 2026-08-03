@@ -59,12 +59,23 @@
 }
 
 .bloom-system {
+  /* Single source of scale. The previous `min(40%, 280px)` was capped in
+     absolute pixels, so the whole system shrank relative to the display on
+     anything wider than ~700px — on a 1920 TV the globe rendered at roughly a
+     tenth of the frame. vmin ties it to the smaller viewport axis instead, so
+     it holds its proportion from a phone to a 65-inch panel. */
+  --sys: min(46vmin, 620px);
+  --orbit-r: calc(var(--sys) * 0.40);
+  --tilt: 24deg;
+  --orbit-dur: 32s;
+  --phase: 0deg;
+
   position: relative;
-  width: min(40%, 280px);
+  width: var(--sys);
   aspect-ratio: 1;
   display: grid;
   place-items: center;
-  perspective: 900px;
+  perspective: calc(var(--sys) * 2.6);
 }
 
 .bloom-aura {
@@ -174,18 +185,31 @@
 .bloom-orbit {
   position: absolute;
   inset: 0;
-  transform-style: preserve-3d;
-  transform: rotateX(66deg);
-  animation: bloom-revolve 30s linear infinite;
+  transform: rotateX(var(--tilt)) rotate(var(--phase));
+}
+
+/* One arm per planet. The arm owns POSITION (it sweeps the circle); the planet
+   inside owns DEPTH (it swells and brightens at the near point of the pass and
+   shrinks and dims at the far point). Both share a duration and a delay, so the
+   two stay locked — which is what sells a body going round something rather
+   than a dot sliding along a ring. */
+.bloom-arm {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  animation: bloom-sweep var(--orbit-dur) linear infinite;
+  animation-delay: var(--chip-delay, 0s);
 }
 
 .bloom-planet {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 16px;
-  height: 16px;
-  margin: -8px;
+  width: 3.2%;
+  height: 3.2%;
+  min-width: 11px;
+  min-height: 11px;
+  margin: 0;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.16);
   -webkit-backdrop-filter: blur(6px) saturate(160%);
@@ -195,16 +219,10 @@
     inset 0 0 0 1px rgba(255, 255, 255, 0.2),
     0 3px 10px rgba(0, 0, 0, 0.45),
     0 0 14px hsl(var(--bloom-hue) 100% 70% / 0.45);
-  /* Place on the ring, then stand upright again so it stays a sphere
-     rather than squashing into the tilted plane. */
-  transform: rotate(var(--chip-a)) translateX(var(--chip-r))
-    rotate(calc(-1 * var(--chip-a))) rotateX(-66deg);
   opacity: 0;
-  transition:
-    opacity 620ms var(--spring),
-    width 500ms var(--spring),
-    height 500ms var(--spring),
-    box-shadow 500ms var(--spring);
+  animation: bloom-depth var(--orbit-dur) ease-in-out infinite;
+  animation-delay: var(--chip-delay, 0s);
+  transition: opacity 620ms var(--spring);
 }
 
 .bloom-planet[data-on="1"] {
@@ -213,9 +231,10 @@
 
 /* Premium 4K tier — Poseidon / Hades. */
 .bloom-planet[data-premium="1"] {
-  width: 22px;
-  height: 22px;
-  margin: -11px;
+  width: 4.6%;
+  height: 4.6%;
+  min-width: 16px;
+  min-height: 16px;
   background: hsl(var(--bloom-hue) 90% 80% / 0.34);
   box-shadow:
     inset 0 1px 1.5px rgba(255, 255, 255, 0.7),
@@ -226,9 +245,10 @@
 
 /* The source being attached right now. */
 .bloom-planet[data-chosen="1"] {
-  width: 24px;
-  height: 24px;
-  margin: -12px;
+  width: 5%;
+  height: 5%;
+  min-width: 18px;
+  min-height: 18px;
   background: rgba(255, 255, 255, 0.85);
   box-shadow:
     inset 0 1px 2px rgba(255, 255, 255, 0.9),
@@ -260,9 +280,30 @@
   }
 }
 
-@keyframes bloom-revolve {
+@keyframes bloom-sweep {
+  from {
+    transform: rotate(0deg) translateX(var(--orbit-r));
+  }
   to {
-    transform: rotateX(66deg) rotate(360deg);
+    transform: rotate(360deg) translateX(var(--orbit-r));
+  }
+}
+
+/* Depth pass. 0% is the far side of the orbit — small, dim, slightly behind
+   the glass; 50% is the near side — larger, brighter, in front. The result is
+   a body that recedes and returns rather than a dot on a fixed circle. */
+@keyframes bloom-depth {
+  0% {
+    transform: translate(-50%, -50%) scale(0.58);
+    opacity: 0.34;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.18);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(0.58);
+    opacity: 0.34;
   }
 }
 
@@ -299,13 +340,15 @@
   filter: none;
 }
 
-.bloom-stage[data-device="tv"] .bloom-orbit {
-  animation-duration: 48s;
+.bloom-stage[data-device="tv"] .bloom-arm,
+.bloom-stage[data-device="tv"] .bloom-planet {
+  animation-duration: calc(var(--orbit-dur) * 1.6);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bloom-globe,
-  .bloom-orbit {
+  .bloom-arm,
+  .bloom-planet {
     animation: none;
   }
 }

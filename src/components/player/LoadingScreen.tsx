@@ -10,12 +10,8 @@ import {
   hexToHue,
   tmdbPathFromUrl,
 } from "@/lib/playback/bloom-visuals";
+import { orbitSignature } from "@/lib/playback/orbit-signature";
 import "./loading-bloom.css";
-
-/** Orbit radii, in px. Two rings so a full roster reads as a system, not a ring. */
-const CHIP_RADIUS_INNER = 96;
-const CHIP_RADIUS_OUTER = 112;
-const FULL_TURN_DEGREES = 360;
 
 export interface LoadingScreenProps {
   backdropUrl?: string | null;
@@ -36,6 +32,8 @@ export interface LoadingScreenProps {
   chosenIndex?: number;
   /** Buffer fill 0..1. Drives the core ring — the only true progress on screen. */
   bufferFill?: number;
+  /** Stable per-title seed. Gives each film its own orbital geometry. */
+  signatureSeed?: string;
 }
 
 /**
@@ -60,6 +58,7 @@ export function LoadingScreen({
   premiumCount = 0,
   chosenIndex = -1,
   bufferFill = 0,
+  signatureSeed,
 }: LoadingScreenProps) {
   const [hue, setHue] = useState<number>(FALLBACK_HUE);
 
@@ -98,6 +97,13 @@ export function LoadingScreen({
     () => bloomChips(sourceCount, premiumCount, chosenIndex),
     [sourceCount, premiumCount, chosenIndex]
   );
+  /* Tilt, period and starting rotation derived from the title, so Dune and
+     Fight Club are visibly different systems rather than the same one recoloured
+     — and any given title looks identical every time it is opened. */
+  const signature = useMemo(
+    () => orbitSignature(signatureSeed ?? title),
+    [signatureSeed, title]
+  );
   const deviceClass = useMemo(
     () => (visible ? detectDeviceClass() : "desktop"),
     [visible]
@@ -132,25 +138,48 @@ export function LoadingScreen({
       ) : null}
       <div className="bloom-veil" />
 
-      <div className="bloom-system relative z-10">
+      <div
+        className="bloom-system relative z-10"
+        style={
+          {
+            "--tilt": `${signature.tiltDeg}deg`,
+            "--orbit-dur": `${signature.periodS}s`,
+            "--phase": `${signature.phaseDeg}deg`,
+          } as React.CSSProperties
+        }
+      >
         <div className="bloom-aura" />
         <div className="bloom-orbit">
           {chips.map((chip) => (
             <div
               key={chip.index}
-              className="bloom-planet"
-              data-on="1"
-              data-premium={chip.premium ? "1" : "0"}
-              data-chosen={chip.chosen ? "1" : "0"}
+              className="bloom-arm"
               style={
                 {
-                  "--chip-a": `${(chip.index * FULL_TURN_DEGREES) / slots}deg`,
-                  "--chip-r": `${
-                    chip.index % 2 ? CHIP_RADIUS_INNER : CHIP_RADIUS_OUTER
-                  }px`,
+                  /* Negative delay starts each planet part-way round, so the
+                     roster spreads across the orbit instead of leaving together
+                     in a clump. Sharing one duration keeps the sweep and the
+                     depth pass locked to each other. */
+                  "--chip-delay": `${
+                    -((chip.index / slots) * signature.periodS).toFixed(2)
+                  }s`,
                 } as React.CSSProperties
               }
-            />
+            >
+              <div
+                className="bloom-planet"
+                data-on="1"
+                data-premium={chip.premium ? "1" : "0"}
+                data-chosen={chip.chosen ? "1" : "0"}
+                style={
+                  {
+                    "--chip-delay": `${
+                      -((chip.index / slots) * signature.periodS).toFixed(2)
+                    }s`,
+                  } as React.CSSProperties
+                }
+              />
+            </div>
           ))}
         </div>
         <div className="bloom-globe">

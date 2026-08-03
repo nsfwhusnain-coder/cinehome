@@ -5242,6 +5242,9 @@ export function VideoPlayer({
         premiumCount={premiumSourceCount(orderedSources)}
         chosenIndex={activeSourceIndex - 1}
         bufferFill={bloomBufferFill}
+        /* Stable per-title seed so each film keeps its own orbital geometry
+           across reopens, and episodes of a series differ slightly. */
+        signatureSeed={`${mediaType}:${tmdbId}`}
       />
 
       {failoverNotice && (
