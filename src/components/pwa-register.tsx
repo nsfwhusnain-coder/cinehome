@@ -68,7 +68,7 @@ export function PWARegister() {
   // interval tick. It was the only failing request on the sign-in screen, and
   // a console error on the first thing a new user sees makes real errors
   // harder to spot. A signed-out visitor also has nothing to keep alive.
-  const { status: sessionStatus } = useSession();
+  const sessionStatus = useSession()?.status;
   useEffect(() => {
     if (sessionStatus !== "authenticated") return;
     const ping = () => {

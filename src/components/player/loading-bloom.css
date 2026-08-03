@@ -65,7 +65,11 @@
      tenth of the frame. vmin ties it to the smaller viewport axis instead, so
      it holds its proportion from a phone to a 65-inch panel. */
   --sys: min(46vmin, 620px);
-  --orbit-r: calc(var(--sys) * 0.30);
+  /* Globe radius is 0.26 of --sys. At 0.40 the path never crossed it and
+     nothing occluded anything; at 0.30 the planets clung to the rim. 0.34 gives
+     a visible gap on the near and far extremes while still passing over and
+     behind the glass at the crossings. */
+  --orbit-r: calc(var(--sys) * 0.34);
   --tilt: 24deg;
   --orbit-dur: 32s;
   --phase: 0deg;
@@ -217,10 +221,10 @@
 
 .bloom-planet {
   position: absolute;
-  width: 3.2%;
-  height: 3.2%;
-  min-width: 11px;
-  min-height: 11px;
+  width: 4.2%;
+  height: 4.2%;
+  min-width: 13px;
+  min-height: 13px;
   margin: 0;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.16);
@@ -243,10 +247,10 @@
 
 /* Premium 4K tier — Poseidon / Hades. */
 .bloom-planet[data-premium="1"] {
-  width: 4.6%;
-  height: 4.6%;
-  min-width: 16px;
-  min-height: 16px;
+  width: 5.8%;
+  height: 5.8%;
+  min-width: 19px;
+  min-height: 19px;
   background: hsl(var(--bloom-hue) 90% 80% / 0.34);
   box-shadow:
     inset 0 1px 1.5px rgba(255, 255, 255, 0.7),
@@ -257,10 +261,10 @@
 
 /* The source being attached right now. */
 .bloom-planet[data-chosen="1"] {
-  width: 5%;
-  height: 5%;
-  min-width: 18px;
-  min-height: 18px;
+  width: 6.2%;
+  height: 6.2%;
+  min-width: 21px;
+  min-height: 21px;
   background: rgba(255, 255, 255, 0.85);
   box-shadow:
     inset 0 1px 2px rgba(255, 255, 255, 0.9),

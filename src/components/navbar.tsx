@@ -34,7 +34,10 @@ interface NavbarProps {
  */
 export function Navbar({ bottomNavEnabled = true, hubsEnabled = true }: NavbarProps) {
   const pathname = usePathname();
-  const { status: sessionStatus } = useSession();
+  // useSession() returns undefined outside a SessionProvider, which is the case
+  // while Next prerenders /_not-found - destructuring it directly broke the
+  // build there. Read defensively; no provider means no session.
+  const sessionStatus = useSession()?.status;
 
   if (pathname.startsWith("/watch")) return null;
 
