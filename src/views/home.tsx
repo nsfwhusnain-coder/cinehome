@@ -271,6 +271,13 @@ export function HomeView() {
   return (
     /* Transparent shell so ambient tint wash shows under rails (LordFlix-style) */
     <div className="relative pb-12">
+      {/* The hero uses the film's own logo artwork as its title treatment, which
+          is right visually but leaves the document with no heading at all on a
+          working page - the existing h1s below only render in error states or
+          when there is no hero. A visually-hidden heading restores the document
+          outline for screen readers and landmark navigation without touching
+          the design. */}
+      <h1 className="sr-only">Home</h1>
       {/* Shell always paints; data streams in. A resolved-but-empty catalog
           (TMDB outage) gets a real error state here instead of an eternal skeleton. */}
       {!catalog.data ? (

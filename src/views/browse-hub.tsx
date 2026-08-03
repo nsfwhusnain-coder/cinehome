@@ -107,6 +107,9 @@ export function BrowseHub({ mediaType, title, heroFrom, rows }: BrowseHubProps) 
         </div>
       ) : (
         <>
+          {/* Same reason as home: with a hero present the visible h1 below is
+              skipped, leaving the page headingless. */}
+          {featured.length > 0 ? <h1 className="sr-only">{title}</h1> : null}
           {featured.length > 0 ? <HeroCarousel items={featured} /> : null}
 
           <div className={`${featured.length ? "-mt-10" : "pt-20"} relative z-10 space-y-10`}>

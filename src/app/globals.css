@@ -64,7 +64,12 @@
   --destructive: oklch(0.55 0.24 25);
   --border: oklch(0 0 0 / 10%);
   --input: oklch(0 0 0 / 14%);
-  --ring: oklch(0.55 0.22 25);
+  /* Neutral on purpose. This was oklch(0.55 0.22 25) against a --destructive of
+     oklch(0.55 0.24 25): the same hue, 0.02 apart in chroma and indistinguishable
+     in use. Every focused field therefore drew what reads as an error ring, which
+     on the sign-in form greets a new user with a form that looks already rejected.
+     Crimson stays reserved for the primary action and genuine validation. */
+  --ring: oklch(0.55 0.02 280);
   --chart-1: oklch(0.62 0.22 25);
   --chart-2: oklch(0.7 0.18 50);
   --chart-3: oklch(0.6 0.15 100);
@@ -104,7 +109,7 @@
   --destructive: oklch(0.7 0.24 22);
   --border: oklch(1 0 0 / 12%);
   --input: oklch(1 0 0 / 14%);
-  --ring: oklch(0.62 0.24 25);
+  --ring: oklch(0.78 0.02 280);
 }
 
 @layer base {
@@ -220,6 +225,31 @@
 /* Living-room focus must be visible from several metres away. The TV marker is
    only installed for webOS/Tizen/Android-TV style user agents (or ?tv=1), so
    mouse/touch layouts keep their compact controls. */
+/* ── Baseline keyboard focus ────────────────────────────────────────────────
+   A focus ring existed only under html[data-tv="1"], so a keyboard user on a
+   laptop got no indicator at all: measured on the live sign-in form, the
+   focused input reported outline "none" and a fully transparent box-shadow.
+   That is a WCAG 2.4.7 failure on every non-TV device.
+
+   :focus-visible rather than :focus, so a pointer click does not draw a ring
+   the mouse user never asked for. The TV rule further down is stronger and
+   still wins there — this is the floor, not a replacement. */
+:where(a[href], button, input, select, textarea, summary, [role="button"],
+  [role="slider"], [role="tab"], [role="option"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.9);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* On light surfaces a white ring disappears; pair it with a dark halo so the
+   indicator survives either ground without needing per-component overrides. */
+@media (prefers-color-scheme: light) {
+  :where(a[href], button, input, select, textarea, summary, [role="button"],
+    [role="slider"], [role="tab"], [role="option"], [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline-color: rgb(0 0 0 / 0.82);
+  }
+}
+
 html[data-tv="1"] :where(button, a[href], [role="button"], [role="slider"], input, select):focus-visible {
   outline: 3px solid rgb(255 255 255 / 0.95) !important;
   outline-offset: 4px;

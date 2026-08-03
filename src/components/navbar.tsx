@@ -6,6 +6,7 @@ import { Home, Search, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PRIMARY_NAV, isNavPathActive } from "@/lib/nav";
 import { NavLettermark } from "@/components/brand-mark";
+import { useSession } from "next-auth/react";
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-transparent";
@@ -33,8 +34,16 @@ interface NavbarProps {
  */
 export function Navbar({ bottomNavEnabled = true, hubsEnabled = true }: NavbarProps) {
   const pathname = usePathname();
+  const { status: sessionStatus } = useSession();
 
   if (pathname.startsWith("/watch")) return null;
+
+  // Every destination in this bar is behind auth, so rendering it to a
+  // signed-out visitor offers six links that all redirect straight back to
+  // sign-in. On a television it is worse than useless: the D-pad has to walk
+  // past all of them before reaching the PIN field. Unauthenticated and
+  // still-loading both hide it, so it cannot flash in during session probe.
+  if (sessionStatus !== "authenticated") return null;
 
   const navItems = PRIMARY_NAV.filter(
     (item) => hubsEnabled || (item.path !== "/movies" && item.path !== "/shows")
