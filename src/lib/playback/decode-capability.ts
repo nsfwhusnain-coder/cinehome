@@ -203,6 +203,25 @@ export async function warmDecodeCapabilities(): Promise<void> {
   }
 }
 
+/**
+ * True when HEVC is reachable ONLY through the plain <video> element and not
+ * through MSE.
+ *
+ * This is the one case where giving up hls.js is worth it. Native HLS has no
+ * JS-level API to select or floor a rendition — AVFoundation and the equivalent
+ * TV pipelines run ABR inside the OS with no hook — so choosing it forfeits
+ * HLS_MIN_HEIGHT, applyPreferredHlsQuality and the adaptive floor entirely. That
+ * price is only worth paying when MSE genuinely cannot decode the codec and the
+ * native path is the only one that can.
+ *
+ * Deliberately measured rather than assumed from the user agent: some TV
+ * browsers carry HEVC through MSE perfectly well, and those should keep the
+ * quality floor.
+ */
+export function hevcNeedsNativePath(): boolean {
+  return !mseAccepts(HEVC_PROBE_TYPES) && elementAccepts(HEVC_PROBE_TYPES);
+}
+
 /** Test seam — capability is cached for the session in normal use. */
 export function resetDecodeCapabilityCache(): void {
   hevcCache.value = null;

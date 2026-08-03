@@ -40,7 +40,7 @@ import {
 } from "@/lib/playback/remux-timeline";
 import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
 import { activeBufferProfile } from "@/lib/playback/device-profile";
-import { warmDecodeCapabilities } from "@/lib/playback/decode-capability";
+import { hevcNeedsNativePath, warmDecodeCapabilities } from "@/lib/playback/decode-capability";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
 import {
@@ -146,10 +146,20 @@ function isInteractivePlayerTarget(target: EventTarget | null): boolean {
 }
 
 function preferNativeHls(video: HTMLVideoElement): boolean {
-  return (
-    isTvLikeDevice() &&
-    Boolean(video.canPlayType("application/vnd.apple.mpegurl"))
-  );
+  if (!isTvLikeDevice()) return false;
+  if (!video.canPlayType("application/vnd.apple.mpegurl")) return false;
+  // Native HLS forfeits the quality floor completely: there is no JS API to
+  // select or cap a rendition on that path, so HLS_MIN_HEIGHT,
+  // applyPreferredHlsQuality and the adaptive downshift all become dead code
+  // and the OS picks the rung unaided. Production logs show 480p as the single
+  // most common decoded height, which is what that looks like from outside.
+  //
+  // Previously every TV took this branch merely for answering canPlayType on
+  // m3u8, which every TV does. Now the floor is only surrendered when MSE
+  // genuinely cannot carry HEVC and the native path is the only route to
+  // hardware decode - measured, not inferred from the user agent, because
+  // plenty of TV browsers handle HEVC through MSE and should keep the floor.
+  return hevcNeedsNativePath();
 }
 
 function hlsWorkerSupportedHere(): boolean {
