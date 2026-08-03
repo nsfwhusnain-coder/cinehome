@@ -345,12 +345,20 @@ function DetailContent({
         {/* Bottom-left: logo + meta + actions */}
         <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-8 sm:px-6 sm:pb-12 lg:px-8 lg:pb-16">
           <div className="flex max-w-4xl flex-col gap-4 pr-0 sm:pr-56">
+            {/* The h1 was inside the else branch, so any title TMDB has logo art
+                for - which is most of them - rendered a detail page with no
+                heading at all. The logo is the right visual treatment; it just
+                cannot also be the document structure. Heading always present,
+                hidden when the artwork carries it. */}
             {logoUrl ? (
-              <img
-                src={logoUrl}
-                alt={title}
-                className="max-h-24 w-auto max-w-full object-contain drop-shadow sm:max-h-36"
-              />
+              <>
+                <h1 className="sr-only">{title}</h1>
+                <img
+                  src={logoUrl}
+                  alt={title}
+                  className="max-h-24 w-auto max-w-full object-contain drop-shadow sm:max-h-36"
+                />
+              </>
             ) : (
               <h1 className="font-display text-3xl font-bold drop-shadow sm:text-5xl">{title}</h1>
             )}
