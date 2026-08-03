@@ -18,6 +18,7 @@ import {
   type TmdbListItem,
 } from "@/lib/tmdb-client";
 import type { HubRow } from "@/lib/browse-categories";
+import { LazyRail } from "@/components/lazy-rail";
 
 const LIST_PAGES = 3;
 
@@ -130,17 +131,38 @@ export function BrowseHub({ mediaType, title, heroFrom, rows }: BrowseHubProps) 
                 <BrowseError label={title} onRetry={() => rowsQuery.refetch()} compact />
               </div>
             ) : (
-              dedupedRows?.map((row) =>
+              dedupedRows?.map((row, rowIndex) =>
                 row.items.length ? (
-                  <MovieRow key={row.id} title={row.title}>
-                    {row.items.map((m) => (
-                      <MovieCard
-                        key={m.id}
-                        movie={{ ...m, media_type: mediaType }}
-                        forceMediaType={mediaType}
-                      />
-                    ))}
-                  </MovieRow>
+                  /* Home already wrapped its rails in LazyRail; these hub pages
+                     never did, so /movies and /shows mounted all 28 rows and
+                     every card in them at once - measured 384 images and 799
+                     tab stops on /movies. On a television that is the whole page
+                     resident in memory and hundreds of D-pad presses to cross.
+                     The first two rails render eagerly so the fold is never
+                     empty; the rest mount as they approach the viewport. */
+                  rowIndex < 2 ? (
+                    <MovieRow key={row.id} title={row.title}>
+                      {row.items.map((m) => (
+                        <MovieCard
+                          key={m.id}
+                          movie={{ ...m, media_type: mediaType }}
+                          forceMediaType={mediaType}
+                        />
+                      ))}
+                    </MovieRow>
+                  ) : (
+                    <LazyRail key={row.id} minHeight={360}>
+                      <MovieRow title={row.title}>
+                        {row.items.map((m) => (
+                          <MovieCard
+                            key={m.id}
+                            movie={{ ...m, media_type: mediaType }}
+                            forceMediaType={mediaType}
+                          />
+                        ))}
+                      </MovieRow>
+                    </LazyRail>
+                  )
                 ) : null
               )
             )}

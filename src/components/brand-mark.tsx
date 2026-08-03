@@ -62,24 +62,23 @@ export function BrandLockup({ className }: { className?: string }) {
  * LordFlix-style minimal lettermark for the main navbar — no glass pill.
  */
 export function NavLettermark({ className }: { className?: string }) {
+  /**
+   * One mark, not two. This rendered a standalone italic "A" while the sign-in
+   * card showed the glass "AB" tile - the same product wearing two different
+   * logos depending on where you looked, and "A" is not an abbreviation a new
+   * user would connect to either name.
+   *
+   * The glass tile wins because it is already the app's visual language:
+   * brand-mark.css supplies the exact backdrop-filter, fill, inset highlight
+   * and shadow that the loading screen's globe is built from. Unifying here
+   * makes the logo, the sign-in card and the thing you watch while a film
+   * loads all the same material.
+   *
+   * Scaled down at the call site rather than adding a size token, because 56px
+   * is correct everywhere else the nav size is used.
+   */
   return (
-    <span
-      role="img"
-      aria-label="Absolute Cinema"
-      className={cn("select-none", className)}
-      style={{
-        fontStyle: "italic",
-        fontWeight: 800,
-        fontSize: "1.6rem",
-        color: "#ffffff",
-        letterSpacing: "-0.02em",
-        lineHeight: 1,
-        cursor: "pointer",
-        userSelect: "none",
-      }}
-    >
-      A
-    </span>
+    <BrandMark size="nav" className={cn("origin-left scale-[0.62]", className)} />
   );
 }
 

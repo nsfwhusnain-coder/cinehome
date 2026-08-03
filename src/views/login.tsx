@@ -139,7 +139,28 @@ export function LoginView() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 py-12">
+    <div className="relative min-h-screen flex items-center justify-center overflow-hidden px-4 py-12">
+      {/*
+        Roughly 75% of this screen was flat black, on a product whose entire
+        subject is film. Two slow cinematic washes in the brand crimson and its
+        violet-biased neutral give the front door some depth without competing
+        with the card.
+
+        Deliberately CSS gradients rather than the ambient system or a poster
+        pull: nobody is signed in yet, so there is no artwork to sample and no
+        session to fetch one with. Pure paint, no request, no JavaScript, and
+        nothing extra for a television to parse before the user can type.
+      */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-10"
+        style={{
+          background:
+            "radial-gradient(58% 48% at 22% 18%, oklch(0.42 0.14 25 / 0.42), transparent 62%)," +
+            "radial-gradient(52% 44% at 82% 76%, oklch(0.38 0.07 280 / 0.40), transparent 60%)," +
+            "radial-gradient(90% 70% at 50% 50%, transparent 30%, oklch(0.13 0.01 280 / 0.85) 100%)",
+        }}
+      />
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
