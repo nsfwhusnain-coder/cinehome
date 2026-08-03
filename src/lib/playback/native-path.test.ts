@@ -7,20 +7,19 @@ import { hevcNeedsNativePath, HEVC_PROBE_TYPES } from "./decode-capability";
  * reachable through <video> but not through MSE.
  */
 describe("hevcNeedsNativePath", () => {
-  const realMediaSource = globalThis.MediaSource;
-  const realDocument = globalThis.document;
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const realMediaSource = globals.MediaSource;
+  const realDocument = globals.document;
 
   function withEnvironment(
     mseSupports: boolean | null,
     elementSupports: boolean
   ): boolean {
-    // @ts-expect-error swapping globals for the duration of the assertion
-    globalThis.MediaSource =
+    globals.MediaSource =
       mseSupports === null
         ? undefined
         : { isTypeSupported: () => mseSupports };
-    // @ts-expect-error minimal stub — only canPlayType is consulted
-    globalThis.document = {
+    globals.document = {
       createElement: () => ({
         canPlayType: () => (elementSupports ? "probably" : ""),
       }),
@@ -28,10 +27,8 @@ describe("hevcNeedsNativePath", () => {
     try {
       return hevcNeedsNativePath();
     } finally {
-      // @ts-expect-error restoring the real globals
-      globalThis.MediaSource = realMediaSource;
-      // @ts-expect-error restoring the real globals
-      globalThis.document = realDocument;
+      globals.MediaSource = realMediaSource;
+      globals.document = realDocument;
     }
   }
 
