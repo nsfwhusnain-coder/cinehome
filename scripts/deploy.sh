@@ -59,6 +59,34 @@ fi
 remote_script="$(cat <<'REMOTE'
 set -euo pipefail
 cd "$DEPLOY_PATH"
+
+# GitHub is the source of truth (see CINEHOME.md). Build what origin/main says,
+# not whatever happens to be sitting in the deploy directory — that ambiguity is
+# how a production image once got built from an uncommitted working tree, so the
+# running container held code that existed in no branch.
+#
+# DEPLOY_SKIP_PULL=1 escapes this for a deliberate local-tree build (bisecting a
+# regression, testing an unpushed fix). It is loud on purpose.
+if [[ "${DEPLOY_SKIP_PULL:-0}" == "1" ]]; then
+  echo "!! DEPLOY_SKIP_PULL=1 — building the on-disk tree, NOT origin/main"
+  git --no-pager log -1 --format='   local HEAD: %h %s'
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "!! working tree is DIRTY — this image will contain uncommitted code"
+  fi
+else
+  echo "=== pull origin/main ==="
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "ERROR: deploy directory has local changes. Commit and push them, or" >&2
+    echo "       re-run with DEPLOY_SKIP_PULL=1 to build the tree as-is." >&2
+    git --no-pager status --short >&2
+    exit 1
+  fi
+  git fetch --prune origin
+  git checkout main
+  git pull --ff-only origin main
+  git --no-pager log -1 --format='   now at: %h %s'
+fi
+
 chmod +x scripts/*.sh start.sh 2>/dev/null || true
 ./scripts/disk-preflight.sh
 

@@ -3,20 +3,34 @@
 **NOT a Godot project.** Ignore workspace `CLAUDE.md` Godot rules for this repo.
 
 ## Source of truth (SoT)
-- **Current authoritative Git tree**: `/home/hussy/cinehome` on `hussyserver`,
-  branch `main`. The exact pre-ownership running state is commit `11847dd` and
-  tag `production-baseline-20260725`.
-- The deployed tree had no Git history and the previously documented canonical
-  repository was on an unavailable machine. We deliberately initialized Git on
-  the verified deploy copy so every production build now has one recoverable
-  authority. Developer-machine copies are mirrors until the old repository is
-  reconciled; never push a stale local tree over the server authority.
-- The current clean Windows working clone is
-  `C:\Users\husna\projects\cinehome-main`. The older
-  `cinehome-authoritative` directory is a preserved stale mirror; its 48
-  apparent changes were verified content-identical to server commit `60e067f`
-  after line-ending normalization. Do not edit or deploy from it.
+- **Authoritative repository**: `github.com/nsfwhusnain-coder/cinehome`
+  (private), branch `main`. This is canonical. Every other copy is a working
+  clone.
+- **The server is a deploy target, not the authority.** `/home/hussy/cinehome`
+  on `hussyserver` tracks `origin/main` and pulls; it authenticates with a
+  read-write deploy key at `~/.ssh/cinehome_deploy` (SSH host alias
+  `github-cinehome`), so no access token is stored on the box.
+- This inverts the previous arrangement, and the reversal is worth stating
+  plainly because the old rule said the opposite. The deployed tree once had no
+  Git history at all, and the server copy was made authoritative as a recovery
+  measure. That is no longer true. Do not treat the server tree as canonical,
+  and never commit there without pushing.
+- **Server DNS**: the tailnet supplies no global upstream resolvers, so
+  `/etc/resolv.conf` lists Tailscale MagicDNS first and then `192.168.1.1` and
+  `1.1.1.1` as fallbacks. Without those, `github.com` does not resolve on the
+  host and every pull fails while the container keeps working (it carries its
+  own DNS). Tailscale may rewrite that file; the durable fix is to add global
+  nameservers in the Tailscale admin console.
+- Historic markers: the pre-ownership running state is commit `11847dd`, tagged
+  `production-baseline-20260725`.
+- Stale mirrors that must NOT be deployed from: `C:\Users\husna\projects\cinehome-main`,
+  `cinehome-authoritative`, and the `cinehome-*` copies under `/home/hussy/`.
+  Clone fresh from GitHub instead.
 - **Canonical App Router**: `src/app` only. There is no root `app/` router.
+- **Nothing in `db/` is source.** The whole directory is gitignored — it holds
+  user records and their backups. A backup named `custom.db.bak-<timestamp>`
+  was once committed by a `git add -A` because the old `db/*.db` pattern did
+  not match it; it was stripped from history before reaching the remote.
 
 ## Stack
 - Next.js 16 on Node 24.18 LTS + Prisma (SQLite)
