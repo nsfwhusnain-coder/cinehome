@@ -57,8 +57,12 @@ prompt
 /skills/
 
 # CineHome SoT extras
-db/*.db
-db/*.db-*
+# Broad on purpose: the previous db/*.db + db/*.db-* pair did not match a
+# backup named custom.db.bak-<timestamp>, and one was committed by a git add -A
+# before it was caught. The whole directory holds user records; nothing in it
+# belongs in version control.
+db/
+!db/.gitkeep
 
 # Stale root App Router must never re-enter the tree (canonical is src/app)
 /app/
