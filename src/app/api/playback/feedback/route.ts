@@ -34,32 +34,56 @@ export async function POST(req: NextRequest) {
       ? Math.min(number, max)
       : undefined;
   };
+  const text = (value: unknown, max: number): string | undefined =>
+    typeof value === "string" && value.trim()
+      ? value.trim().slice(0, max)
+      : undefined;
+  const engine = new Set(["hlsjs", "native_hls", "native_file", "dash"]).has(
+    String(body.engine)
+  )
+    ? (body.engine as "hlsjs" | "native_hls" | "native_file" | "dash")
+    : undefined;
+  // Coarse device attribution. Without it a television session and a laptop
+  // session are identical in the logs, which is why cross-device playback
+  // differences stayed invisible. Never the raw UA — a bounded token only.
+  const rawPlatform =
+    typeof body.platform === "object" && body.platform !== null
+      ? (body.platform as Record<string, unknown>)
+      : null;
+  const platform = rawPlatform
+    ? {
+        deviceClass:
+          rawPlatform.deviceClass === "tv" ? ("tv" as const) : ("desktop" as const),
+        uaPlatform: text(rawPlatform.uaPlatform, 24),
+        heapLimitMb: finite(rawPlatform.heapLimitMb, 65_536),
+        cores: finite(rawPlatform.cores, 512),
+        screenWidth: finite(rawPlatform.screenWidth, 16_384),
+      }
+    : undefined;
+
+  const feedback = {
+    event,
+    sourceId,
+    provider,
+    occurredAt: finite(body.occurredAt, Date.now() + 60_000) ?? Date.now(),
+    timeToFirstFrameMs: finite(body.timeToFirstFrameMs, 180_000),
+    decodedHeight: finite(body.decodedHeight, 4320),
+    selectedHeight: finite(body.selectedHeight, 4320),
+    audioCodec: text(body.audioCodec, 32),
+    audioLanguage: text(body.audioLanguage, 32),
+    engine,
+    errorDetail: text(body.errorDetail, 180),
+    reason: text(body.reason, 120),
+  };
   console.info(
     JSON.stringify({
-      event: "player_feedback",
-      feedbackEvent: event,
       userId,
-      sourceId,
-      provider,
-      occurredAt: finite(body.occurredAt, Date.now() + 60_000) ?? Date.now(),
-      timeToFirstFrameMs: finite(body.timeToFirstFrameMs, 180_000),
-      decodedHeight: finite(body.decodedHeight, 4320),
-      reason:
-        typeof body.reason === "string" ? body.reason.slice(0, 120) : undefined,
+      ...feedback,
+      ...(platform ? { platform } : {}),
+      event: "player_feedback",
+      feedbackEvent: feedback.event,
     })
   );
-  providerHealthRegistry.observe(
-    { provider },
-    {
-      event,
-      sourceId,
-      provider,
-      occurredAt: finite(body.occurredAt, Date.now() + 60_000) ?? Date.now(),
-      timeToFirstFrameMs: finite(body.timeToFirstFrameMs, 180_000),
-      decodedHeight: finite(body.decodedHeight, 4320),
-      reason:
-        typeof body.reason === "string" ? body.reason.slice(0, 120) : undefined,
-    }
-  );
+  providerHealthRegistry.observe({ provider }, feedback);
   return new NextResponse(null, { status: 204 });
 }

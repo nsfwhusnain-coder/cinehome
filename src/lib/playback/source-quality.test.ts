@@ -987,3 +987,48 @@ describe("findQualityUpgradeSource — never upgrades to an unplayable-here sour
     expect(next?.id).toBe("native-hd");
   });
 });
+
+describe("sourceDelivery - audio safety", () => {
+  it("keeps a single-track AAC MP4 direct", () => {
+    expect(
+      sourceDelivery(
+        makeSource({
+          id: "aac-direct",
+          origin: "debrid",
+          codec: "h264",
+          container: "mp4",
+          audioCodec: "aac",
+        })
+      )
+    ).toBe("direct");
+  });
+
+  it("remuxes unsupported audio while copying compatible video", () => {
+    expect(
+      sourceDelivery(
+        makeSource({
+          id: "dts-remux",
+          origin: "debrid",
+          codec: "h264",
+          container: "mp4",
+          audioCodec: "dts",
+        })
+      )
+    ).toBe("remux");
+  });
+
+  it("remuxes debrid multi-audio so language selection is deterministic", () => {
+    expect(
+      sourceDelivery(
+        makeSource({
+          id: "dual-audio-remux",
+          origin: "debrid",
+          codec: "h264",
+          container: "mp4",
+          audioCodec: "aac",
+          multiAudio: true,
+        })
+      )
+    ).toBe("remux");
+  });
+});

@@ -216,3 +216,22 @@
     bottom: calc(3.5rem + env(safe-area-inset-bottom));
   }
 }
+
+/* Living-room focus must be visible from several metres away. The TV marker is
+   only installed for webOS/Tizen/Android-TV style user agents (or ?tv=1), so
+   mouse/touch layouts keep their compact controls. */
+html[data-tv="1"] :where(button, a[href], [role="button"], [role="slider"], input, select):focus-visible {
+  outline: 3px solid rgb(255 255 255 / 0.95) !important;
+  outline-offset: 4px;
+  box-shadow: 0 0 0 7px rgb(239 68 68 / 0.72);
+}
+
+html[data-tv="1"] .player-shell .player-controls-bottom-row button,
+html[data-tv="1"] .player-shell .player-controls-top button {
+  min-width: 3.25rem;
+  min-height: 3.25rem;
+}
+
+html[data-tv="1"] {
+  scroll-behavior: smooth;
+}

@@ -65,4 +65,20 @@ describe("quality router", () => {
     expect(selectSourceForQuality([dead, alive], 2160)).toBeNull();
     expect(selectSourceForQuality([source("failed", 2160)], 2160, new Set(["failed"]))).toBeNull();
   });
+
+  it("keeps discovered 4K visible when this browser cannot decode its codec", () => {
+    const hevc4k = source("hevc-4k", 2160);
+    hevc4k.codec = "hevc";
+    hevc4k.compat = "safari";
+
+    const option = buildPlayerQualityOptions({
+      sources: [hevc4k, source("hd", 1080)],
+      activeLevels: [],
+      selected: "auto",
+    }).find((candidate) => candidate.value === 2160);
+
+    expect(option?.status).toBe("device-unsupported");
+    expect(option?.unavailableReason).toContain("HEVC");
+    expect(option?.sourceId).toBeUndefined();
+  });
 });

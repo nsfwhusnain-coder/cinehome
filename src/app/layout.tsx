@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { Providers } from "@/components/providers";
 import { PWARegister } from "@/components/pwa-register";
+import { TvSpatialNavigation } from "@/components/tv-spatial-navigation";
 
 const inter = localFont({
   src: "./fonts/inter-latin.woff2",
@@ -74,6 +75,7 @@ export default function RootLayout({
         <Toaster />
         <SonnerToaster />
         <PWARegister />
+        <TvSpatialNavigation />
       </body>
     </html>
   );

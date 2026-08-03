@@ -4,6 +4,7 @@ import {
   isSourcePlayableHere,
   pickDefaultSource,
   sourceMaxHeight,
+  sourceUnavailableReason,
 } from "./source-quality";
 import { effectiveLevelHeight } from "./hls-quality";
 
@@ -11,7 +12,12 @@ import { effectiveLevelHeight } from "./hls-quality";
 export const PLAYER_QUALITY_HEIGHTS = [2160, 1440, 1080, 720, 480, 360] as const;
 export type PlayerQualityHeight = (typeof PLAYER_QUALITY_HEIGHTS)[number];
 export type PlayerQualityTarget = "auto" | PlayerQualityHeight;
-export type PlayerQualityStatus = "active" | "available" | "searching" | "unavailable";
+export type PlayerQualityStatus =
+  | "active"
+  | "available"
+  | "searching"
+  | "device-unsupported"
+  | "unavailable";
 
 export interface PlayerQualityOption {
   value: PlayerQualityTarget;
@@ -21,6 +27,8 @@ export interface PlayerQualityOption {
   levelIndex?: number;
   /** Cross-source switch when the active manifest does not carry this rung. */
   sourceId?: string;
+  /** Why discovered inventory cannot be selected on this browser/device. */
+  unavailableReason?: string;
 }
 
 export function qualityLabel(height: PlayerQualityHeight): string {
@@ -80,6 +88,35 @@ function viableSources(
   );
 }
 
+/** Same eligibility as `viableSources`, without the device codec gate. This
+ * preserves one consistent inventory across browsers while selection remains
+ * strict: unsupported media is visible and explained, never auto-played. */
+function discoveredSources(
+  sources: PlaybackSource[],
+  failedIds: ReadonlySet<string>
+): PlaybackSource[] {
+  return sources.filter(
+    (source) =>
+      !failedIds.has(source.id) &&
+      source.probe?.ok !== false &&
+      source.verified !== false
+  );
+}
+
+function discoveredSourceForQuality(
+  sources: PlaybackSource[],
+  height: PlayerQualityHeight,
+  failedIds: ReadonlySet<string>
+): PlaybackSource | null {
+  const candidates = discoveredSources(sources, failedIds).filter((source) =>
+    sourceOffersHeight(source, height)
+  );
+  // `pickDefaultSource` intentionally removes decode-incompatible sources;
+  // this inventory-only path must not. Stable id ordering keeps the explanatory
+  // reason deterministic when several unsupported releases share a rung.
+  return [...candidates].sort((a, b) => a.id.localeCompare(b.id))[0] ?? null;
+}
+
 export function selectSourceForQuality(
   sources: PlaybackSource[],
   height: PlayerQualityHeight,
@@ -112,19 +149,28 @@ export function buildPlayerQualityOptions(args: {
     const levelIndex = levelForHeight(args.activeLevels, height);
     const source = selectSourceForQuality(args.sources, height, failedIds);
     const available = levelIndex != null || source != null;
+    const discoveredSource = available
+      ? null
+      : discoveredSourceForQuality(args.sources, height, failedIds);
+    const unavailableReason = discoveredSource
+      ? sourceUnavailableReason(discoveredSource)
+      : null;
     options.push({
       value: height,
       label: qualityLabel(height),
       status:
-        args.selected === height
+        args.selected === height && available
           ? "active"
           : available
             ? "available"
-            : args.discovering
-              ? "searching"
-              : "unavailable",
+            : unavailableReason
+              ? "device-unsupported"
+              : args.discovering
+                ? "searching"
+                : "unavailable",
       ...(levelIndex != null ? { levelIndex } : {}),
       ...(source ? { sourceId: source.id } : {}),
+      ...(unavailableReason ? { unavailableReason } : {}),
     });
   }
   return options;

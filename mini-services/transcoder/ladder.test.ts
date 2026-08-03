@@ -400,11 +400,11 @@ describe("buildRemuxArgs", () => {
     expect(args.indexOf("-readrate_initial_burst")).toBeLessThan(args.indexOf("-i"));
   });
 
-  it("maps exactly one video and at most one audio stream", () => {
+  it("maps exactly one video and requires one audio stream", () => {
     // Multi-track MKVs are the norm; a stray subtitle or attachment stream
     // fails the mux into fMP4 outright.
     expect(args).toContain("0:v:0");
-    expect(args).toContain("0:a:0?");
+    expect(args).toContain("0:a:0");
   });
 
   it("maps the selected audio stream ordinal", () => {
@@ -413,8 +413,8 @@ describe("buildRemuxArgs", () => {
       outDir: "/out",
       audioStreamIndex: 2,
     });
-    expect(selected).toContain("0:a:2?");
-    expect(selected).not.toContain("0:a:0?");
+    expect(selected).toContain("0:a:2");
+    expect(selected).not.toContain("0:a:0");
   });
 
   it("keeps the whole playlist so the film stays seekable", () => {
@@ -430,6 +430,9 @@ describe("buildRemuxArgs", () => {
     });
     expect(offsetArgs[offsetArgs.indexOf("-ss") + 1]).toBe("3594");
     expect(offsetArgs.indexOf("-ss")).toBeLessThan(offsetArgs.indexOf("-i"));
+    expect(offsetArgs.indexOf("-noaccurate_seek")).toBeLessThan(
+      offsetArgs.indexOf("-ss")
+    );
     expect(offsetArgs[offsetArgs.indexOf("-avoid_negative_ts") + 1]).toBe("make_zero");
   });
 });

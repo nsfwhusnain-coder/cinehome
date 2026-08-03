@@ -77,6 +77,7 @@ import type { MediaType, PlaybackSource } from "../types";
 import {
   fetchTorrentioCandidates,
   fetchTorrentioCandidatesNoDebrid,
+  parseReleaseTitle,
   resolveImdbId,
   type DebridCandidate,
   type ReleaseCodec,
@@ -251,11 +252,12 @@ function toPlaybackSource(
   mediaType: MediaType,
   season: number,
   episode: number,
-  record: Pick<CachedStreamRecord, "url" | "compat">,
+  record: Pick<CachedStreamRecord, "url" | "compat" | "title">,
   codec?: "h264" | "hevc" | "unknown"
 ): PlaybackSource {
   const height = heightForQuality(quality);
   const safariHint = safariHintFor(record.compat, codec);
+  const release = parseReleaseTitle(record.title);
   return {
     id: buildSourceId(provider, imdbId, mediaType, season, episode, quality),
     url: record.url,
@@ -267,6 +269,10 @@ function toPlaybackSource(
     origin: "debrid",
     compat: record.compat,
     ...(codec ? { codec } : {}),
+    ...(release.audioCodec !== "unknown"
+      ? { audioCodec: release.audioCodec }
+      : {}),
+    ...(release.multiAudio ? { multiAudio: true } : {}),
   };
 }
 
@@ -311,7 +317,7 @@ function toRdPlaybackSource(
   mediaType: MediaType,
   season: number,
   episode: number,
-  record: Pick<CachedStreamRecord, "url" | "compat">,
+  record: Pick<CachedStreamRecord, "url" | "compat" | "title">,
   codec?: ReleaseCodec,
   container?: ReleaseContainer
 ): PlaybackSource {
@@ -319,6 +325,7 @@ function toRdPlaybackSource(
   const quality = slotQuality(slot);
   const safariHint = safariHintFor(record.compat, codec);
   const effectiveContainer = effectiveReleaseContainer(record.url, container);
+  const release = parseReleaseTitle(record.title);
   return {
     id: buildSourceId("realdebrid", imdbId, mediaType, season, episode, slot),
     url: record.url,
@@ -333,6 +340,10 @@ function toRdPlaybackSource(
     ...(effectiveContainer && effectiveContainer !== "unknown"
       ? { container: effectiveContainer }
       : {}),
+    ...(release.audioCodec !== "unknown"
+      ? { audioCodec: release.audioCodec }
+      : {}),
+    ...(release.multiAudio ? { multiAudio: true } : {}),
   };
 }
 

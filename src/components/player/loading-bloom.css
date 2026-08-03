@@ -1,0 +1,354 @@
+/* Orbit — loading screen.
+   The Absolute Cinema mark, alive: a glass globe holding the film's colour with
+   each discovered source entering orbit around it. Glass values are lifted
+   verbatim from brand-mark.css so the loading state and the logo are the same
+   material. Hue comes from the poster (--bloom-hue). */
+
+.bloom-stage {
+  --bloom-hue: 280;
+  --bloom-sat: 80%;
+  --bloom-fill: 0;
+
+  /* brand-mark.css glass tokens */
+  --g-blur: 18px;
+  --g-sat: 180%;
+  --g-bright: 1.15;
+  --g-fill: rgba(255, 255, 255, 0.12);
+  --g-inset: inset 0 1px 1.5px rgba(255, 255, 255, 0.45);
+  --g-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+
+  /* Apple's spring — elements settle rather than stop. */
+  --spring: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* The film's own artwork, defocused, giving the glass something to refract. */
+.bloom-art {
+  position: absolute;
+  inset: -10%;
+  width: 120%;
+  height: 120%;
+  object-fit: cover;
+  filter: blur(44px);
+  opacity: 0.62;
+  transform: scale(1.04);
+  transition:
+    opacity 900ms var(--spring),
+    filter 900ms var(--spring),
+    transform 1200ms var(--spring);
+}
+
+.bloom-veil {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    130% 120% at 50% 46%,
+    transparent 6%,
+    rgba(0, 0, 0, 0.62) 62%,
+    rgba(0, 0, 0, 0.9) 100%
+  );
+}
+
+/* Imperceptible dither. Large radial fills band visibly on a 65" OLED; this
+   breaks up the ramps without reading as texture. */
+.bloom-dither {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.bloom-system {
+  /* Single source of scale. The previous `min(40%, 280px)` was capped in
+     absolute pixels, so the whole system shrank relative to the display on
+     anything wider than ~700px — on a 1920 TV the globe rendered at roughly a
+     tenth of the frame. vmin ties it to the smaller viewport axis instead, so
+     it holds its proportion from a phone to a 65-inch panel. */
+  --sys: min(46vmin, 620px);
+  --orbit-r: calc(var(--sys) * 0.40);
+  --tilt: 24deg;
+  --orbit-dur: 32s;
+  --phase: 0deg;
+
+  position: relative;
+  width: var(--sys);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  perspective: calc(var(--sys) * 2.6);
+}
+
+.bloom-aura {
+  position: absolute;
+  inset: -30%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    hsl(var(--bloom-hue) 100% 68% / 0.4) 0%,
+    hsl(var(--bloom-hue) var(--bloom-sat) 56% / 0.14) 38%,
+    transparent 70%
+  );
+  filter: blur(30px);
+  transition:
+    inset 1000ms var(--spring),
+    opacity 800ms var(--spring),
+    filter 900ms ease;
+}
+
+/* ── the globe ─────────────────────────────────────────────── */
+.bloom-globe {
+  position: relative;
+  width: 52%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--g-fill);
+  -webkit-backdrop-filter: blur(var(--g-blur)) saturate(var(--g-sat))
+    brightness(var(--g-bright));
+  backdrop-filter: blur(var(--g-blur)) saturate(var(--g-sat))
+    brightness(var(--g-bright));
+  box-shadow:
+    var(--g-inset),
+    inset 0 -18px 34px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    var(--g-shadow),
+    0 0 50px hsl(var(--bloom-hue) var(--bloom-sat) 58% / 0.42);
+  animation: bloom-float 5.4s ease-in-out infinite;
+  transition:
+    width 1000ms var(--spring),
+    box-shadow 900ms var(--spring);
+}
+
+/* Broad specular — what stops it reading as a flat disc. */
+.bloom-globe::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(
+      circle at 32% 24%,
+      rgba(255, 255, 255, 0.62) 0%,
+      rgba(255, 255, 255, 0.14) 24%,
+      transparent 46%
+    ),
+    radial-gradient(
+      circle at 70% 82%,
+      hsl(var(--bloom-hue) 100% 76% / 0.3) 0%,
+      transparent 40%
+    );
+  pointer-events: none;
+}
+
+/* Tight second catchlight. */
+.bloom-globe::after {
+  content: "";
+  position: absolute;
+  top: 15%;
+  left: 24%;
+  width: 16%;
+  height: 11%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  filter: blur(3px);
+  pointer-events: none;
+}
+
+/* Buffer band — the only genuinely measured progress on screen. */
+.bloom-ring {
+  position: absolute;
+  inset: -9%;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 600ms var(--spring);
+  background: conic-gradient(
+    from -90deg,
+    hsl(var(--bloom-hue) 100% 78%) calc(var(--bloom-fill) * 1turn),
+    rgba(255, 255, 255, 0.07) 0
+  );
+  -webkit-mask: radial-gradient(
+    circle,
+    transparent 73%,
+    #000 74.5%,
+    #000 79%,
+    transparent 80.5%
+  );
+  mask: radial-gradient(
+    circle,
+    transparent 73%,
+    #000 74.5%,
+    #000 79%,
+    transparent 80.5%
+  );
+}
+
+/* ── the planets ───────────────────────────────────────────── */
+.bloom-orbit {
+  position: absolute;
+  inset: 0;
+  transform: rotateX(var(--tilt)) rotate(var(--phase));
+}
+
+/* One arm per planet. The arm owns POSITION (it sweeps the circle); the planet
+   inside owns DEPTH (it swells and brightens at the near point of the pass and
+   shrinks and dims at the far point). Both share a duration and a delay, so the
+   two stay locked — which is what sells a body going round something rather
+   than a dot sliding along a ring. */
+.bloom-arm {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  animation: bloom-sweep var(--orbit-dur) linear infinite;
+  animation-delay: var(--chip-delay, 0s);
+}
+
+.bloom-planet {
+  position: absolute;
+  width: 3.2%;
+  height: 3.2%;
+  min-width: 11px;
+  min-height: 11px;
+  margin: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  -webkit-backdrop-filter: blur(6px) saturate(160%);
+  backdrop-filter: blur(6px) saturate(160%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 3px 10px rgba(0, 0, 0, 0.45),
+    0 0 14px hsl(var(--bloom-hue) 100% 70% / 0.45);
+  opacity: 0;
+  animation: bloom-depth var(--orbit-dur) ease-in-out infinite;
+  animation-delay: var(--chip-delay, 0s);
+  transition: opacity 620ms var(--spring);
+}
+
+.bloom-planet[data-on="1"] {
+  opacity: 1;
+}
+
+/* Premium 4K tier — Poseidon / Hades. */
+.bloom-planet[data-premium="1"] {
+  width: 4.6%;
+  height: 4.6%;
+  min-width: 16px;
+  min-height: 16px;
+  background: hsl(var(--bloom-hue) 90% 80% / 0.34);
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.7),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.32),
+    0 4px 14px rgba(0, 0, 0, 0.5),
+    0 0 24px hsl(var(--bloom-hue) 100% 74% / 0.8);
+}
+
+/* The source being attached right now. */
+.bloom-planet[data-chosen="1"] {
+  width: 5%;
+  height: 5%;
+  min-width: 18px;
+  min-height: 18px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.9),
+    0 0 24px #fff,
+    0 0 46px hsl(var(--bloom-hue) 100% 70% / 0.75);
+}
+
+/* ── phases ────────────────────────────────────────────────── */
+.bloom-stage[data-phase="searching"] .bloom-globe { width: 46%; }
+.bloom-stage[data-phase="searching"] .bloom-aura { inset: -38%; opacity: 0.8; }
+.bloom-stage[data-phase="searching"] .bloom-art { filter: blur(48px); opacity: 0.5; }
+
+.bloom-stage[data-phase="connecting"] .bloom-globe { width: 54%; }
+.bloom-stage[data-phase="connecting"] .bloom-aura { inset: -24%; opacity: 1; }
+.bloom-stage[data-phase="connecting"] .bloom-art { filter: blur(38px); opacity: 0.72; }
+
+.bloom-stage[data-phase="buffering"] .bloom-globe { width: 57%; }
+.bloom-stage[data-phase="buffering"] .bloom-aura { inset: -18%; opacity: 1; }
+.bloom-stage[data-phase="buffering"] .bloom-art { filter: blur(30px); opacity: 0.84; }
+.bloom-stage[data-phase="buffering"] .bloom-ring { opacity: 1; }
+
+@keyframes bloom-float {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-2.5%) scale(1.02);
+  }
+}
+
+@keyframes bloom-sweep {
+  from {
+    transform: rotate(0deg) translateX(var(--orbit-r));
+  }
+  to {
+    transform: rotate(360deg) translateX(var(--orbit-r));
+  }
+}
+
+/* Depth pass. 0% is the far side of the orbit — small, dim, slightly behind
+   the glass; 50% is the near side — larger, brighter, in front. The result is
+   a body that recedes and returns rather than a dot on a fixed circle. */
+@keyframes bloom-depth {
+  0% {
+    transform: translate(-50%, -50%) scale(0.58);
+    opacity: 0.34;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.18);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(0.58);
+    opacity: 0.34;
+  }
+}
+
+/* ── TV profile ────────────────────────────────────────────────
+   backdrop-filter is the most expensive thing on webOS and this overlay is
+   on screen exactly when the player is at its busiest. Swap live glass for a
+   painted approximation: same read, no per-frame filtering. */
+.bloom-stage[data-device="tv"] .bloom-globe {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background:
+    radial-gradient(
+      circle at 34% 26%,
+      rgba(255, 255, 255, 0.26),
+      rgba(255, 255, 255, 0.08) 46%,
+      rgba(255, 255, 255, 0.03) 70%
+    ),
+    hsl(var(--bloom-hue) 60% 42% / 0.3);
+  animation-duration: 8s;
+}
+
+.bloom-stage[data-device="tv"] .bloom-planet {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.bloom-stage[data-device="tv"] .bloom-art {
+  filter: none;
+  opacity: 0.34;
+}
+
+.bloom-stage[data-device="tv"] .bloom-aura {
+  filter: none;
+}
+
+.bloom-stage[data-device="tv"] .bloom-arm,
+.bloom-stage[data-device="tv"] .bloom-planet {
+  animation-duration: calc(var(--orbit-dur) * 1.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bloom-globe,
+  .bloom-arm,
+  .bloom-planet {
+    animation: none;
+  }
+}

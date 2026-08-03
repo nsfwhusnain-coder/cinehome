@@ -15,6 +15,7 @@ import {
   formatResolutionLabel,
   isSourcePlayableHere,
   preferenceKey,
+  sourceUnavailableReason,
 } from "@/lib/playback/source-quality";
 import { setPreferredProvider } from "@/lib/player-preferences";
 import type { PlaybackSource } from "@/lib/playback/types";
@@ -374,11 +375,15 @@ export function PlayerDock({
         <div className="space-y-0.5">
           {qualityTargets.map((option) => {
             const disabled =
-              option.status === "unavailable" || option.status === "searching";
+              option.status === "unavailable" ||
+              option.status === "searching" ||
+              option.status === "device-unsupported";
             return (
               <OptionRow
                 key={option.value}
-                active={activeQualityTarget === option.value}
+                active={
+                  option.status === "active" && activeQualityTarget === option.value
+                }
                 disabled={disabled}
                 onClick={() => onQualityTargetChange(option.value)}
               >
@@ -388,6 +393,11 @@ export function PlayerDock({
                 )}
                 {option.status === "unavailable" && (
                   <span className="text-white/35"> · unavailable</span>
+                )}
+                {option.status === "device-unsupported" && (
+                  <span className="text-white/40">
+                    {" "}· {option.unavailableReason ?? "not supported here"}
+                  </span>
                 )}
                 {option.value === "auto" && playingHeight > 0 && (
                   <span className="text-white/40">
@@ -413,6 +423,9 @@ export function PlayerDock({
             const failed = slot.status === "failed";
             const hasSource = !!slot.source;
             const selectable = !!slot.source && isSourcePlayableHere(slot.source);
+            const unavailableReason = slot.source
+              ? sourceUnavailableReason(slot.source)
+              : null;
             return (
               <button
                 key={slot.id}
@@ -423,7 +436,7 @@ export function PlayerDock({
                 onClick={() => selectable && slot.source && pickSource(slot.source)}
                 aria-label={
                   hasSource && !selectable
-                    ? `${slot.name} — unavailable in this browser`
+                    ? `${slot.name} — ${unavailableReason ?? "unavailable in this browser"}`
                     : slot.name
                 }
                 className={cn(
@@ -461,8 +474,15 @@ export function PlayerDock({
                 )}
                 {slot.status === "active" && <Check className="h-3.5 w-3.5 shrink-0 text-[#c026d3]" />}
                 {hasSource && !selectable && (
-                  <span className="shrink-0 text-[9px] uppercase tracking-wide text-white/40">
-                    Unavailable
+                  <span
+                    className="max-w-32 shrink-0 truncate text-[9px] uppercase tracking-wide text-white/40"
+                    title={unavailableReason ?? undefined}
+                  >
+                    {slot.source?.codec === "hevc"
+                      ? "HEVC unsupported"
+                      : slot.source?.codec === "av1"
+                        ? "AV1 unsupported"
+                        : "Unsupported codec"}
                   </span>
                 )}
               </button>
