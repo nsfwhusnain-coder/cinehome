@@ -158,11 +158,18 @@ export function MovieCard({
         ) : null}
       </div>
 
+      {/* The title link below points at the same href as the artwork link above.
+          For anyone not using a pointer it is a duplicate: it doubled the tab
+          stops on a catalogue page (measured 1184 focusable elements on /movies)
+          and made every card announce itself twice. On a television that is two
+          D-pad presses per title before you have moved anywhere. It stays
+          clickable for mouse users, out of the tab order and the a11y tree. */}
       {!hideMeta ? (
         <Link
           href={href}
-          className="mt-2 block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={`Open details for ${title}`}
+          tabIndex={-1}
+          aria-hidden="true"
+          className="mt-2 block"
         >
           <div
             className="card-title max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-semibold text-white"

@@ -265,3 +265,56 @@ html[data-tv="1"] .player-shell .player-controls-top button {
 html[data-tv="1"] {
   scroll-behavior: smooth;
 }
+
+/* ── Television layout ──────────────────────────────────────────────────────
+   Measured on the live site at 1920x1080: the sign-in card rendered at the same
+   physical size as on a laptop — about 23% of screen width — body copy stayed at
+   14-16px, and 8 elements sat below 14px. At three metres that is unreadable,
+   and the nav pill sat roughly 35px from the top and right edges, inside the
+   3-5% band televisions commonly overscan and simply do not display.
+
+   Both are fixed here rather than per-component, because the device class is
+   already known: tv-spatial-navigation.tsx sets html[data-tv="1"] whenever
+   isTvLikeDevice() is true. Everything below is scoped to that and cannot
+   affect a desktop or phone. */
+
+/* Type scale. Rem-based sizing across the app means one root bump lifts
+   everything proportionally, rather than chasing individual components. */
+html[data-tv="1"] {
+  font-size: 20px;
+}
+
+/* Title-safe inset. Nothing interactive or informational may sit inside the
+   band a television can clip. Applied as scroll padding and to the fixed
+   chrome, not as a body margin, so full-bleed hero artwork still reaches the
+   physical edge — losing a few pixels of a backdrop is fine, losing the
+   navigation is not. */
+html[data-tv="1"] body {
+  scroll-padding: 5vh 5vw;
+}
+
+html[data-tv="1"] header.fixed,
+html[data-tv="1"] nav.fixed,
+html[data-tv="1"] [data-tv-safe] {
+  padding-top: max(2.5vh, 1rem);
+  padding-right: max(3vw, 1rem);
+  padding-left: max(3vw, 1rem);
+}
+
+/* Nothing below 1rem: at 20px root that is a 20px floor, which is legible from
+   a sofa. Caption and metadata classes are the usual offenders. */
+html[data-tv="1"] .text-xs,
+html[data-tv="1"] .text-\[11px\],
+html[data-tv="1"] .text-\[10px\] {
+  font-size: 0.85rem;
+}
+
+html[data-tv="1"] .text-sm {
+  font-size: 0.95rem;
+}
+
+/* The sign-in card is a fixed max-width column that looked lost on a 65-inch
+   panel. Widen it in proportion rather than leaving 80% of the screen empty. */
+html[data-tv="1"] .max-w-md {
+  max-width: 34rem;
+}
