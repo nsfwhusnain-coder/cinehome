@@ -112,14 +112,33 @@ export function probeDecodeSync(types: readonly string[]): DecodeSupport {
 const hevcCache: { value: DecodeSupport | null } = { value: null };
 const av1Cache: { value: DecodeSupport | null } = { value: null };
 
+/**
+ * A server render has no `window`, so `probeDecodeSync` correctly answers "no"
+ * — but that answer must never be CACHED. These caches are module-level, and a
+ * Next.js server process is long-lived, so one server-side call would latch
+ * "this machine cannot decode HEVC" for every request the process ever serves
+ * afterwards. `buildCoordinatorShadowDecision` calls straight into
+ * `isSourcePlayableHere` from the playback route, which is exactly that path:
+ * without this guard every shadow decision reports the entire HEVC tier
+ * ineligible, and the telemetry meant to inform codec decisions is measuring
+ * Node rather than the viewer's browser.
+ */
+function cachedProbe(
+  cache: { value: DecodeSupport | null },
+  types: readonly string[]
+): DecodeSupport {
+  if (cache.value) return cache.value;
+  if (typeof window === "undefined") return UNSUPPORTED;
+  cache.value = probeDecodeSync(types);
+  return cache.value;
+}
+
 export function hevcSupport(): DecodeSupport {
-  if (!hevcCache.value) hevcCache.value = probeDecodeSync(HEVC_PROBE_TYPES);
-  return hevcCache.value;
+  return cachedProbe(hevcCache, HEVC_PROBE_TYPES);
 }
 
 export function av1Support(): DecodeSupport {
-  if (!av1Cache.value) av1Cache.value = probeDecodeSync(AV1_PROBE_TYPES);
-  return av1Cache.value;
+  return cachedProbe(av1Cache, AV1_PROBE_TYPES);
 }
 
 export function supportsHevc(): boolean {

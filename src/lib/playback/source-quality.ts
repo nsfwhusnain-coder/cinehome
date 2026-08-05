@@ -307,11 +307,22 @@ function isHevcSource(source: PlaybackSource): boolean {
 }
 
 /**
- * Cached once per session — capability never changes mid-session, and this
- * runs per-source inside hot ranking paths (scoreSource/pickDefaultSource
- * over a 30-40 source roster), so re-probing on every call is wasted work.
+ * Deliberately NOT cached here.
+ *
+ * This used to hold its own `boolean | null` on the grounds that capability
+ * cannot change mid-session. It can. `warmDecodeCapabilities()` asks
+ * mediaCapabilities whether 4K HEVC really decodes and upgrades
+ * decode-capability's cache when the string matrix was too conservative — and
+ * it runs from the player (video-player.tsx), which is AFTER the roster has
+ * already been ranked and badged. So the first, pre-warm answer got latched
+ * here for the whole session and the correction never reached the UI: the
+ * roster kept reporting "HEVC is not supported by this browser" on a browser
+ * that had just been measured decoding it.
+ *
+ * There is no cost to dropping it. `supportsHevc()` is itself cached inside
+ * decode-capability.ts, so the hot ranking path still resolves this to one
+ * object read per call — it just reads the value that can still be corrected.
  */
-let hevcSupportCache: boolean | null = null;
 
 /**
  * Real HEVC decode capability for THIS browser, covering BOTH playback paths
@@ -326,21 +337,12 @@ let hevcSupportCache: boolean | null = null;
  *    audience. Either signal being true is enough.
  */
 function browserSupportsHevc(): boolean {
-  if (hevcSupportCache !== null) return hevcSupportCache;
-  hevcSupportCache = detectHevcSupport();
-  return hevcSupportCache;
-}
-
-function detectHevcSupport(): boolean {
   // Delegates to decode-capability.ts, which probes a MATRIX of HEVC strings
   // across the tiers actually shipped. The single string this used to test
   // (`hvc1.1.6.L93.B0`) is Main 8-bit at level 3.1 — roughly 720p — and its
   // answer was being applied to 4K Main10, which is a different capability.
   return supportsHevc();
 }
-
-/** Same cache pattern as `hevcSupportCache` — capability is static per session. */
-let av1SupportCache: boolean | null = null;
 
 /**
  * Real AV1 decode capability for THIS browser. AV1-in-MP4 has the OPPOSITE
@@ -353,14 +355,9 @@ let av1SupportCache: boolean | null = null;
  * actual progressive-MP4 path RD's direct sources use.
  */
 function browserSupportsAv1(): boolean {
-  if (av1SupportCache !== null) return av1SupportCache;
-  av1SupportCache = detectAv1Support();
-  return av1SupportCache;
-}
-
-function detectAv1Support(): boolean {
   // Same correction as HEVC: `av01.0.05M.08` is level 5, 8-bit, and its answer
-  // was applied to 4K 10-bit HDR releases.
+  // was applied to 4K 10-bit HDR releases. Uncached here for the same reason —
+  // warmDecodeCapabilities() can still upgrade this answer.
   return supportsAv1();
 }
 
