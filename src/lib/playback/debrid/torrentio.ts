@@ -36,6 +36,7 @@
  */
 import { tmdb } from "@/lib/tmdb";
 import type { MediaType } from "../types";
+import { isCaptureRelease, releaseQualityScore } from "../release-scorer";
 
 const TORRENTIO_BASE = (process.env.TORRENTIO_BASE || "https://torrentio.strem.fun").replace(
   /\/+$/,
@@ -158,8 +159,9 @@ const RESOLUTION_1080_PATTERN = /1080p/i;
 const RESOLUTION_ANY_PATTERN = /(\d{3,4})p/i;
 const SEEDERS_PATTERN = /👤[^\d]*(\d+)/;
 const SIZE_PATTERN = /(\d+(?:\.\d+)?)\s*(GiB|GB|MiB|MB)\b/i;
-const CAPTURE_RELEASE_PATTERN =
-  /\b(?:hd[ ._-]?ts|hdcam|camrip|cam|telesync|telecine)\b/i;
+/* The capture pattern moved to release-scorer.ts so the drop below and the
+   ranking penalty there cannot drift apart. It is slightly broader now
+   (hdtc, and separators inside telesync/telecine/camrip). */
 const MOVIE_NON_FEATURE_PATTERN =
   /\b(?:featurettes?|bonus(?:es)?|extras?|soundtracks?|deleted[ ._-]?scenes?|imdb[ ._-]*top[ ._-]*\d+)\b/i;
 
@@ -357,7 +359,14 @@ function sizeFitnessScore(c: DebridCandidate, mediaType: MediaType): number {
   );
 }
 
-/** Composite size fitness + bounded popularity + container confidence. */
+/**
+ * Composite size fitness + bounded popularity + container confidence + how the
+ * release was mastered.
+ *
+ * That last term is what stops a cam rip winning a class on seeders alone —
+ * and a freshly-leaked cam has excellent seeders. See release-scorer.ts for
+ * why it is bounded well below size fitness rather than allowed to dominate.
+ */
 function candidateRankScore(c: DebridCandidate, mediaType: MediaType): number {
   const seederScore = Math.min(c.seeders, SEEDERS_SCORE_CAP) * SEEDERS_WEIGHT;
   const containerScore =
@@ -366,7 +375,8 @@ function candidateRankScore(c: DebridCandidate, mediaType: MediaType): number {
     c.resolutionHeight +
     sizeFitnessScore(c, mediaType) +
     seederScore +
-    containerScore
+    containerScore +
+    releaseQualityScore(c)
   );
 }
 
@@ -531,7 +541,7 @@ function parseTorrentioStreams(
       continue;
     }
     const text = `${s.title ?? ""} ${s.name ?? ""} ${s.behaviorHints?.filename ?? ""}`;
-    if (CAPTURE_RELEASE_PATTERN.test(text)) continue;
+    if (isCaptureRelease(text)) continue;
     if (mediaType === "movie" && MOVIE_NON_FEATURE_PATTERN.test(text)) {
       continue;
     }

@@ -268,6 +268,38 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
     ]);
   });
 
+  it("breaks a size/seeder tie on how the release was mastered", async () => {
+    // Identical class, container, size and seeders — the only difference is
+    // WEB-DL vs WEBRip. Before release-scorer.ts nothing in candidateRankScore
+    // described mastering at all, so these tied and input order decided it.
+    // The weaker release is listed first here so a pass cannot come from the
+    // input order being preserved.
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        streams: [
+          {
+            title: "Movie.2024.1080p.WEBRip.H264.mp4\n👤 100 💾 3 GB",
+            infoHash: "1".repeat(40),
+          },
+          {
+            title: "Movie.2024.1080p.WEB-DL.H264.mp4\n👤 100 💾 3 GB",
+            infoHash: "2".repeat(40),
+          },
+        ],
+      })) as unknown as typeof fetch;
+
+    const candidates = await fetchTorrentioCandidates({
+      imdbId: "tt0000009",
+      mediaType: "movie",
+      rdToken: FAKE_TOKEN,
+    });
+
+    expect(candidates.map((candidate) => candidate.infoHash)).toEqual([
+      "2".repeat(40),
+      "1".repeat(40),
+    ]);
+  });
+
   it("drops explicit RD-download rows but retains an instant native 720p fallback", async () => {
     globalThis.fetch = (async () =>
       jsonResponse({
