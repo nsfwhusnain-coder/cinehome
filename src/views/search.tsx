@@ -314,7 +314,13 @@ export function SearchView({ initialQuery, initialGenre, initialType }: Props) {
               {heading ? ` for “${heading}”` : ""}
               {initialType !== "all" ? ` · ${initialType === "tv" ? "TV" : initialType}` : ""}
             </p>
+            {/* key=query forces the enter animation to re-run when the first
+                results arrive. On direct navigation the grid mounts AFTER the
+                empty-branch motion.div above, so without a key change Framer
+                Motion keeps the grid stuck at the "hidden" variant (opacity 0)
+                until any interaction triggers a re-render. */}
             <motion.div
+              key={`results-${initialQuery}-${initialGenre ?? ""}-${results.length}`}
               className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6"
               variants={staggerContainer}
               initial="hidden"

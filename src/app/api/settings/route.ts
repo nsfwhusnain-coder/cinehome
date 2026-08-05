@@ -49,7 +49,23 @@ export async function GET() {
     playbackProvider: out.playback_provider,
   };
 
-  return NextResponse.json({ settings: out, status, isAdmin: user.isAdmin, providers: listProviders() });
+  // Non-admins only ever need their own playback prefs + flags. The provider
+  // registry and server status stay admin-only — this used to ship the full
+  // payload (including providers + status) to every signed-in user.
+  if (!user.isAdmin) {
+    const nonAdminKeys = ["playback_provider", ...FLAG_KEYS];
+    for (const key of Object.keys(out)) {
+      if (!nonAdminKeys.includes(key)) delete out[key];
+    }
+    return NextResponse.json({
+      settings: out,
+      status: { tmdb: false, playbackProvider: out.playback_provider },
+      isAdmin: false,
+      providers: [],
+    });
+  }
+
+  return NextResponse.json({ settings: out, status, isAdmin: true, providers: listProviders() });
 }
 
 export async function POST(req: NextRequest) {

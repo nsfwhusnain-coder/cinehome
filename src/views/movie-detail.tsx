@@ -50,11 +50,17 @@ function formatLanguage(code: string): string {
 }
 
 export function DetailView({ mediaType, id, initialData }: Props) {
-  const { data, isLoading, isError, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["tmdb", mediaType, "details", id],
     queryFn: async () => {
       const res = await fetch(`/api/tmdb/${mediaType}/${id}`);
-      if (!res.ok) throw new Error("Failed to load");
+      if (!res.ok) {
+        const err = new Error(
+          res.status === 404 ? "This title doesn't exist" : "Failed to load"
+        ) as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
       return res.json();
     },
     initialData,
@@ -83,11 +89,20 @@ export function DetailView({ mediaType, id, initialData }: Props) {
   }
 
   if (!data) {
+    const isNotFound =
+      (error as { status?: number } | null)?.status === 404 ||
+      (error as Error | null)?.message === "This title doesn't exist";
     return (
       <div className="flex min-h-screen items-center justify-center px-4 pt-20">
         <BrowseError
           label="this title"
-          hint={isError ? "If this keeps happening, check the server's TMDB API key." : undefined}
+          hint={
+            isNotFound
+              ? "It may have been removed from the catalog."
+              : isError
+                ? "If this keeps happening, check the server's TMDB API key."
+                : undefined
+          }
           onRetry={() => refetch()}
         />
       </div>
