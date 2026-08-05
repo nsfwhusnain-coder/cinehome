@@ -363,15 +363,31 @@ html[data-tv="1"] [data-tv-safe] {
   padding-left: max(3vw, 1rem);
 }
 
-/* Nothing below 1rem: at 20px root that is a 20px floor, which is legible from
-   a sofa. Caption and metadata classes are the usual offenders. */
-html[data-tv="1"] .text-xs,
-html[data-tv="1"] .text-\[11px\],
-html[data-tv="1"] .text-\[10px\] {
+/* Caption and metadata sizes, floored so nothing falls below what is legible
+   from a sofa.
+
+   The pixel-valued classes are the important half. A `text-[10px]` is an
+   absolute size: it ignores the root entirely, so while the rest of the page
+   doubled on a 4K panel that caption stayed at ten physical pixels — invisible
+   at three metres, and a large part of why the type read as broken rather than
+   merely small. Only 10px and 11px were covered before; the app also uses 12,
+   13 and 15, and the rem-valued arbitraries sit below the floor too. */
+html[data-tv="1"] :where(
+    .text-xs,
+    .text-\[10px\],
+    .text-\[11px\],
+    .text-\[12px\],
+    .text-\[0\.7rem\],
+    .text-\[0\.75rem\]
+  ) {
   font-size: 0.85rem;
 }
 
-html[data-tv="1"] .text-sm {
+html[data-tv="1"] :where(.text-\[13px\], .text-\[0\.8rem\]) {
+  font-size: 0.9rem;
+}
+
+html[data-tv="1"] :where(.text-sm, .text-\[15px\], .text-\[0\.9rem\]) {
   font-size: 0.95rem;
 }
 

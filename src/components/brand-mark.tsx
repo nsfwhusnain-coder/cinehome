@@ -19,6 +19,18 @@ const SIZE_PX: Record<BrandMarkSize, number> = {
 };
 
 /**
+ * The mark is emitted in rem rather than px so it scales with the root font,
+ * which is the only thing that lifts it on a television. `--ab-size` is set
+ * inline and everything else in brand-mark.css derives from it, so a
+ * stylesheet rule could not reach it — the mark stayed at a literal 56px while
+ * the type around it doubled, and on a 4K panel it shrank to a thumbnail.
+ *
+ * Desktop is unaffected to the pixel: the root font is 16px there, so every
+ * value below resolves to exactly what it replaced.
+ */
+const ROOT_FONT_PX = 16;
+
+/**
  * Absolute Cinema AB — LIVE transparent glass.
  * Compact physics auto-apply when size ≤ 72px.
  * Must NOT sit inside a parent with backdrop-filter.
@@ -34,7 +46,7 @@ export function BrandMark({ size = "nav", className }: Props) {
       className={cn("ab-glass", className)}
       data-size={size}
       data-compact={compact ? "true" : "false"}
-      style={{ ["--ab-size" as string]: `${px}px` }}
+      style={{ ["--ab-size" as string]: `${px / ROOT_FONT_PX}rem` }}
     >
       <span className="ab-glass__letter-wrap" aria-hidden>
         <span className="ab-glass__letters">AB</span>
