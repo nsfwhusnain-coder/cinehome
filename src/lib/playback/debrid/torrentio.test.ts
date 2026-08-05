@@ -40,6 +40,22 @@ describe("parseReleaseTitle", () => {
     expect(r.compat).toBe("safari");
   });
 
+  it("an explicit 1080p beats a bare marketing 4K in the same name", () => {
+    // Real roster entry for Inception. Read as 2160p it becomes the top-ranked
+    // native-2160 candidate (MP4 outranks the MKV alternative on container) and
+    // takes the only 4K slot a Chrome session can use, hiding the genuine 4K
+    // AV1 release behind it.
+    const r = parseReleaseTitle("Inception - Directors Cut 2010 Eng Ita Multi-Subs 4K 1080p");
+    expect(r.resolutionHeight).toBe(1080);
+  });
+
+  it("still reads a bare 4K as 2160p when nothing contradicts it", () => {
+    expect(parseReleaseTitle("Movie.2024.4K.HDR.WEB-DL.H264").resolutionHeight).toBe(2160);
+    expect(parseReleaseTitle("Movie.2024.2160p.WEB-DL").resolutionHeight).toBe(2160);
+    // An explicit 2160p is real evidence and outranks a stray 1080p token.
+    expect(parseReleaseTitle("Movie.2024.2160p.upscaled.from.1080p").resolutionHeight).toBe(2160);
+  });
+
   it("1080p WEB-DL H264 -> 1080p, h264, no hdr, native (Chrome-safe)", () => {
     const r = parseReleaseTitle("Movie.2024.1080p.WEB-DL.H264-GRP");
     expect(r.resolutionHeight).toBe(1080);

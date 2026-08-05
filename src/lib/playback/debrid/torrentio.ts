@@ -154,7 +154,18 @@ const WEBM_PATTERN = /\.webm\b|\bwebm\b/i;
 const MOV_PATTERN = /\.mov\b|\bmov\b/i;
 /** REMUX releases are near-universally packaged as MKV even when the title never says ".mkv" literally — LIVE DATA confirms many 4K releases are exactly this shape. Only applied when no explicit container token was already found. */
 const REMUX_PATTERN = /\bremux\b/i;
-const RESOLUTION_2160_PATTERN = /2160p|\b4k\b/i;
+/**
+ * `2160p` is a real resolution tag. A bare `4K` is a marketing word, and it
+ * turns up in names that carry an explicit 1080p tag as well — a live roster
+ * for Inception offers "Inception - Directors Cut 2010 Eng Ita Multi-Subs 4K
+ * 1080p", which is a 1080p file. Reading that as 2160p is not a cosmetic
+ * mislabel: it is the top-ranked member of the native-2160 class (MP4 beats
+ * the MKV alternative on container), so it takes the one 4K roster slot a
+ * Chrome session can actually use and leaves the genuine 4K AV1 release
+ * sitting behind it unused.
+ */
+const RESOLUTION_2160_EXPLICIT_PATTERN = /2160p/i;
+const RESOLUTION_4K_MARKETING_PATTERN = /\b4k\b/i;
 const RESOLUTION_1080_PATTERN = /1080p/i;
 const RESOLUTION_ANY_PATTERN = /(\d{3,4})p/i;
 const SEEDERS_PATTERN = /👤[^\d]*(\d+)/;
@@ -173,8 +184,11 @@ export function parseReleaseTitle(text: string): ParsedRelease {
   const t = text || "";
 
   let resolutionHeight: number | null;
-  if (RESOLUTION_2160_PATTERN.test(t)) resolutionHeight = 2160;
+  // Explicit 2160p wins outright; an explicit 1080p beats a bare "4K"; a bare
+  // "4K" with no competing tag is still the best evidence available.
+  if (RESOLUTION_2160_EXPLICIT_PATTERN.test(t)) resolutionHeight = 2160;
   else if (RESOLUTION_1080_PATTERN.test(t)) resolutionHeight = 1080;
+  else if (RESOLUTION_4K_MARKETING_PATTERN.test(t)) resolutionHeight = 2160;
   else {
     const m = t.match(RESOLUTION_ANY_PATTERN);
     resolutionHeight = m ? Number(m[1]) : null;
