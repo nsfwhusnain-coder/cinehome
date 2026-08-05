@@ -279,9 +279,71 @@ html[data-tv="1"] {
    affect a desktop or phone. */
 
 /* Type scale. Rem-based sizing across the app means one root bump lifts
-   everything proportionally, rather than chasing individual components. */
+   everything proportionally, rather than chasing individual components.
+
+   The flat 20px this replaces silently assumed a 1920 CSS-pixel viewport. A 4K
+   panel that reports its full 3840 — Android TV and Google TV browsers do;
+   webOS instead reports 1920 at devicePixelRatio 2 — got that same 20px spread
+   across twice the width, so every glyph rendered at half its intended
+   physical size. Deriving the root size from the viewport is ratio-agnostic
+   and fixes both panels at once: it lands on exactly 20px at 1920, 40px at
+   3840, and the two are the same apparent size from a sofa. */
 html[data-tv="1"] {
-  font-size: 20px;
+  font-size: clamp(18px, calc(100vw / 96), 44px);
+}
+
+/* Grayscale antialiasing thins every stroke. That is a fair trade on a phone
+   held at arm's length and a bad one on a panel three metres away, where the
+   thinned stems are most of what makes the text read as soft and smeared. */
+html[data-tv="1"] body {
+  -webkit-font-smoothing: auto;
+}
+
+/* Sub-normal weights do not survive the viewing distance. */
+html[data-tv="1"] :where(.font-thin, .font-extralight, .font-light) {
+  font-weight: 400;
+}
+
+/* Secondary copy at oklch(0.7) over this canvas measures about 5:1 — fine on a
+   monitor, marginal once a television's gamma and its picture mode have had
+   their say. */
+html[data-tv="1"].dark {
+  --muted-foreground: oklch(0.82 0.006 280);
+}
+
+/* ── Television performance ─────────────────────────────────────────────────
+   backdrop-filter is the most expensive thing a TV browser can be handed: it
+   re-samples everything beneath the element, every frame, and this app asks
+   for it in fifty places. Every one of them already sits on a dark translucent
+   backing, so removing the live blur costs almost nothing to look at and takes
+   the entire per-frame cost with it. */
+html[data-tv="1"] * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* The brand mark is the one place that needs its fill restored by hand.
+   brand-mark.css already carries the right colour in an `@supports not
+   (backdrop-filter)` block — but that tests for the *feature*, and a television
+   has it and is merely being told not to spend it here, so the fallback never
+   fires. Without this the mark degrades to a 12%-white square. */
+html[data-tv="1"] :where(.ab-glass, .ab-glass-pill) {
+  background: rgba(18, 18, 24, 0.6);
+}
+
+/* The two backings thin enough to have been leaning on that blur for contrast. */
+html[data-tv="1"] .bg-black\/40 {
+  background-color: rgb(0 0 0 / 0.72);
+}
+
+html[data-tv="1"] .bg-black\/50 {
+  background-color: rgb(0 0 0 / 0.78);
+}
+
+/* Wide-radius shadows are re-rasterised whenever the element moves, which on a
+   focus-driven interface is constantly. Keep the lift, drop the radius. */
+html[data-tv="1"] :where(.shadow-2xl, .shadow-xl) {
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.55);
 }
 
 /* Title-safe inset. Nothing interactive or informational may sit inside the

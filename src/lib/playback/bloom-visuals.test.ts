@@ -6,6 +6,7 @@ import {
   MAX_CHIPS,
   premiumSourceCount,
   tmdbPathFromUrl,
+  tmdbUrlAtSize,
 } from "./bloom-visuals";
 import type { PlaybackSource } from "./types";
 
@@ -136,5 +137,34 @@ describe("premiumSourceCount", () => {
 
   it("is zero for an empty roster", () => {
     expect(premiumSourceCount([])).toBe(0);
+  });
+});
+
+describe("tmdbUrlAtSize", () => {
+  const BACKDROP = "https://image.tmdb.org/t/p/w1280/abc123_DEF.jpg";
+
+  it("swaps the rendition segment", () => {
+    expect(tmdbUrlAtSize(BACKDROP, "w300")).toBe(
+      "https://image.tmdb.org/t/p/w300/abc123_DEF.jpg"
+    );
+  });
+
+  it("replaces the original size whatever it was", () => {
+    expect(tmdbUrlAtSize("https://image.tmdb.org/t/p/original/x.jpg", "w300")).toBe(
+      "https://image.tmdb.org/t/p/w300/x.jpg"
+    );
+  });
+
+  it("returns a non-TMDB URL untouched", () => {
+    // The loading screen must still show whatever art it was handed; an
+    // unrecognised host is not a reason to render nothing.
+    const other = "https://example.com/art/backdrop.jpg";
+    expect(tmdbUrlAtSize(other, "w300")).toBe(other);
+  });
+
+  it("passes through an absent URL", () => {
+    expect(tmdbUrlAtSize(null, "w300")).toBeNull();
+    expect(tmdbUrlAtSize(undefined, "w300")).toBeNull();
+    expect(tmdbUrlAtSize("", "w300")).toBeNull();
   });
 });

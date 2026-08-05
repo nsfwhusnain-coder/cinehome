@@ -56,6 +56,29 @@ export function tmdbPathFromUrl(url: string | null | undefined): string | null {
 }
 
 /**
+ * The same TMDB image at a different rendition, or the input unchanged when it
+ * is not a TMDB URL.
+ *
+ * Used to hand televisions a deliberately small backdrop. The loading art is
+ * meant to be defocused, and a `filter: blur()` over a full-bleed image is one
+ * of the most expensive things a TV browser can be asked to do — so expensive
+ * that the TV branch used to switch the blur off entirely and leave a sharp
+ * backdrop sitting behind glass that exists to refract it, which is what made
+ * the screen look wrong on a television rather than merely plainer. Requesting
+ * a small rendition and letting the panel scale it up gives the same softness
+ * for free, and decodes a fraction of the pixels while the player is at its
+ * busiest.
+ */
+export function tmdbUrlAtSize(
+  url: string | null | undefined,
+  size: string
+): string | null {
+  if (!url) return null;
+  const match = url.match(/^(https?:\/\/[^/]+\/t\/p\/)[^/]+(\/.+)$/i);
+  return match ? `${match[1]}${size}${match[2]}` : url;
+}
+
+/**
  * Which phase the bloom is in.
  *
  * Deliberately the same signals the previous stage rail keyed off, so the

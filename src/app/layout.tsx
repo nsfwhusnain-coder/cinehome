@@ -6,6 +6,7 @@ import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { Providers } from "@/components/providers";
 import { PWARegister } from "@/components/pwa-register";
 import { TvSpatialNavigation } from "@/components/tv-spatial-navigation";
+import { tvDetectionBootstrapScript } from "@/lib/tv-detect";
 
 const inter = localFont({
   src: "./fonts/inter-latin.woff2",
@@ -71,6 +72,9 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${montserrat.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
+        {/* Must run before anything paints — it decides the root font size.
+            See tvDetectionBootstrapScript() for why this cannot wait for React. */}
+        <script dangerouslySetInnerHTML={{ __html: tvDetectionBootstrapScript() }} />
         <Providers>{children}</Providers>
         <Toaster />
         <SonnerToaster />

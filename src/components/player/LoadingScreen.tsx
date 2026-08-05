@@ -9,9 +9,17 @@ import {
   FALLBACK_HUE,
   hexToHue,
   tmdbPathFromUrl,
+  tmdbUrlAtSize,
 } from "@/lib/playback/bloom-visuals";
 import { orbitSignature } from "@/lib/playback/orbit-signature";
 import "./loading-bloom.css";
+
+/**
+ * Small on purpose — the panel upscales it into exactly the soft wash the glass
+ * is meant to refract, with no filter to evaluate and roughly a twentieth of
+ * the pixels to decode. See tmdbUrlAtSize().
+ */
+const TV_BACKDROP_RENDITION = "w300";
 
 export interface LoadingScreenProps {
   backdropUrl?: string | null;
@@ -108,6 +116,13 @@ export function LoadingScreen({
     () => (visible ? detectDeviceClass() : "desktop"),
     [visible]
   );
+  const artUrl = useMemo(
+    () =>
+      deviceClass === "tv"
+        ? tmdbUrlAtSize(backdropUrl, TV_BACKDROP_RENDITION)
+        : backdropUrl,
+    [deviceClass, backdropUrl]
+  );
 
   if (!visible) return null;
 
@@ -131,10 +146,10 @@ export function LoadingScreen({
       aria-live="polite"
       aria-label={`Loading ${title}`}
     >
-      {backdropUrl ? (
+      {artUrl ? (
         // The glass refracts this, so it must sit behind and stay defocused.
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={backdropUrl} alt="" className="bloom-art" draggable={false} />
+        <img src={artUrl} alt="" className="bloom-art" draggable={false} />
       ) : null}
       <div className="bloom-veil" />
 

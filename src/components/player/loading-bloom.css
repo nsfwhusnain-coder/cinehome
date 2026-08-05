@@ -361,19 +361,31 @@
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* The art arrives already small (TV_BACKDROP_RENDITION) and is upscaled by the
+   panel, so it is soft without a filter and can carry more of the frame than
+   the sharp, apologetic 0.34 it used to be held at. */
 .bloom-stage[data-device="tv"] .bloom-art {
   filter: none;
-  opacity: 0.34;
+  opacity: 0.52;
 }
 
 .bloom-stage[data-device="tv"] .bloom-aura {
   filter: none;
 }
 
-.bloom-stage[data-device="tv"] .bloom-arm,
-.bloom-stage[data-device="tv"] .bloom-planet {
-  animation-duration: calc(var(--orbit-dur) * 1.6);
+/* The `min(46vmin, 620px)` cap in the base rule has the same flaw the root font
+   size had: it is absolute, so a 4K panel reporting 3840x2160 hits it and draws
+   the entire system at roughly half the proportion it holds at 1080p — the
+   exact "shrank relative to the display" bug the cap was added to fix, just at
+   the next resolution up. Televisions get the ratio with no ceiling. */
+.bloom-stage[data-device="tv"] .bloom-system {
+  --sys: 46vmin;
 }
+
+/* The 1.6x slowdown that used to live here was a false economy: an animation
+   costs the same per frame whichever speed it runs at, so stretching the orbit
+   to 51 seconds bought no headroom at all and simply made a screen that is
+   meant to signal activity look like it had frozen. */
 
 @media (prefers-reduced-motion: reduce) {
   .bloom-globe,

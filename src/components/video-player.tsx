@@ -55,6 +55,7 @@ import {
 } from "@/lib/playback/source-attempt";
 import { preresolvePlayback } from "@/lib/playback-preresolve";
 import {
+  isRemoteBackEvent,
   isTvLikeDevice,
   moveSpatialFocus,
   type SpatialDirection,
@@ -4897,7 +4898,7 @@ export function VideoPlayer({
       const isEditable =
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable;
       const tvMode = isTvLikeDevice();
-      const isBack = e.keyCode === 461 || e.key === "GoBack";
+      const isBack = isRemoteBackEvent(e);
 
       if (isBack) {
         e.preventDefault();

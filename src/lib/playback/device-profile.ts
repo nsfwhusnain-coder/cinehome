@@ -14,6 +14,8 @@
  * positive TV match changes anything.
  */
 
+import { isTvLikeDevice, isTvUserAgent } from "@/lib/tv-detect";
+
 export type DeviceClass = "tv" | "desktop";
 
 export interface MediaBufferProfile {
@@ -57,10 +59,6 @@ const TV_PROFILE: MediaBufferProfile = {
   abrInitialEstimateBps: 5_000_000,
 };
 
-/** webOS spells itself several ways across firmware generations. */
-const TV_UA_PATTERN =
-  /web[o0]s|webappmanager|tizen|smart-?tv|smarttv|hbbtv|netcast|bravia|viera|aquos|crkey|googletv|android\s?tv/i;
-
 /**
  * JS heap ceiling below which a browser gets the TV envelope regardless of user
  * agent. 1.5 GB is comfortably under desktop Chrome (typically ~2-4 GB) and
@@ -86,7 +84,7 @@ export function reportedHeapLimitBytes(): number {
  * so it stays pure and testable without a DOM.
  */
 export function deviceClassFromUserAgent(userAgent: string): DeviceClass {
-  return TV_UA_PATTERN.test(userAgent) ? "tv" : "desktop";
+  return isTvUserAgent(userAgent) ? "tv" : "desktop";
 }
 
 /** Cached — device class cannot change mid-session, and callers sit in hot paths. */
@@ -98,10 +96,13 @@ export function detectDeviceClass(): DeviceClass {
     deviceClassCache = "desktop";
     return deviceClassCache;
   }
-  const byUa = deviceClassFromUserAgent(navigator.userAgent || "");
+  // isTvLikeDevice() carries the query-string override and the input-profile
+  // heuristic as well as the user agent, so a Google TV panel reporting plain
+  // Chrome now gets the constrained buffer envelope it needs rather than the
+  // desktop one it was silently being handed.
   const heap = reportedHeapLimitBytes();
   const constrained = heap > 0 && heap < CONSTRAINED_HEAP_LIMIT_BYTES;
-  deviceClassCache = byUa === "tv" || constrained ? "tv" : "desktop";
+  deviceClassCache = isTvLikeDevice() || constrained ? "tv" : "desktop";
   return deviceClassCache;
 }
 
