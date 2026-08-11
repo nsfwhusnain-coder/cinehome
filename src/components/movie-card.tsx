@@ -7,10 +7,9 @@ import { Film } from "lucide-react";
 import { CardOverflowMenu } from "@/components/card-overflow-menu";
 import {
   preresolvePlayback,
-  preconnectStreamOrigin,
-  prefetchManifestLite,
   getMemPlayback,
   playbackMemKey,
+  warmPreresolvedPlayback,
 } from "@/lib/playback-preresolve";
 import { useRef } from "react";
 
@@ -76,12 +75,7 @@ export function MovieCard({
         tmdbId: movie.id,
         season: mediaType === "tv" ? 1 : undefined,
         episode: mediaType === "tv" ? 1 : undefined,
-      }).then((data) => {
-        const d = data as { streamUrl?: string; sources?: { url?: string }[] } | null;
-        const url = d?.streamUrl || d?.sources?.[0]?.url;
-        preconnectStreamOrigin(url);
-        prefetchManifestLite(url);
-      });
+      }).then(warmPreresolvedPlayback);
     }, 150);
   };
 

@@ -39,6 +39,15 @@ const RESOLUTION_PATTERNS = [
  * auto-default to one that doesn't, regardless of probe/verified/format tier. */
 export const HD_FLOOR_HEIGHT = 1080;
 
+/** Minimum evidence before a rolling success rate changes auto-selection. */
+export const RUNTIME_HEALTH_MIN_SAMPLES = 5;
+/** Below this rate a provider is skipped while another playable source exists. */
+export const RUNTIME_HEALTH_MIN_SUCCESS_RATE = 0.5;
+/** A mature provider at or above this rate counts as positively healthy. */
+const RUNTIME_HEALTH_GOOD_SUCCESS_RATE = 0.75;
+/** Ignore tiny rate differences that would make otherwise-equal sources churn. */
+const RUNTIME_HEALTH_RATE_DEADBAND = 0.15;
+
 /**
  * Settings preferred quality → ranking target height.
  * `"auto"` is the 1080p floor (ABR may climb after start); never below floor.
@@ -165,6 +174,51 @@ export function speedScoreFromLatencyMs(ttfbMs: number): number {
 
 export type SourceHealthState = "healthy" | "checking" | "weak";
 
+export function isRuntimeSourceUnhealthy(
+  source: PlaybackSource,
+  now = Date.now()
+): boolean {
+  const health = source.runtimeHealth;
+  if (!health) return false;
+  if (health.cooldownUntil != null && health.cooldownUntil > now) return true;
+  return (
+    health.sampleCount >= RUNTIME_HEALTH_MIN_SAMPLES &&
+    health.successRate < RUNTIME_HEALTH_MIN_SUCCESS_RATE
+  );
+}
+
+function hasGoodRuntimeHealth(source: PlaybackSource): boolean {
+  const health = source.runtimeHealth;
+  return Boolean(
+    health &&
+      health.sampleCount >= RUNTIME_HEALTH_MIN_SAMPLES &&
+      health.successRate >= RUNTIME_HEALTH_GOOD_SUCCESS_RATE
+  );
+}
+
+/** Array.sort comparator: negative means `a` has stronger runtime evidence. */
+function compareRuntimeHealth(
+  a: PlaybackSource,
+  b: PlaybackSource
+): number {
+  const aUnhealthy = isRuntimeSourceUnhealthy(a) ? 1 : 0;
+  const bUnhealthy = isRuntimeSourceUnhealthy(b) ? 1 : 0;
+  if (aUnhealthy !== bUnhealthy) return aUnhealthy - bUnhealthy;
+
+  const aHealth = a.runtimeHealth;
+  const bHealth = b.runtimeHealth;
+  if (
+    !aHealth ||
+    !bHealth ||
+    aHealth.sampleCount < RUNTIME_HEALTH_MIN_SAMPLES ||
+    bHealth.sampleCount < RUNTIME_HEALTH_MIN_SAMPLES
+  ) {
+    return 0;
+  }
+  const rateDelta = bHealth.successRate - aHealth.successRate;
+  return Math.abs(rateDelta) >= RUNTIME_HEALTH_RATE_DEADBAND ? rateDelta : 0;
+}
+
 /**
  * Non-active health classification for the Server list's dot indicator.
  * "checking" = no probe yet — unproven, but never disproven either, so it
@@ -180,9 +234,11 @@ export function sourceHealthState(
   forceWeak = false
 ): SourceHealthState {
   if (forceWeak) return "weak";
+  if (isRuntimeSourceUnhealthy(source)) return "weak";
   if (source.verified === false) return "weak";
   if (source.probe?.ok === false) return "weak";
   if (source.probe?.ok === true) return "healthy";
+  if (hasGoodRuntimeHealth(source)) return "healthy";
   return "checking";
 }
 
@@ -724,10 +780,6 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
   const pref =
     typeof window !== "undefined" ? localStorage.getItem("cinehome:preferred-provider") : null;
   return [...sources].sort((a, b) => {
-    const aMatch = pref && matchesPreference(a, pref) ? 1 : 0;
-    const bMatch = pref && matchesPreference(b, pref) ? 1 : 0;
-    if (aMatch !== bMatch) return bMatch - aMatch;
-
     // Honesty (Server list, req 4): a release this browser can't decode sinks
     // to the bottom — still listed, since inventory is real, but never above
     // something that plays. Same rule the auto-pick uses, so the list's top
@@ -746,6 +798,15 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
     const aOk = a.probe?.ok === false ? -1 : hasHealthEvidence(a) ? 1 : 0;
     const bOk = b.probe?.ok === false ? -1 : hasHealthEvidence(b) ? 1 : 0;
     if (aOk !== bOk) return bOk - aOk;
+
+    // Runtime health only reorders within the same viable evidence tier. A
+    // cooldown must not promote a soft-kept or probe-dead row above it.
+    const runtimeOrder = compareRuntimeHealth(a, b);
+    if (runtimeOrder !== 0) return runtimeOrder;
+
+    const aMatch = pref && matchesPreference(a, pref) ? 1 : 0;
+    const bMatch = pref && matchesPreference(b, pref) ? 1 : 0;
+    if (aMatch !== bMatch) return bMatch - aMatch;
 
     const aMulti = isMultiRendition(a) ? 1 : 0;
     const bMulti = isMultiRendition(b) ? 1 : 0;
@@ -911,22 +972,31 @@ function isSoftKept(source: PlaybackSource): boolean {
 function autoPlayPool(sources: PlaybackSource[]): PlaybackSource[] {
   const hevcOk = browserSupportsHevc();
   const browserPlayable = sources.filter(isSourcePlayableHere);
-  const notHardDead = browserPlayable.filter(
-    (s) =>
-      s.probe?.ok !== false &&
-      !isSoftKept(s) &&
-      (!isHevcSource(s) || hevcOk) &&
-      isSourcePlayableHere(s)
+  const viable = browserPlayable.filter(
+    (source) =>
+      source.probe?.ok !== false &&
+      !isSoftKept(source) &&
+      (!isHevcSource(source) || hevcOk)
   );
+  const runtimeEligible = viable.filter(
+    (source) => !isRuntimeSourceUnhealthy(source)
+  );
+  // Health only reorders within the viable tier. It must never promote a
+  // probe-dead or soft-kept URL above a cooling-down verified source.
+  const notHardDead = runtimeEligible.length ? runtimeEligible : viable;
   if (!notHardDead.length) {
     // Keep failed/soft sources as manual auto-recovery fallbacks. Undecodable
     // ones are already gone (browserPlayable); remuxable ones stay, since the
     // rewrap path is production-enabled.
     const soft = browserPlayable.filter((s) => s.probe?.ok !== false);
+    const runtimeSoft = soft.filter(
+      (source) => !isRuntimeSourceUnhealthy(source)
+    );
+    const softPool = runtimeSoft.length ? runtimeSoft : soft;
     // Prefer non-poison even among soft fallbacks.
-    const softClean = soft.filter((s) => !isNeverAutoDefaultUrl(s.url));
+    const softClean = softPool.filter((s) => !isNeverAutoDefaultUrl(s.url));
     if (softClean.length) return softClean;
-    return soft.length ? soft : browserPlayable;
+    return softPool.length ? softPool : browserPlayable;
   }
 
   // Strip poison when any non-poison playable source exists.
@@ -988,6 +1058,7 @@ function isTopTierSource(source: PlaybackSource): boolean {
  */
 function hasHealthEvidence(source: PlaybackSource): boolean {
   if (source.probe?.ok === true) return true;
+  if (hasGoodRuntimeHealth(source)) return true;
   return source.origin === "debrid" && isSourcePlayableHere(source);
 }
 
@@ -1078,6 +1149,9 @@ export function pickDefaultSource(
       const bT = bH >= heightTarget ? 1 : 0;
       if (aT !== bT) return bT - aT;
     }
+
+    const runtimeOrder = compareRuntimeHealth(a, b);
+    if (runtimeOrder !== 0) return runtimeOrder;
 
     const aOk = hasHealthEvidence(a) ? 1 : 0;
     const bOk = hasHealthEvidence(b) ? 1 : 0;

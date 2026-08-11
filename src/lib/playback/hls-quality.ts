@@ -219,6 +219,45 @@ export function findMinLevelIndexForHeight(levels: QualityLevel[], minHeight: nu
 }
 
 /**
+ * Adaptive recovery target: highest lower rung at-or-below `targetHeight`.
+ * If a sparse ladder has no rung that low, use its lowest rung below the
+ * current height. Never returns the current/higher level or drops below min.
+ */
+export function findLowerLevelIndexForHeight(
+  levels: QualityLevel[],
+  currentHeight: number,
+  targetHeight: number,
+  minHeight = 0
+): number {
+  const lower = levels.filter((level) => {
+    const height = effectiveLevelHeight(level);
+    return height >= minHeight && height < currentHeight;
+  });
+  if (!lower.length) return -1;
+  const atOrBelow = lower.filter(
+    (level) => effectiveLevelHeight(level) <= targetHeight
+  );
+  const pool = atOrBelow.length ? atOrBelow : lower;
+  return pool.reduce((best, level) =>
+    atOrBelow.length
+      ? effectiveLevelHeight(level) > effectiveLevelHeight(best) ? level : best
+      : effectiveLevelHeight(level) < effectiveLevelHeight(best) ? level : best
+  ).index;
+}
+
+export type AdaptiveRecoveryPhase = "hold" | "climb" | "floor";
+
+/** Keep adaptive playback low until its forward buffer has genuinely recovered. */
+export function adaptiveRecoveryPhase(
+  policy: "adaptive" | "absolute",
+  bufferAheadS: number,
+  climbBackBufferS: number
+): AdaptiveRecoveryPhase {
+  if (policy === "absolute") return "floor";
+  return bufferAheadS >= climbBackBufferS ? "climb" : "hold";
+}
+
+/**
  * Best level index for a target height. Prefers the lowest rung that is
  * still >= targetHeight (e.g. real 1080 over 1440/4K when target=1080) —
  * never picks below target when a >=target rung exists. Falls back to the

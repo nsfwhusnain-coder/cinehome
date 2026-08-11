@@ -20,12 +20,15 @@
 export interface SourceAttemptToken {
   readonly sourceId: string;
   readonly generation: number;
+  readonly attemptId: string;
 }
 
 export type AttemptFailureSignal = "ignored" | "retry" | "recover" | "terminal";
 
 interface AttemptState {
   token: SourceAttemptToken;
+  startedAtMs: number;
+  firstFrameClaimed: boolean;
   hardTransportFailures: number;
   stallRecoveries: number;
   terminalClaimed: boolean;
@@ -47,13 +50,16 @@ export class SourceAttemptController {
     }
   }
 
-  begin(sourceId: string): SourceAttemptToken {
+  begin(sourceId: string, startedAtMs = Date.now()): SourceAttemptToken {
     const token = Object.freeze({
       sourceId,
       generation: ++this.generation,
+      attemptId: `${startedAtMs}-${this.generation}`,
     });
     this.current = {
       token,
+      startedAtMs,
+      firstFrameClaimed: false,
       hardTransportFailures: 0,
       stallRecoveries: 0,
       terminalClaimed: false,
@@ -92,6 +98,17 @@ export class SourceAttemptController {
     this.current.stallRecoveries = 0;
   }
 
+  /** Return per-attempt TTFF exactly once, including after a source failover. */
+  claimFirstFrame(
+    token: SourceAttemptToken,
+    occurredAtMs = Date.now()
+  ): number | null {
+    if (!this.isCurrent(token) || !this.current) return null;
+    if (this.current.firstFrameClaimed) return null;
+    this.current.firstFrameClaimed = true;
+    return Math.max(0, occurredAtMs - this.current.startedAtMs);
+  }
+
   noteHardTransportFailure(token: SourceAttemptToken): AttemptFailureSignal {
     if (!this.isCurrent(token) || !this.current) return "ignored";
     this.current.hardTransportFailures += 1;
@@ -125,6 +142,10 @@ export class SourceAttemptController {
   }
 
   private matches(a: SourceAttemptToken, b: SourceAttemptToken): boolean {
-    return a.generation === b.generation && a.sourceId === b.sourceId;
+    return (
+      a.generation === b.generation &&
+      a.sourceId === b.sourceId &&
+      a.attemptId === b.attemptId
+    );
   }
 }

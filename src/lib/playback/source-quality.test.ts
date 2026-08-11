@@ -5,6 +5,7 @@ import {
   findNewSourceIds,
   findQualityUpgradeSource,
   isFasterSource,
+  isRuntimeSourceUnhealthy,
   isSourcePlayableHere,
   sourceDelivery,
   parseMaxHeight,
@@ -15,6 +16,7 @@ import {
   sourceMaxHeight,
   sourceRosterMaxHeight,
   sourceRosterMeetsHdFloor,
+  sourceHealthState,
   withDetectedSourceHeight,
 } from "./source-quality";
 import type { PlaybackSource } from "./types";
@@ -284,6 +286,72 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
 
     expect(pickDefaultSource([luna, debrid])?.id).toBe("debrid-native");
     expect(isFasterSource(luna, debrid)).toBe(true);
+  });
+});
+
+describe("pickDefaultSource — learned provider health", () => {
+  const unreliable = makeSource({
+    id: "unreliable",
+    provider: "Vidking",
+    label: "Solstice",
+    maxHeight: 1080,
+    runtimeHealth: { successRate: 0.2, sampleCount: 10 },
+  });
+  const fallback = makeSource({
+    id: "fallback",
+    provider: "Fallback",
+    label: "Fallback",
+    maxHeight: 1080,
+  });
+
+  it("skips a mature unhealthy provider while an alternative exists", () => {
+    expect(isRuntimeSourceUnhealthy(unreliable)).toBe(true);
+    expect(pickDefaultSource([unreliable, fallback])?.id).toBe("fallback");
+    expect(sortSourcesForPicker([unreliable, fallback])[0]?.id).toBe("fallback");
+    expect(sourceHealthState(unreliable)).toBe("weak");
+  });
+
+  it("keeps an unhealthy provider as a last resort", () => {
+    expect(pickDefaultSource([unreliable])?.id).toBe("unreliable");
+  });
+
+  it("honors an open cooldown before the rolling sample threshold", () => {
+    const coolingDown = makeSource({
+      ...unreliable,
+      id: "cooling-down",
+      runtimeHealth: {
+        successRate: 0,
+        sampleCount: 3,
+        cooldownUntil: Date.now() + 60_000,
+      },
+    });
+    expect(pickDefaultSource([coolingDown, fallback])?.id).toBe("fallback");
+  });
+
+  it("never promotes soft or probe-dead rows above a cooling viable source", () => {
+    const coolingViable = makeSource({
+      id: "cooling-viable",
+      provider: "Viable",
+      verified: true,
+      probe: { ok: true, ttfbMs: 100, bytesPerSec: 1_000_000, speedScore: 70 },
+      runtimeHealth: {
+        successRate: 0,
+        sampleCount: 3,
+        cooldownUntil: Date.now() + 60_000,
+      },
+    });
+    const soft = makeSource({ id: "soft", provider: "Soft", verified: false });
+    const dead = makeSource({
+      id: "dead",
+      provider: "Dead",
+      probe: { ok: false, ttfbMs: 5_000, bytesPerSec: 0, speedScore: 0 },
+    });
+
+    expect(pickDefaultSource([coolingViable, soft])?.id).toBe("cooling-viable");
+    expect(pickDefaultSource([coolingViable, dead])?.id).toBe("cooling-viable");
+    expect(sortSourcesForPicker([coolingViable, dead])[0]?.id).toBe(
+      "cooling-viable"
+    );
   });
 });
 

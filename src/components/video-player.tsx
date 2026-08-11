@@ -61,9 +61,11 @@ import {
   type SpatialDirection,
 } from "@/lib/tv-navigation";
 import {
+  adaptiveRecoveryPhase,
   annotateLevelHeights,
   effectiveLevelHeight,
   findBestLevelForTarget,
+  findLowerLevelIndexForHeight,
   findMinLevelIndexForHeight,
   hlsPromotionTargetHeight,
   maxLevelHeight,
@@ -170,6 +172,9 @@ function hlsWorkerSupportedHere(): boolean {
   // substantially from parsing 4K manifests off the main UI thread.
   return !/(?:OPR\/|Opera GX|Opera Air)/i.test(navigator.userAgent);
 }
+
+/** Must match the pinned hls.js package and vendored public worker asset. */
+const HLS_WORKER_PATH = "/hls.worker-1.6.16.js";
 
 /**
  * Double-hop residential proxy buffer policy.
@@ -731,10 +736,12 @@ function pickAdaptiveDownshiftTarget(
     ADAPTIVE_FLOOR_MIN_HEIGHT,
     Math.floor(curH * ADAPTIVE_DOWN_STEP_RATIO)
   );
-  const idx = findMinLevelIndexForHeight(levelList, target);
-  if (idx >= 0) return idx;
-  // Fall back to the absolute minimum rung available.
-  return findMinLevelIndexForHeight(levelList, 0);
+  return findLowerLevelIndexForHeight(
+    levelList,
+    curH,
+    target,
+    ADAPTIVE_FLOOR_MIN_HEIGHT
+  );
 }
 
 function recoverHlsAdaptive(
@@ -769,6 +776,11 @@ function recoverHlsAdaptive(
   const adaptive = ctx.policy === "adaptive" && preferredHeight === "auto";
   const starving =
     ctx.bufferAheadS >= 0 && ctx.bufferAheadS < ADAPTIVE_STARVATION_BUFFER_S;
+  const recoveryPhase = adaptiveRecoveryPhase(
+    ctx.policy,
+    ctx.bufferAheadS,
+    ADAPTIVE_CLIMB_BACK_BUFFER_S
+  );
 
   // CLIMB-BACK: buffer recovered and we're below floor/locked low → release to
   // Auto ABR so it can climb toward the floor / 1440 / 4K again. Only under adaptive.
@@ -776,18 +788,16 @@ function recoverHlsAdaptive(
     adaptive &&
     curH > 0 &&
     curH < HLS_MIN_HEIGHT &&
-    ctx.bufferAheadS >= ADAPTIVE_CLIMB_BACK_BUFFER_S
+    recoveryPhase === "climb"
   ) {
     hls.capLevelToPlayerSize = false;
     hls.autoLevelCapping = -1;
-    if (hls.currentLevel < 0) {
-      // Already Auto — nudge start toward floor so climb is floor-anchored.
-      if (floorIdx >= 0) hls.startLevel = floorIdx;
+    if (hls.autoLevelEnabled) {
+      if (floorIdx >= 0) hls.nextAutoLevel = floorIdx;
     } else if (floorIdx >= 0) {
-      // Was pinned low by a downshift; release to Auto at the floor.
       hls.currentLevel = -1;
       hls.nextLevel = -1;
-      hls.startLevel = floorIdx;
+      hls.nextAutoLevel = floorIdx;
     }
     try {
       hls.startLoad();
@@ -807,10 +817,9 @@ function recoverHlsAdaptive(
     const downIdx = pickAdaptiveDownshiftTarget(levelList, curH);
     if (downIdx >= 0 && downIdx !== cur) {
       hls.capLevelToPlayerSize = false;
-      hls.nextLevel = downIdx;
-      hls.loadLevel = downIdx;
-      hls.nextLoadLevel = downIdx;
-      if (hls.currentLevel >= 0) hls.currentLevel = downIdx;
+      // One-fragment forced Auto choice. nextLevel/loadLevel would set
+      // manualLevel and could strand "Auto" at the recovery rung forever.
+      hls.nextAutoLevel = downIdx;
       try {
         hls.startLoad();
       } catch {
@@ -820,20 +829,21 @@ function recoverHlsAdaptive(
     }
   }
 
-  // FLOOR-AFFIRM (absolute policy, or adaptive-but-not-starving): if we are
-  // decoding below the floor and a ≥1080 rung exists, snap back to it. This is
-  // the original absolute-floor behavior — kept for the "absolute" policy and
-  // as the adaptive idle state (no starvation → hold the floor).
-  if (floorIdx >= 0 && ladderMax >= HLS_MIN_HEIGHT && curH > 0 && curH < HLS_MIN_HEIGHT * 0.95) {
+  // FLOOR-AFFIRM is reserved for the explicit absolute policy. Adaptive Auto
+  // stays low until the recovered-buffer branch above releases it to ABR.
+  if (
+    recoveryPhase === "floor" &&
+    floorIdx >= 0 &&
+    ladderMax >= HLS_MIN_HEIGHT &&
+    curH > 0 &&
+    curH < HLS_MIN_HEIGHT * 0.95
+  ) {
     hls.capLevelToPlayerSize = false;
     hls.nextLevel = floorIdx;
     hls.loadLevel = floorIdx;
     hls.nextLoadLevel = floorIdx;
-    if (hls.currentLevel >= 0) {
-      hls.currentLevel = floorIdx;
-    } else {
-      hls.startLevel = floorIdx;
-    }
+    if (hls.currentLevel >= 0) hls.currentLevel = floorIdx;
+    else hls.startLevel = floorIdx;
   }
 
   try {
@@ -982,11 +992,13 @@ function applyPreferredHlsQuality(
 function maybePromoteHlsQuality(
   hls: Hls,
   levels: QualityLevel[],
-  video: HTMLVideoElement,
+  _video: HTMLVideoElement,
   ctx?: AdaptiveRecoverContext,
   preferredHeight: PlayerQualityTarget = getPreferredQualityHeight()
 ): number | null {
   if (!levels.length) return null;
+  const policy = ctx?.policy ?? getQualityFloorPolicySafe();
+  if (preferredHeight === "auto" && policy === "adaptive") return null;
   const targetH = hlsPromotionTargetHeight(
     levels,
     preferredHeight,
@@ -998,18 +1010,6 @@ function maybePromoteHlsQuality(
   const cur = levels.find((l) => l.index === curIdx);
   const curH = cur ? effectiveLevelHeight(cur) : 0;
   if (curH >= targetH * 0.95) return null;
-
-  // Adaptive + actively starving → let the downshift breathe (don't snap back).
-  const policy = ctx?.policy ?? getQualityFloorPolicySafe();
-  const bufferAheadS =
-    ctx?.bufferAheadS ?? (video ? bufferedAheadSeconds(video) : -1);
-  if (
-    policy === "adaptive" &&
-    bufferAheadS >= 0 &&
-    bufferAheadS < ADAPTIVE_STARVATION_BUFFER_S
-  ) {
-    return null;
-  }
 
   const idx = findBestLevelForTarget(levels, targetH);
   if (idx < 0 || idx === curIdx) return null;
@@ -1566,9 +1566,8 @@ export function VideoPlayer({
    * listener, and effects run in declaration order within a commit, so those
    * still see the values from the render they belong to. Nothing reads these
    * during render (only `mediaFaulted` did, and it is state now).
-   */
+  */
   const activeSourceRef = useRef(activeSource);
-  const playbackStartedAtRef = useRef<number>(Date.now());
   const lastStallFeedbackAtRef = useRef(0);
   /** Stable roster snapshot — failActiveSource must not change identity on enrich. */
   const orderedSourcesRef = useRef(orderedSources);
@@ -1677,16 +1676,20 @@ export function VideoPlayer({
   }, []);
 
   const markEverPlayed = useCallback(() => {
-    if (everPlayedRef.current) return;
-    everPlayedRef.current = true;
     const source = activeSourceRef.current;
     const video = videoRef.current;
-    if (source) {
+    const attempt = sourceAttemptControllerRef.current.currentToken();
+    const timeToFirstFrameMs =
+      source && attempt?.sourceId === source.id
+        ? sourceAttemptControllerRef.current.claimFirstFrame(attempt)
+        : null;
+    if (source && attempt && timeToFirstFrameMs != null) {
       emitPlayerFeedback({
         event: "first_frame",
         sourceId: source.id,
         provider: source.provider,
-        timeToFirstFrameMs: Math.max(0, Date.now() - playbackStartedAtRef.current),
+        attemptId: attempt.attemptId,
+        timeToFirstFrameMs,
         decodedHeight:
           video && video.videoHeight > 0
             ? decodedQualityHeight(video.videoWidth, video.videoHeight)
@@ -1700,6 +1703,8 @@ export function VideoPlayer({
         engine: playbackEngineRef.current,
       });
     }
+    if (everPlayedRef.current) return;
+    everPlayedRef.current = true;
     setEverPlayed(true);
     setIsSwitchingServer(false);
   }, []);
@@ -1798,7 +1803,6 @@ export function VideoPlayer({
     setDurationProvisional(false);
     setIsSwitchingServer(false);
     setActiveSource(null);
-    playbackStartedAtRef.current = Date.now();
     lastStallFeedbackAtRef.current = 0;
     setError(null);
     setSleepMinutes(null);
@@ -2557,13 +2561,25 @@ export function VideoPlayer({
         setIsSwitchingServer(true);
         showStatusNotice("Seek failed — returning to playback…", 2_500);
         emitPlayerFeedback({
-          event: "handoff_failed",
+          event: "stall",
           sourceId: source.id,
           provider: source.provider,
+          attemptId: attempt.attemptId,
+          engine: playbackEngineRef.current,
           reason,
         });
         return true;
       }
+      emitPlayerFeedback({
+        event: "handoff_failed",
+        sourceId: source.id,
+        provider: source.provider,
+        attemptId: attempt.attemptId,
+        selectedHeight: usePlayerStore.getState().playingHeight || undefined,
+        audioCodec: source.audioCodec,
+        engine: playbackEngineRef.current,
+        reason,
+      });
       markSourceFailed(attempt.sourceId);
       console.info(
         "[playback-failure]",
@@ -3056,6 +3072,7 @@ export function VideoPlayer({
         const bufferProfile = activeBufferProfile();
         const hls = new Hls({
           enableWorker: hlsWorkerSupportedHere(),
+          workerPath: HLS_WORKER_PATH,
           // VOD only (no live edge to chase) — verified false; low-latency mode
           // shrinks buffers/targets latency over throughput, the opposite of
           // what a double-hop residential proxy needs.

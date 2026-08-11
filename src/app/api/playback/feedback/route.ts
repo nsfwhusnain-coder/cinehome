@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import type { PlayerFeedbackEvent } from "@/lib/playback/types";
 import { providerHealthRegistry } from "@/lib/playback/health-registry";
+import { RateLimiter } from "@/lib/rate-limit";
+
+const FEEDBACK_LIMIT = 180;
+const FEEDBACK_WINDOW_MS = 5 * 60 * 1000;
+const feedbackLimiter = new RateLimiter({
+  limit: FEEDBACK_LIMIT,
+  windowMs: FEEDBACK_WINDOW_MS,
+});
 
 const EVENTS = new Set<PlayerFeedbackEvent>([
   "first_frame",
@@ -15,6 +23,18 @@ export async function POST(req: NextRequest) {
   const userId = await getAuthenticatedUserId();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const rate = feedbackLimiter.consume(userId);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many feedback events" },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(Math.max(1, Math.ceil(rate.retryAfterMs / 1000))),
+        },
+      }
+    );
   }
   let body: Record<string, unknown>;
   try {
@@ -65,6 +85,7 @@ export async function POST(req: NextRequest) {
     event,
     sourceId,
     provider,
+    attemptId: text(body.attemptId, 96),
     occurredAt: finite(body.occurredAt, Date.now() + 60_000) ?? Date.now(),
     timeToFirstFrameMs: finite(body.timeToFirstFrameMs, 180_000),
     decodedHeight: finite(body.decodedHeight, 4320),
@@ -84,6 +105,6 @@ export async function POST(req: NextRequest) {
       feedbackEvent: feedback.event,
     })
   );
-  providerHealthRegistry.observe({ provider }, feedback);
+  providerHealthRegistry.observe({ provider, viewerId: userId }, feedback);
   return new NextResponse(null, { status: 204 });
 }

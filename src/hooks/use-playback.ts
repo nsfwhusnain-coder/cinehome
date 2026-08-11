@@ -14,9 +14,10 @@ import {
   syncProfilePlaybackPreferences,
 } from "@/lib/player-preferences";
 import {
-  getMemPlayback,
+  getMemPlaybackSeed,
   playbackMemKey,
 } from "@/lib/playback-preresolve";
+import { usableCachedPlayback } from "@/lib/playback/cache-age";
 import {
   isPlaybackRateLimited,
   PlaybackRequestError,
@@ -234,15 +235,19 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   /** Only `retryFull()` may force a bounded recovery refresh. */
   const forceRefreshRef = useRef(false);
 
-  // Hero/detail hover preresolve warms client memory — seed RQ so first paint skips cold wait.
-  const memSeed = useMemo((): PlaybackResponse | undefined => {
+  // Hero/detail hover preresolve seeds the shell, but remains stale so a fresh
+  // signed URL is fetched immediately instead of trusting the memory age.
+  const memSeed = useMemo((): {
+    data: PlaybackResponse;
+    updatedAt: number;
+  } | undefined => {
     if (typeof window === "undefined") return undefined;
     const key = playbackMemKey(args.mediaType, args.tmdbId, args.season, args.episode);
-    const raw = getMemPlayback(key);
-    if (!raw || typeof raw !== "object") return undefined;
-    const r = raw as PlaybackResponse;
+    const hit = getMemPlaybackSeed(key);
+    if (!hit || typeof hit.data !== "object") return undefined;
+    const r = hit.data as PlaybackResponse;
     if (!hasPlayableSources(r)) return undefined;
-    return r;
+    return { data: r, updatedAt: hit.updatedAt };
   }, [args.mediaType, args.tmdbId, args.season, args.episode]);
 
   const fast = useQuery({
@@ -253,10 +258,15 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     // failed fast pass no longer delays full — retrying it here would only add up
     // to another 8s wait for a result full is likely to supersede anyway.
     retry: false,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 0,
+    refetchOnMount: "always",
     refetchOnWindowFocus: false,
-    ...(memSeed ? { initialData: memSeed, initialDataUpdatedAt: Date.now() } : {}),
+    ...(memSeed
+      ? { initialData: memSeed.data, initialDataUpdatedAt: memSeed.updatedAt }
+      : {}),
   });
+
+  const fastData = usableCachedPlayback(fast.data, fast.dataUpdatedAt);
 
   const pollStartedAtRef = useRef<number | null>(null);
 
@@ -290,9 +300,9 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
       // a late healthy provider arrives.
       const mergedCount = query.state.data
         ? usableSourceCount(query.state.data)
-        : usableSourceCount(fast.data);
+        : usableSourceCount(fastData);
       const stillPartial =
-        Boolean(query.state.data?.partial) || Boolean(fast.data?.partial);
+        Boolean(query.state.data?.partial) || Boolean(fastData?.partial);
       // Enough sources + complete → stop.
       if (mergedCount >= SOURCE_POLL_TARGET && !stillPartial) return false;
       // Healthy roster is enough even if scraper still marks partial (PW bg).
@@ -320,8 +330,8 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     canFetch && (full.isLoading || full.isFetching || !full.isFetched);
 
   const data = useMemo(
-    () => mergePlaybackResponses(fast.data, full.data, fullStillOpen),
-    [fast.data, full.data, fullStillOpen]
+    () => mergePlaybackResponses(fastData, full.data, fullStillOpen),
+    [fastData, full.data, fullStillOpen]
   );
 
   const hasSources = hasPlayableSources(data);
@@ -383,7 +393,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   // Scraper partial after full settled — ignore for UI once we have sources + wall.
   const rawPartial = full.isFetched
     ? Boolean(full.data?.partial)
-    : Boolean(data?.partial || fast.data?.partial);
+    : Boolean(data?.partial || fastData?.partial);
   const sourceN = data?.sources?.length ?? 0;
   const partialForUi =
     rawPartial &&
@@ -403,9 +413,9 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     !fast.isLoading &&
     !softMissWallHit &&
     (fast.isError ||
-      fast.data?.status === "error" ||
-      fast.data?.partial === true ||
-      (fast.isSuccess && !hasPlayableSources(fast.data))) &&
+      fastData?.status === "error" ||
+      fastData?.partial === true ||
+      (fast.isSuccess && !hasPlayableSources(fastData))) &&
     progressiveOpen;
 
   const isLoading =

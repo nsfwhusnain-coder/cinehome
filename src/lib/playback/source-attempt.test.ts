@@ -32,6 +32,18 @@ describe("SourceAttemptController", () => {
     expect(controller.noteHardTransportFailure(attempt)).toBe("retry");
   });
 
+  it("reports first-frame latency once for every source attempt", () => {
+    const controller = new SourceAttemptController();
+    const firstAttempt = controller.begin("source-a", 1_000);
+
+    expect(controller.claimFirstFrame(firstAttempt, 1_450)).toBe(450);
+    expect(controller.claimFirstFrame(firstAttempt, 1_600)).toBeNull();
+
+    const fallbackAttempt = controller.begin("source-b", 2_000);
+    expect(controller.claimFirstFrame(fallbackAttempt, 2_275)).toBe(275);
+    expect(controller.claimFirstFrame(firstAttempt, 2_300)).toBeNull();
+  });
+
   it("allows one stall recovery window and then fails over", () => {
     const controller = new SourceAttemptController();
     const attempt = controller.begin("source-a");

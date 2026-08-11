@@ -15,6 +15,10 @@ import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
 import { consumePlaybackResolveBudget } from "@/lib/playback/resolve-budget";
 import { PLAYBACK_COORDINATOR_SHADOW_ENABLED } from "@/lib/playback/features";
 import { buildCoordinatorShadowDecision } from "@/lib/playback/coordinator-shadow";
+import {
+  providerHealthRegistry,
+  sourcesWithProviderHealth,
+} from "@/lib/playback/health-registry";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -186,7 +190,13 @@ export async function GET(
   if (!noCache) {
     const cached = getCachedPlayback<PlaybackResponse>(cacheKey);
     if (cached) {
-      return NextResponse.json({ ...cached, preferences: profilePreferences }, {
+      const healthAware = withRuntimeProviderHealth(
+        cached,
+        userId,
+        type,
+        qualityHint
+      );
+      return NextResponse.json({ ...healthAware, preferences: profilePreferences }, {
         headers: {
           "Cache-Control": "private, no-store",
           "X-Playback-Cache": "HIT",
@@ -300,8 +310,14 @@ export async function GET(
     );
   }
 
+  const healthAwareResult = withRuntimeProviderHealth(
+    result,
+    userId,
+    type,
+    qualityHint
+  );
   return NextResponse.json({
-    ...result,
+    ...healthAwareResult,
     preferences: profilePreferences,
     ...(refreshNonce != null ? { refreshNonce } : {}),
   }, {
@@ -310,6 +326,26 @@ export async function GET(
       "X-Playback-Cache": "MISS",
     },
   });
+}
+
+function withRuntimeProviderHealth(
+  result: PlaybackResponse,
+  viewerId: string,
+  contentClass: MediaType,
+  qualityHint: "auto" | number
+): PlaybackResponse {
+  if (!result.sources?.length) return result;
+  const sources = sourcesWithProviderHealth(
+    result.sources,
+    providerHealthRegistry,
+    { contentClass, viewerId }
+  );
+  const best = pickDefaultSource(sources, null, qualityHint);
+  return {
+    ...result,
+    sources,
+    streamUrl: best?.url ?? result.streamUrl,
+  };
 }
 
 /**

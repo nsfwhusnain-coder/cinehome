@@ -1,10 +1,12 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
 import {
+  adaptiveRecoveryPhase,
   annotateLevelHeights,
   buildQualityOptions,
   deriveHeightFromBitrate,
   findBestLevelForTarget,
+  findLowerLevelIndexForHeight,
   findMinLevelIndexForHeight,
   hlsPromotionTargetHeight,
   isQualityMismatch,
@@ -196,6 +198,38 @@ describe("ABR floor guard (findMinLevelIndexForHeight / findBestLevelForTarget)"
       { index: 1, height: 1080 },
     ];
     expect(findBestLevelForTarget(levels, 1080)).toBe(1);
+  });
+
+  it("adaptive downshift chooses a real lower rung on sparse ladders", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 720 },
+      { index: 1, height: 1080 },
+      { index: 2, height: 2160 },
+    ];
+    expect(findLowerLevelIndexForHeight(levels, 2160, 1296, 480)).toBe(1);
+  });
+
+  it("adaptive downshift falls to 480 when 1080 has no 720 rung", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 480 },
+      { index: 1, height: 1080 },
+    ];
+    expect(findLowerLevelIndexForHeight(levels, 1080, 648, 480)).toBe(0);
+  });
+
+  it("adaptive downshift never returns the current rung or crosses its floor", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 360 },
+      { index: 1, height: 1080 },
+    ];
+    expect(findLowerLevelIndexForHeight(levels, 1080, 648, 480)).toBe(-1);
+  });
+
+  it("holds a downshift until adaptive buffer recovery is sustained", () => {
+    expect(adaptiveRecoveryPhase("adaptive", 1, 12)).toBe("hold");
+    expect(adaptiveRecoveryPhase("adaptive", 11.9, 12)).toBe("hold");
+    expect(adaptiveRecoveryPhase("adaptive", 12, 12)).toBe("climb");
+    expect(adaptiveRecoveryPhase("absolute", 0, 12)).toBe("floor");
   });
 });
 

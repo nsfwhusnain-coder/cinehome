@@ -90,6 +90,8 @@ export interface PlaybackSource {
   container?: "mp4" | "mkv" | "webm" | "mov" | "unknown";
   /** Present after full scrape latency probe; drives measured ranking when ok. */
   probe?: SourceProbeMetrics;
+  /** Rolling player-observed provider health, attached at response time. */
+  runtimeHealth?: ProviderHealthSnapshot;
   /**
    * false = soft-kept after failed segment verify (manual switch only).
    * true/undefined = eligible for auto-default when no better probe exists.
@@ -254,6 +256,8 @@ export interface PlayerFeedback {
   event: PlayerFeedbackEvent;
   sourceId: string;
   provider: string;
+  /** Correlates first-frame and terminal outcome for one source generation. */
+  attemptId?: string;
   occurredAt: number;
   timeToFirstFrameMs?: number;
   decodedHeight?: number;
@@ -279,6 +283,8 @@ export interface ProviderHealthSnapshot {
 
 export interface ProviderHealthKey {
   provider: string;
+  /** Internal viewer scope; prevents one account poisoning another's ranking. */
+  viewerId?: string;
   contentClass?: "movie" | "tv" | "anime";
   domain?: string;
   route?: "api" | "browser_intercept" | "direct" | "remux";

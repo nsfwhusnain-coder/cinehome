@@ -25,10 +25,9 @@ import { cn } from "@/lib/utils";
 import {
   abortAllPreresolve,
   preresolvePlayback,
-  preconnectStreamOrigin,
-  prefetchManifestLite,
   getMemPlayback,
   playbackMemKey,
+  warmPreresolvedPlayback,
 } from "@/lib/playback-preresolve";
 import { collapseContinueItems } from "@/lib/continue-watching";
 
@@ -226,12 +225,9 @@ export function HomeView() {
     if (!mounted) return;
     const hero = featured[0];
     if (hero) {
-      void preresolvePlayback({ mediaType: "movie", tmdbId: hero.id }).then((data) => {
-        const d = data as { streamUrl?: string; sources?: { url?: string }[] } | null;
-        const url = d?.streamUrl || d?.sources?.[0]?.url;
-        preconnectStreamOrigin(url);
-        prefetchManifestLite(url);
-      });
+      void preresolvePlayback({ mediaType: "movie", tmdbId: hero.id }).then(
+        warmPreresolvedPlayback
+      );
     }
     const cw = continueItems.slice(0, 5);
     for (const p of cw) {
@@ -240,12 +236,7 @@ export function HomeView() {
         tmdbId: p.tmdbId,
         season: p.season ?? undefined,
         episode: p.episode ?? undefined,
-      }).then((data) => {
-        const d = data as { streamUrl?: string; sources?: { url?: string }[] } | null;
-        const url = d?.streamUrl || d?.sources?.[0]?.url;
-        preconnectStreamOrigin(url);
-        prefetchManifestLite(url);
-      });
+      }).then(warmPreresolvedPlayback);
     }
     return () => {
       abortAllPreresolve();
@@ -456,12 +447,7 @@ function ContinueCard({ item }: { item: ProgressItem }) {
         tmdbId: item.tmdbId,
         season: item.season ?? undefined,
         episode: item.episode ?? undefined,
-      }).then((data) => {
-        const d = data as { streamUrl?: string; sources?: { url?: string }[] } | null;
-        const url = d?.streamUrl || d?.sources?.[0]?.url;
-        preconnectStreamOrigin(url);
-        prefetchManifestLite(url);
-      });
+      }).then(warmPreresolvedPlayback);
     }, 150);
   };
 
