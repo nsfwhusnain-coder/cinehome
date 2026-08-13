@@ -176,6 +176,44 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
     expect(picked?.id).toBe("s2160");
   });
 
+  it("does not let a saved 1080p server override an available Ultra target", () => {
+    const saved1080 = makeSource({
+      id: "eos-1080",
+      provider: "Vixsrc",
+      label: "Eos",
+      maxHeight: 1080,
+    });
+    const available4k = makeSource({
+      id: "zeus-4k",
+      provider: "Vidking",
+      label: "Zeus",
+      maxHeight: 2160,
+    });
+
+    expect(pickDefaultSource([saved1080, available4k], "Vixsrc|Eos", 2160)?.id).toBe(
+      "zeus-4k"
+    );
+  });
+
+  it("keeps the saved server when the requested quality is unavailable", () => {
+    const saved1080 = makeSource({
+      id: "eos-1080",
+      provider: "Vixsrc",
+      label: "Eos",
+      maxHeight: 1080,
+    });
+    const fallback1080 = makeSource({
+      id: "other-1080",
+      provider: "Other",
+      label: "Fallback",
+      maxHeight: 1080,
+    });
+
+    expect(pickDefaultSource([fallback1080, saved1080], "Vixsrc|Eos", 2160)?.id).toBe(
+      "eos-1080"
+    );
+  });
+
   it("a Safari-only HEVC debrid source never auto-defaults over a native-playable 1080p source (no window/HEVC support in this env)", () => {
     const debridHevc = makeSource({
       id: "debrid-hevc",

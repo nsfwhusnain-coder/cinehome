@@ -1087,11 +1087,18 @@ export function pickDefaultSource(
   const pickPool = autoPlayPool(sources);
   const heightTarget = resolvePreferredHeightTarget(preferredHeight);
 
-  // Honor stored preference only when non-empty and source is in the playable pool.
-  // Never force Luna preference over probe-verified Aether/Horizon.
+  // Honor a stored server only within the requested quality tier. A previous
+  // 1080p manual pick must not override Ultra when a playable 4K source exists.
   const pref = (preferredProvider || DEFAULT_SOURCE_KEY || "").trim();
   if (pref) {
-    const prefMatches = pickPool.filter((s) => matchesPreference(s, pref));
+    const targetAvailable = pickPool.some(
+      (source) => sourceMaxHeight(source) >= heightTarget
+    );
+    const prefMatches = pickPool.filter(
+      (source) =>
+        matchesPreference(source, pref) &&
+        (!targetAvailable || sourceMaxHeight(source) >= heightTarget)
+    );
     if (prefMatches.length) {
       // Among preference matches: HD known > unknown > sub-HD (ranking only).
       const sortedPref = [...prefMatches].sort((a, b) => {
