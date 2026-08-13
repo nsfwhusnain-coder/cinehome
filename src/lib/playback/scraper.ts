@@ -7,7 +7,7 @@ import {
   setCachedRawScrape,
 } from "@/lib/server-cache";
 import { sourceId } from "./server-names";
-import { dedupePlaybackSources } from "./source-identity";
+import { dedupePlaybackSources, sourceInstanceId } from "./source-identity";
 import { pickDefaultSource } from "./source-quality";
 import type { PlaybackProvider, PlaybackRequest, PlaybackResponse, PlaybackSource } from "./types";
 
@@ -28,7 +28,7 @@ interface ScraperSession {
   extraHeaders?: Record<string, string>;
 }
 
-interface ScraperSourceEntry {
+export interface ScraperSourceEntry {
   url: string;
   quality: string;
   label: string;
@@ -145,14 +145,15 @@ function maxHeightFromQuality(
   return undefined;
 }
 
-function detectCodec(upstream: string): "h264" | "hevc" | "unknown" {
+export function detectCodec(upstream: string): "h264" | "hevc" | "av1" | "unknown" {
   const u = upstream.toLowerCase();
+  if (/av01|(?:^|[^a-z0-9])av1(?:[^a-z0-9]|$)/.test(u)) return "av1";
   if (u.includes("h265") || u.includes("hevc") || u.includes("hev1")) return "hevc";
   if (u.includes("h264") || u.includes("avc1") || u.includes("/avc")) return "h264";
   return "unknown";
 }
 
-function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): PlaybackSource {
+export function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): PlaybackSource {
   // Prefer positive probed maxHeight + ladder top. Explicit 0 ("probed unknown")
   // must not block quality/label/url token parse.
   const ladder = entry.ladder && entry.ladder.length ? entry.ladder : undefined;
@@ -167,8 +168,9 @@ function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): Playback
   }
   const type = entry.type ?? streamTypeFrom(entry.label, entry.url, entry.provider, entry.quality);
   const codec = detectCodec(entry.url);
+  const baseId = sourceId(entry.provider, entry.label);
   return {
-    id: sourceId(entry.provider, entry.label),
+    id: sourceInstanceId(baseId, entry.url),
     url: proxyUrl,
     provider: entry.provider,
     quality: entry.quality || "auto",
@@ -225,7 +227,14 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
     // Cross-user raw-result cache: the scrape itself (up to ~52s Playwright) is
     // identical for every user asking about this title/season/episode/pass — only
     // the per-user HLS session + proxy URLs minted below need to be user-scoped.
-    const rawKey = rawScrapeCacheKey(req.mediaType, req.tmdbId, req.season, req.episode, req.fast);
+    const rawKey = rawScrapeCacheKey(
+      req.mediaType,
+      req.tmdbId,
+      req.season,
+      req.episode,
+      req.fast,
+      req.qualityHint
+    );
 
     try {
       let data = req.noCache ? null : getCachedRawScrape<ScraperResult>(rawKey);
@@ -271,21 +280,10 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
       // The scraper keeps them for manual switching (marked not-auto-default) and
       // the client's auto-pick / failover already prefer probe.ok, so listing them
       // only adds switchable entries — it never changes what auto-plays.
-      let entriesForClient = data.sources;
-      // Keep a wide roster (LordFlix-style). Only drop clearly unusable progressive HEVC.
-      entriesForClient = entriesForClient.filter((s) => {
-        const u = s.url.toLowerCase();
-        if (
-          (u.includes("h265") || u.includes("hevc")) &&
-          u.includes(".mp4") &&
-          !u.includes(".m3u8") &&
-          !u.includes("convert-h264") &&
-          !u.includes("/v1/proxy")
-        ) {
-          return false;
-        }
-        return true;
-      });
+      // Preserve the complete discovered inventory. Device capability gates in
+      // source-quality keep unsupported HEVC/AV1 rows visible but unselectable;
+      // deleting them here made legitimate 4K disappear even on capable devices.
+      const entriesForClient = data.sources;
       if (!entriesForClient.length) {
         const softMiss = Boolean(data.partial || req.fast);
         return {

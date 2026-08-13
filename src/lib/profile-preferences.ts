@@ -67,3 +67,12 @@ export function parseFourKStartupPreference(
 ): FourKStartupPreference | null {
   return value === "fast" || value === "maximum" ? value : null;
 }
+
+/** Cache identity for source discovery; non-4K startup policy cannot change it. */
+export function playbackDiscoveryPreferenceKey(
+  quality: PlaybackQualityPreference,
+  fourKStartup: FourKStartupPreference
+): string {
+  const startup = quality === 2160 ? fourKStartup : "fast";
+  return `${quality}:${startup}`;
+}

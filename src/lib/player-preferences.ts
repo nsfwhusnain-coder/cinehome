@@ -5,6 +5,7 @@ import {
   parseFourKStartupPreference,
   parsePlaybackQualityPreference,
   parseSubtitlePreference,
+  playbackDiscoveryPreferenceKey,
   type AudioPreference,
   type FourKStartupPreference,
   type PlaybackQualityPreference,
@@ -159,6 +160,20 @@ export function getFourKStartupPreference(): FourKStartupPreference {
     parseFourKStartupPreference(localStorage.getItem(FOUR_K_STARTUP_KEY)) ??
     DEFAULT_PROFILE_PLAYBACK_PREFERENCES.fourKStartup
   );
+}
+
+export function getPlaybackDiscoveryPreferenceKey(): string {
+  try {
+    return playbackDiscoveryPreferenceKey(
+      getPreferredQualityHeight(),
+      getFourKStartupPreference()
+    );
+  } catch {
+    return playbackDiscoveryPreferenceKey(
+      DEFAULT_PROFILE_PLAYBACK_PREFERENCES.playbackQuality,
+      DEFAULT_PROFILE_PLAYBACK_PREFERENCES.fourKStartup
+    );
+  }
 }
 
 export function setFourKStartupPreference(

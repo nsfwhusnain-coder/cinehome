@@ -4,6 +4,7 @@ import {
   pickDefaultSource,
   scoreSource,
 } from "./source-quality";
+import { normalizeUrlKey } from "./source-identity";
 import {
   baseServerToken,
   getServerDisplayName,
@@ -218,7 +219,7 @@ export function buildServerSlots(
    */
   const seenRows = new Set<string>();
   const uniqueServers = ranked.filter((source) => {
-    const key = `${displayName(source)}|${resolutionBadge(source)}`;
+    const key = normalizeUrlKey(source.url);
     if (seenRows.has(key)) return false;
     seenRows.add(key);
     return true;

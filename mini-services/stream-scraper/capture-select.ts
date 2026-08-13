@@ -13,8 +13,6 @@ const EPHEMERAL_QUERY_KEYS = new Set([
   "exp",
   "sig",
   "signature",
-  "key",
-  "hash",
   "auth",
   "authorization",
   "jwt",
@@ -23,10 +21,62 @@ const EPHEMERAL_QUERY_KEYS = new Set([
   "nonce",
 ]);
 
+const AMBIGUOUS_AUTH_QUERY_KEYS = new Set(["key", "hash"]);
+const AUTH_CONTEXT_QUERY_KEYS = new Set([
+  "token",
+  "expires",
+  "expire",
+  "exp",
+  "sig",
+  "signature",
+  "auth",
+  "authorization",
+  "jwt",
+  "access_token",
+]);
+
+const MAX_PROXY_DATA_LENGTH = 32 * 1024;
+const MAX_NESTED_PROXY_DEPTH = 2;
+
 /** Max alternate quality rungs surfaced when only single-rendition media playlists exist. */
 const MAX_MEDIA_QUALITY_VARIANTS = 2;
 /** Minimum height gap (px) before a second media playlist is kept as a separate source. */
 const MIN_MEANINGFUL_HEIGHT_GAP = 200;
+
+function hasExplicitAuthContext(params: URLSearchParams): boolean {
+  for (const key of params.keys()) {
+    if (AUTH_CONTEXT_QUERY_KEYS.has(key.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function looksLikeOpaqueAuthValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (/^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(trimmed)) {
+    return true;
+  }
+  if (/^[a-f\d]{24,}$/i.test(trimmed)) return true;
+  return (
+    trimmed.length >= 24 &&
+    /^[A-Za-z0-9_+/=-]+$/.test(trimmed) &&
+    /[A-Za-z]/.test(trimmed) &&
+    /\d/.test(trimmed)
+  );
+}
+
+function isEphemeralQueryParam(
+  key: string,
+  value: string,
+  hasAuthContext: boolean
+): boolean {
+  const normalizedKey = key.toLowerCase();
+  if (EPHEMERAL_QUERY_KEYS.has(normalizedKey)) return true;
+  return (
+    AMBIGUOUS_AUTH_QUERY_KEYS.has(normalizedKey) &&
+    hasAuthContext &&
+    looksLikeOpaqueAuthValue(value)
+  );
+}
 
 export interface SelectableCapture {
   url: string;
@@ -44,12 +94,21 @@ export interface SelectableCapture {
  * Normalize a stream URL for dedup: drop ephemeral auth tokens, keep host+path
  * and non-auth query params that can identify distinct variants.
  */
-export function normalizeStreamUrl(url: string): string {
+function normalizeStreamUrlAtDepth(url: string, depth: number): string {
   try {
     const u = new URL(url);
+    const proxyData = u.pathname === "/v1/proxy" ? u.searchParams.get("data") : null;
+    if (proxyData && proxyData.length <= MAX_PROXY_DATA_LENGTH && depth < MAX_NESTED_PROXY_DEPTH) {
+      const payload = JSON.parse(proxyData) as { url?: unknown };
+      if (typeof payload.url === "string") {
+        const upstream = normalizeStreamUrlAtDepth(payload.url, depth + 1);
+        return `${u.origin}${u.pathname}?upstream=${encodeURIComponent(upstream)}`;
+      }
+    }
     const clean = new URLSearchParams();
+    const hasAuthContext = hasExplicitAuthContext(u.searchParams);
     for (const [k, v] of u.searchParams) {
-      if (EPHEMERAL_QUERY_KEYS.has(k.toLowerCase())) continue;
+      if (isEphemeralQueryParam(k, v, hasAuthContext)) continue;
       clean.set(k, v);
     }
     const q = clean.toString();
@@ -57,6 +116,10 @@ export function normalizeStreamUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+export function normalizeStreamUrl(url: string): string {
+  return normalizeStreamUrlAtDepth(url, 0);
 }
 
 /** Cheap path/name heuristics — not a substitute for isHlsMasterManifest. */

@@ -93,8 +93,16 @@ import {
   countAutoPlayableRosterSources,
   countMeasuredPlayableRosterSources,
   partialForPlayableRoster,
+  rosterHasPlayableHeight,
 } from "./roster-health";
 import { appendNewSourceIdentities } from "./progressive-merge";
+import { resultCacheKey } from "./result-cache-key";
+import { capRosterWithQualityReserve } from "./quality-roster-cap";
+import { mergeDistinctStreamEntries } from "./source-entry-merge";
+import {
+  coalescedEnrichmentKey,
+  EnrichmentCoalescer,
+} from "./enrich-coalescer";
 
 const PORT = 3030;
 /**
@@ -116,6 +124,7 @@ const BACKGROUND_API_TIMEOUT_MS = 18000;
 const HLS_CACHE_TTL_MS = 3 * 60 * 1000;
 /** Hard cap returned to clients — higher for TV multi-server switching. */
 const MAX_SOURCES = 20;
+const QUALITY_DISCOVERY_RESERVED_SLOTS = 4;
 /** Keep hunting until this many unique servers (LordFlix-style roster). */
 /** Hunt / soft-keep target — keep enriching toward this when under cap. */
 const MIN_SOURCES_TARGET = 14;
@@ -246,6 +255,8 @@ interface SourceEntry {
   ladder?: number[];
   /** Provenance of maxHeight/ladder — optional, additive for clients. */
   qualitySource?: QualitySource;
+  /** Declared bitrate for the rendition at maxHeight, when present in a manifest. */
+  bitrateBps?: number;
 }
 
 interface ScrapeResult {
@@ -384,20 +395,8 @@ function scoreSourceEntry(
   return score;
 }
 
-const GENERIC_LABELS = new Set(["hls", "dash", "mp4", "direct", "stream", "auto", "link"]);
-
 function entryIdentity(entry: SourceEntry): string {
-  const p = entry.provider.trim().toLowerCase();
-  const l = entry.label.trim().toLowerCase();
-  const q = (entry.quality || "").trim().toLowerCase();
-  // Keep quality rungs and numbered servers distinct (Share 1080p vs Share 720p).
-  const server = l && !GENERIC_LABELS.has(l) ? l : "";
-  if (server) {
-    const withQ =
-      q && q !== "auto" && !server.includes(q) ? `${server}|${q}` : server;
-    return `${p}|${withQ}`;
-  }
-  return q && q !== "auto" ? `${p}|${q}` : p;
+  return normalizeStreamUrl(entry.url);
 }
 
 function entryScore(entry: SourceEntry): number {
@@ -417,7 +416,7 @@ function preferIdentityEntry(existing: SourceEntry | undefined, candidate: Sourc
   const aH = effectiveMaxHeight(candidate);
   const bH = effectiveMaxHeight(existing);
   if (aH !== bH) return aH > bH ? candidate : existing;
-  return entryScore(candidate) > entryScore(existing) ? candidate : existing;
+  return entryScore(candidate) >= entryScore(existing) ? candidate : existing;
 }
 
 function mergeSourceEntries(entries: SourceEntry[]): SourceEntry[] {
@@ -434,29 +433,9 @@ function mergeSourceEntries(entries: SourceEntry[]): SourceEntry[] {
   const sorted = [...deduped]
     .filter((e) => !e.url.includes(".srt"))
     .sort((a, b) => entryScore(b) - entryScore(a));
-
-  const byIdentity = new Map<string, SourceEntry>();
-
-  // Pass 1: non-HEVC only (H264/HLS preferred for broad device support).
-  for (const entry of sorted) {
-    if (isHevcStream(entry.url)) continue;
-    const id = entryIdentity(entry);
-    byIdentity.set(id, preferIdentityEntry(byIdentity.get(id), entry));
-  }
-
-  // Pass 2: allow up to MAX_HEVC_FALLBACK_SOURCES HEVC streams for identities
-  // that have no non-HEVC hit (e.g. stormvv MP4 h265 → Phoenix).
-  let hevcKept = 0;
-  for (const entry of sorted) {
-    if (!isHevcStream(entry.url)) continue;
-    if (hevcKept >= MAX_HEVC_FALLBACK_SOURCES) break;
-    const id = entryIdentity(entry);
-    if (byIdentity.has(id)) continue;
-    byIdentity.set(id, entry);
-    hevcKept += 1;
-  }
-
-  return Array.from(byIdentity.values()).sort((a, b) => entryScore(b) - entryScore(a));
+  return mergeDistinctStreamEntries(sorted, preferIdentityEntry).sort(
+    (a, b) => entryScore(b) - entryScore(a)
+  );
 }
 
 /**
@@ -659,7 +638,12 @@ function buildMergedResult(entries: SourceEntry[], error?: string): ScrapeResult
     (entry) => !isKnownTruncatedSource(entry.url)
   );
   const withHints = attachCheapQualityHints(mergeSourceEntries(durationSafeEntries));
-  const sources = sortSourcesForDefault(withHints).slice(0, MAX_SOURCES);
+  const sources = capRosterWithQualityReserve(
+    sortSourcesForDefault(withHints),
+    MAX_SOURCES,
+    QUALITY_DISCOVERY_RESERVED_SLOTS,
+    currentQualityHintHeight()
+  );
   if (!sources.length) {
     return { streamUrl: null, sources: [], error: error || "No stream URL found." };
   }
@@ -694,10 +678,13 @@ async function applyLatencyProbes(
     quality: entry.quality,
     provider: entry.provider,
     session: entry.session,
+    type: entry.type,
   }));
   const [probeMap, qualityMap] = await Promise.all([
     probeSourceBatch(candidates, { mediaType, expectedDurationS }),
-    probeSourceQuality(qualityEntries),
+    probeSourceQuality(qualityEntries, {
+      preferredHeight: currentQualityHintHeight(),
+    }),
   ]);
   let sources: SourceEntry[] = result.sources.map((entry) => {
     const probe = probeMap.get(entry.url);
@@ -738,6 +725,9 @@ async function applyLatencyProbes(
       maxHeight: resolvedHeight,
       ...(ladder?.length ? { ladder } : {}),
       ...(qualitySource ? { qualitySource } : {}),
+      ...(q.bitrateBps != null && q.bitrateBps > 0
+        ? { bitrateBps: q.bitrateBps }
+        : {}),
     };
   });
 
@@ -1371,10 +1361,6 @@ const MAX_RESULT_CACHE = 200;
 const resultCache = new Map<string, CacheEntry>();
 const resultCacheOrder: string[] = [];
 
-function cacheKey(tmdbId: number, mediaType: string, season?: number, episode?: number): string {
-  return `${mediaType}:${tmdbId}:${season ?? ""}:${episode ?? ""}`;
-}
-
 function removeFromResultCacheOrder(key: string): void {
   const idx = resultCacheOrder.indexOf(key);
   if (idx >= 0) resultCacheOrder.splice(idx, 1);
@@ -1909,6 +1895,7 @@ function providerToEntry(stream: ProviderStream): SourceEntry {
     quality: q && q.toLowerCase() !== "auto" ? q : "auto",
     label: stream.label || stream.provider,
     provider: stream.provider,
+    ...(stream.type ? { type: stream.type } : {}),
     session: {
       referer: stream.referer,
       origin: stream.origin,
@@ -2504,33 +2491,48 @@ async function filterAndKeepPwSources(pwSources: SourceEntry[]): Promise<SourceE
   return verifiedKept;
 }
 
-const enrichingKeys = new Set<string>();
-
 /**
  * Additive merge for late fast arms / enrich.
- * `partial` stays true only while the roster is still thin (< PARTIAL_CLEAR_MIN).
- * Once we have enough sources, clear partial even if Playwright enrich continues —
- * client must not hang on "searching for more…".
+ * `partial` stays true while the roster is thin or an explicit Ultra request
+ * still has no verified 4K candidate. Auto/1080 keeps the original fast clear.
  */
+function rosterNeedsPreferredQuality(sources: SourceEntry[]): boolean {
+  const preferredHeight = currentQualityHintHeight();
+  return (
+    preferredHeight > 1080 &&
+    !rosterHasPlayableHeight(sources, preferredHeight)
+  );
+}
+
+function rosterDiscoveryPending(sources: SourceEntry[]): boolean {
+  return (
+    countAutoPlayableRosterSources(sources) < PARTIAL_CLEAR_MIN ||
+    rosterNeedsPreferredQuality(sources)
+  );
+}
+
 function mergeIntoCache(key: string, entries: SourceEntry[]): ScrapeResult | null {
   const existing = getCached(key);
   const combined = [...(existing?.sources ?? []), ...entries];
   const merged = buildMergedResult(combined);
   if (!merged.streamUrl) return null;
-  const stillThin =
-    countAutoPlayableRosterSources(merged.sources) < PARTIAL_CLEAR_MIN;
+  const discoveryPending = rosterDiscoveryPending(merged.sources);
   const withPartial: ScrapeResult = {
     ...merged,
-    // Never force partial just because enrich is in-flight when roster is thick enough.
-    partial: stillThin ? true : undefined,
+    partial: discoveryPending ? true : undefined,
   };
   setCachedResult(key, withPartial);
   return withPartial;
 }
 
-/** First-response / return partial flag: thin roster only — not bare enrichingKeys. */
+/** First-response flag: thin roster, or explicit Ultra still searching. */
 function partialFlagForResult(sources: SourceEntry[]): true | undefined {
-  return partialForPlayableRoster(sources, PARTIAL_CLEAR_MIN);
+  return (
+    partialForPlayableRoster(sources, PARTIAL_CLEAR_MIN) ||
+    rosterNeedsPreferredQuality(sources)
+  )
+    ? true
+    : undefined;
 }
 
 async function enrichMissingSources(
@@ -2651,6 +2653,47 @@ async function enrichMissingSources(
 
 /** Keys that already finished one full enrich pass (avoid re-scrape storm every poll). */
 const enrichCompletedKeys = new Set<string>();
+const enrichmentCoalescer = new EnrichmentCoalescer();
+
+function cachedSourcesForTargets(targetKeys: readonly string[]): SourceEntry[] {
+  return targetKeys.flatMap((targetKey) => getCached(targetKey)?.sources ?? []);
+}
+
+function publishEnrichmentResult(
+  targetKeys: readonly string[],
+  sharedResult: ScrapeResult
+): number {
+  let largestRoster = 0;
+  for (const targetKey of targetKeys) {
+    const latest = getCached(targetKey)?.sources ?? [];
+    const merged = buildMergedResult([...latest, ...sharedResult.sources]);
+    if (!merged.streamUrl) continue;
+    setCachedResult(targetKey, { ...merged, partial: undefined });
+    largestRoster = Math.max(largestRoster, merged.sources.length);
+  }
+  return largestRoster;
+}
+
+function finishEnrichmentTargets(
+  targetKeys: readonly string[],
+  sharedResult: ScrapeResult | null
+): number {
+  const largestRoster = sharedResult
+    ? publishEnrichmentResult(targetKeys, sharedResult)
+    : 0;
+  for (const targetKey of targetKeys) {
+    const existing = getCached(targetKey);
+    if (existing?.partial) {
+      setCachedResult(targetKey, { ...existing, partial: undefined });
+    }
+    if (countAutoPlayableRosterSources(existing?.sources ?? []) >= PARTIAL_CLEAR_MIN) {
+      enrichCompletedKeys.add(targetKey);
+    } else {
+      enrichCompletedKeys.delete(targetKey);
+    }
+  }
+  return largestRoster;
+}
 
 function scheduleBackgroundEnrich(
   key: string,
@@ -2660,84 +2703,93 @@ function scheduleBackgroundEnrich(
   episode?: number,
   options: { force?: boolean; forceDeadHostProbe?: boolean } = {}
 ): void {
-  if (enrichingKeys.has(key)) return;
-  if (!options.force && enrichCompletedKeys.has(key)) return;
-  enrichingKeys.add(key);
+  const jobKey = coalescedEnrichmentKey(key);
+  if (
+    !options.force &&
+    enrichCompletedKeys.has(key) &&
+    !enrichmentCoalescer.hasJob(jobKey)
+  ) {
+    return;
+  }
+  const registration = enrichmentCoalescer.join(jobKey, key);
   enrichCompletedKeys.delete(key);
-  logAt("info", `[scrape] background enrich for ${key}`);
+  if (!registration.leader) {
+    logAt("info", `[scrape] coalesced background enrich target ${key} into ${jobKey}`);
+    return;
+  }
+  logAt("info", `[scrape] background enrich for ${jobKey}`);
 
-  const cached = getCached(key);
-  const seed = cached?.sources ?? [];
   const enrichStarted = Date.now();
+  let seedCount = 0;
 
   // Hard timeout guarantees the promise settles — UI must never await forever.
-  const enrichWork = enrichMissingSources(seed, tmdbId, mediaType, season, episode, {
-    forceDeadHostProbe: options.forceDeadHostProbe,
-  }).then(
-    async (enriched) => {
-      // `seed` is a snapshot. Provider arms may settle while the browser wave
-      // runs, so merge the latest cache too. The replacement write previously
-      // collapsed a 19-source roster back to the five entries in the snapshot.
-      const latest = getCached(key)?.sources ?? [];
-      let merged = buildMergedResult([...latest, ...enriched]);
-      if (merged.streamUrl) {
-        const expectedDurationS =
-          (await lookupTmdb(tmdbId, mediaType))?.runtimeSeconds ?? 0;
-        merged = await applyLatencyProbes(
-          merged,
-          mediaType,
-          expectedDurationS
-        );
-        merged = { ...merged, partial: undefined };
-        setCachedResult(key, merged);
-        logAt(
-          "info",
-          `[scrape] enriched ${key} → ${merged.sources.length} source(s) in ${Date.now() - enrichStarted}ms`
-        );
-        lastScrapeLifecycle = {
-          ...lastScrapeLifecycle,
-          lastEnrichMs: Date.now() - enrichStarted,
-          lastEnrichSources: merged.sources.length,
-          lastEnrichAt: Date.now(),
-        };
-      } else {
-        const existing = getCached(key);
-        if (existing?.partial) {
-          setCachedResult(key, { ...existing, partial: undefined });
-        }
-        logAt("info", `[scrape] enrich empty for ${key} (seed ${seed.length})`);
-      }
+  const enrichWork = Promise.resolve().then(async (): Promise<ScrapeResult | null> => {
+    const seed = mergeSourceEntries(cachedSourcesForTargets(registration.targets()));
+    seedCount = seed.length;
+    const enriched = await enrichMissingSources(
+      seed,
+      tmdbId,
+      mediaType,
+      season,
+      episode,
+      { forceDeadHostProbe: options.forceDeadHostProbe }
+    );
+    // Provider arms may settle while the browser wave runs, so merge every
+    // joined pass's latest cache after enrichment instead of reusing the seed.
+    const latest = cachedSourcesForTargets(registration.targets());
+    let merged = buildMergedResult([...latest, ...enriched]);
+    if (merged.streamUrl) {
+      const expectedDurationS =
+        (await lookupTmdb(tmdbId, mediaType))?.runtimeSeconds ?? 0;
+      merged = await applyLatencyProbes(merged, mediaType, expectedDurationS);
+      return merged.streamUrl ? { ...merged, partial: undefined } : null;
+    }
+    return null;
+  });
+
+  const finishEnrichment = (sharedResult: ScrapeResult | null): void => {
+    const targetKeys = registration.finish();
+    if (!targetKeys) return;
+    const largestRoster = finishEnrichmentTargets(targetKeys, sharedResult);
+    if (sharedResult) {
+      logAt(
+        "info",
+        `[scrape] enriched ${jobKey} → ${largestRoster} source(s) across ${targetKeys.length} cache(s) in ${Date.now() - enrichStarted}ms`
+      );
+      lastScrapeLifecycle = {
+        ...lastScrapeLifecycle,
+        lastEnrichMs: Date.now() - enrichStarted,
+        lastEnrichSources: largestRoster,
+        lastEnrichAt: Date.now(),
+      };
+    } else {
+      logAt("info", `[scrape] enrich empty for ${jobKey} (seed ${seedCount})`);
+    }
+  };
+
+  const settledWork = enrichWork.then(
+    (sharedResult) => {
+      finishEnrichment(sharedResult);
+    },
+    (error: unknown) => {
+      logAt("error", `[scrape] enrich failed for ${jobKey}:`, error);
+      finishEnrichment(null);
     }
   );
 
-  // clearTimeout + settled flag: work finish must not leave a timer that logs HARD TIMEOUT later.
-  raceWithHardTimeout(
-    enrichWork.catch((e) => {
-      logAt("error", `[scrape] enrich failed for ${key}:`, e);
-    }),
+  // A hard timeout ends the UI's pending state but deliberately retains the
+  // active leader until its underlying work settles. Late success still
+  // publishes once, and new fast/full targets join instead of spawning a
+  // concurrent browser wave.
+  void raceWithHardTimeout(
+    settledWork,
     ENRICH_HARD_TIMEOUT_MS,
     () => {
-      logAt("warn", `[scrape] enrich HARD TIMEOUT ${ENRICH_HARD_TIMEOUT_MS}ms for ${key}`);
-      const existing = getCached(key);
-      if (existing) {
-        setCachedResult(key, { ...existing, partial: undefined });
-      }
+      registration.markTimedOut();
+      logAt("warn", `[scrape] enrich HARD TIMEOUT ${ENRICH_HARD_TIMEOUT_MS}ms for ${jobKey}`);
     }
-  ).finally(() => {
-    enrichingKeys.delete(key);
-    const cachedSources = getCached(key)?.sources ?? [];
-    if (
-      countAutoPlayableRosterSources(cachedSources) >= PARTIAL_CLEAR_MIN
-    ) {
-      enrichCompletedKeys.add(key);
-    } else {
-      enrichCompletedKeys.delete(key);
-    }
-    // Always clear partial after enrich attempt settles.
-    const existing = getCached(key);
-    if (existing?.partial) {
-      setCachedResult(key, { ...existing, partial: undefined });
-    }
+  ).catch((error: unknown) => {
+    logAt("error", `[scrape] enrich timeout race failed for ${jobKey}:`, error);
   });
 }
 
@@ -2785,7 +2837,14 @@ async function scrapeStream(
   const expectedDurationPromise = lookupTmdb(tmdbId, mediaType).then(
     (metadata) => metadata?.runtimeSeconds ?? 0
   );
-  const key = cacheKey(tmdbId, mediaType, season, episode);
+  const key = resultCacheKey(
+    tmdbId,
+    mediaType,
+    season,
+    episode,
+    currentQualityHintHeight(),
+    Boolean(options.fast)
+  );
   const cached = getCached(key);
   const underCap = cached != null && cached.sources.length < MAX_SOURCES;
   const bypassCache = options.noCache && cached != null;
@@ -2802,11 +2861,10 @@ async function scrapeStream(
       // and roster is still under the clear floor.
       scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode);
     }
-    const stillThin =
-      countAutoPlayableRosterSources(cached.sources) < PARTIAL_CLEAR_MIN;
+    const discoveryPending = rosterDiscoveryPending(cached.sources);
     return {
       ...cached,
-      partial: (enrichingKeys.has(key) && stillThin) || undefined,
+      partial: (enrichmentCoalescer.hasTarget(key) && discoveryPending) || undefined,
     };
   }
 
@@ -3082,7 +3140,7 @@ function buildHealthPayload(): Record<string, unknown> {
       ...lastScrapeLifecycle,
       pwWaitMs: PW_WAIT_MS,
       enrichHardTimeoutMs: ENRICH_HARD_TIMEOUT_MS,
-      enrichingNow: enrichingKeys.size,
+      enrichingNow: enrichmentCoalescer.activeCount,
     },
     lastProbe: getLastProbeSummary(),
     logLevel: ACTIVE_LOG_LEVEL,

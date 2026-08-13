@@ -45,6 +45,24 @@ describe("normalizeStreamUrl", () => {
     const b = normalizeStreamUrl("https://cdn.example/1080/index.m3u8?token=1");
     expect(a).not.toBe(b);
   });
+
+  it("keeps ambiguous key selectors that identify distinct quality rungs", () => {
+    const hd = normalizeStreamUrl("https://cdn.example/master.m3u8?key=1080&token=a");
+    const ultra = normalizeStreamUrl("https://cdn.example/master.m3u8?key=2160&token=b");
+    expect(hd).not.toBe(ultra);
+    expect(hd).toContain("key=1080");
+    expect(ultra).toContain("key=2160");
+  });
+
+  it("strips auth-shaped ambiguous keys when explicit auth context is present", () => {
+    const first = normalizeStreamUrl(
+      "https://cdn.example/master.m3u8?key=0123456789abcdef0123456789abcdef&expires=1"
+    );
+    const renewed = normalizeStreamUrl(
+      "https://cdn.example/master.m3u8?key=fedcba9876543210fedcba9876543210&expires=2"
+    );
+    expect(first).toBe(renewed);
+  });
 });
 
 describe("looksLikeHlsMasterUrl", () => {

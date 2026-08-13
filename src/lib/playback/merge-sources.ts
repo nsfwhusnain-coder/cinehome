@@ -24,6 +24,9 @@ export function mergeProgressivePlaybackSources(
     if (source.ladder != null && source.ladder.length) patch.ladder = source.ladder;
     if (source.type) patch.type = source.type;
     if (source.qualitySource) patch.qualitySource = source.qualitySource;
+    if (source.bitrateBps != null && source.bitrateBps > 0) {
+      patch.bitrateBps = source.bitrateBps;
+    }
     if (source.verified !== undefined) patch.verified = source.verified;
     if (Object.keys(patch).length) {
       byId.set(source.id, { ...existing, ...patch });

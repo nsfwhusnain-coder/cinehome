@@ -332,6 +332,7 @@ export async function resolveCinemaos(
         quality: s.quality,
         label,
         provider: "CinemaOS",
+        type: "mp4",
         referer: `${REFERER_ORIGIN}/`,
         origin: REFERER_ORIGIN,
         userAgent: DEFAULT_UA,

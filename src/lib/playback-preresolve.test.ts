@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import {
   abortAllPreresolve,
+  playbackMemKey,
   prefetchManifestLite,
   preresolvePlayback,
   selectHlsWarmTarget,
@@ -37,6 +38,19 @@ afterEach(async () => {
 });
 
 describe("selectHlsWarmTarget", () => {
+  it("partitions hover seeds by discovery preference", () => {
+    const hd = playbackMemKey("movie", 550, undefined, undefined, "1080:fast");
+    const ultra = playbackMemKey(
+      "movie",
+      550,
+      undefined,
+      undefined,
+      "2160:maximum"
+    );
+
+    expect(hd).not.toBe(ultra);
+  });
+
   it("chooses the preferred extensionless proxy variant", () => {
     const master = [
       "#EXTM3U",

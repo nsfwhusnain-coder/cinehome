@@ -6,6 +6,7 @@ import {
   parseFourKStartupPreference,
   parsePlaybackQualityPreference,
   parseSubtitlePreference,
+  playbackDiscoveryPreferenceKey,
 } from "./profile-preferences";
 
 describe("profile playback preferences", () => {
@@ -33,5 +34,11 @@ describe("profile playback preferences", () => {
     expect(parseAudioPreference("commentary")).toBeNull();
     expect(parseSubtitlePreference("all")).toBeNull();
     expect(parseFourKStartupPreference("slow")).toBeNull();
+  });
+
+  test("partitions 4K discovery by quality and Maximum startup policy", () => {
+    expect(playbackDiscoveryPreferenceKey(2160, "fast")).toBe("2160:fast");
+    expect(playbackDiscoveryPreferenceKey(2160, "maximum")).toBe("2160:maximum");
+    expect(playbackDiscoveryPreferenceKey(1080, "maximum")).toBe("1080:fast");
   });
 });

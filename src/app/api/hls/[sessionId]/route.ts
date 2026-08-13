@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth";
-import { decodeUpstream, getHlsSession } from "@/lib/hls-session";
+import {
+  decodeUpstream,
+  getHlsSession,
+  resolveDashTemplateUpstream,
+} from "@/lib/hls-session";
 import {
   fetchProxied,
   isAbortLikeError,
@@ -40,6 +44,18 @@ export async function GET(
     upstream = decodeUpstream(encoded);
   } catch {
     return NextResponse.json({ error: "Invalid upstream URL" }, { status: 400 });
+  }
+
+  if (req.nextUrl.searchParams.get("dash") === "1") {
+    const resolved = resolveDashTemplateUpstream(
+      hlsSession,
+      upstream,
+      req.nextUrl.searchParams
+    );
+    if (!resolved) {
+      return NextResponse.json({ error: "Invalid DASH template values" }, { status: 400 });
+    }
+    upstream = resolved;
   }
 
   if (!isAllowedUpstreamUrl(upstream, hlsSession)) {

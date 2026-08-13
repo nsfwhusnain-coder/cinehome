@@ -73,6 +73,7 @@ import {
   GlassPillTabs,
 } from "@/components/glass-pill";
 import { useUIStore } from "@/stores/ui-store";
+import { clearPlaybackPreresolveCache } from "@/lib/playback-preresolve";
 // Home is available via fixed nav — no second Home control under the AB lockup
 
 interface SettingsData {
@@ -422,6 +423,7 @@ function StatusRow({ label, ok, okLabel, badLabel }: { label: string; ok: boolea
 
 /** Per-device playback defaults — used by video-player on next play. */
 function PlaybackPreferencesSection() {
+  const queryClient = useQueryClient();
   const [qualityOverride, setQualityOverride] = useState<string | null>(null);
   const [audioLanguageOverride, setAudioLanguageOverride] = useState<string | null>(null);
   const [audioPreferenceOverride, setAudioPreferenceOverride] = useState<string | null>(null);
@@ -483,6 +485,9 @@ function PlaybackPreferencesSection() {
     },
     onSuccess: (preferences) => {
       syncProfilePlaybackPreferences(preferences);
+      queryClient.setQueryData(["profile-playback-preferences"], preferences);
+      clearPlaybackPreresolveCache();
+      queryClient.removeQueries({ queryKey: ["playback"] });
       setQualityOverride(String(preferences.playbackQuality));
       setAudioLanguageOverride(preferences.audioLanguage);
       setAudioPreferenceOverride(preferences.audioPreference);

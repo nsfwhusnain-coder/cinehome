@@ -2,6 +2,10 @@
 
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import type { PlaybackSource, SourceProbeMetrics } from "@/lib/playback/types";
+import {
+  probeSameOriginSource,
+  runBoundedHealthProbes,
+} from "@/lib/playback/background-health-probe";
 import { getServerDisplayName } from "@/lib/playback/server-names";
 import {
   pickDefaultSource,
@@ -366,66 +370,25 @@ function isSameOriginPlaybackUrl(url: string): boolean {
 }
 
 /**
- * One reachability check against a source URL. Same-origin (`/api/hls/...`)
- * proxy URLs get a real byte-range GET so status/latency are trustworthy;
- * cross-origin URLs (direct CDN / Worker proxy) fall back to `no-cors` — the
- * response is opaque (status/headers unreadable), but a resolved fetch still
- * proves the request reached a server without throwing or timing out, which
- * is the only reachability signal available cross-origin without CORS
- * headers on someone else's CDN.
+ * One reachability check against a same-origin source URL. Cross-origin opaque
+ * GETs are intentionally excluded by the caller: they expose no trustworthy
+ * status and can compete with first-frame/4K bandwidth.
  */
-async function probeSourceReachability(url: string): Promise<SourceProbeMetrics> {
-  const sameOrigin = isSameOriginPlaybackUrl(url);
-  const start = Date.now();
-  try {
-    const res = await fetch(url, {
-      method: "GET",
-      cache: "no-store",
-      credentials: sameOrigin ? "include" : "omit",
-      mode: sameOrigin ? "same-origin" : "no-cors",
-      signal: AbortSignal.timeout(BG_HEALTH_PROBE_TIMEOUT_MS),
-      ...(sameOrigin ? { headers: { Range: "bytes=0-16384" } } : {}),
-    });
-    const ttfbMs = Math.max(1, Date.now() - start);
-    const ok = sameOrigin ? res.ok || res.status === 206 : true;
-    return {
-      ok,
-      ttfbMs,
-      bytesPerSec: 0,
-      speedScore: ok ? speedScoreFromLatencyMs(ttfbMs) : 0,
-    };
-  } catch {
-    return { ok: false, ttfbMs: BG_HEALTH_PROBE_TIMEOUT_MS, bytesPerSec: 0, speedScore: 0 };
-  }
-}
-
-async function probeSourceReachabilityCached(url: string): Promise<SourceProbeMetrics> {
+async function probeSourceReachabilityCached(
+  url: string,
+  signal: AbortSignal
+): Promise<SourceProbeMetrics | null> {
   const now = Date.now();
   const cached = bgHealthProbeCache.get(url);
   if (cached && cached.expiresAt > now) return cached.probe;
-  const probe = await probeSourceReachability(url);
+  const probe = await probeSameOriginSource(url, {
+    timeoutMs: BG_HEALTH_PROBE_TIMEOUT_MS,
+    signal,
+    speedScore: speedScoreFromLatencyMs,
+  });
+  if (!probe) return null;
   bgHealthProbeCache.set(url, { probe, expiresAt: now + BG_HEALTH_PROBE_CACHE_TTL_MS });
   return probe;
-}
-
-/** Bounded-concurrency queue — never more than `concurrency` probes in
- * flight at once, regardless of how many candidate URLs are queued. */
-async function runBoundedHealthProbes(
-  urls: string[],
-  concurrency: number,
-  onEach: (url: string, probe: SourceProbeMetrics) => void
-): Promise<void> {
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < urls.length) {
-      const url = urls[cursor++]!;
-      const probe = await probeSourceReachabilityCached(url);
-      onEach(url, probe);
-    }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, urls.length) }, () => worker())
-  );
 }
 
 interface Props {
@@ -2462,11 +2425,12 @@ export function VideoPlayer({
    * auto-selection — only the Server list's badge/health dot.
    */
   useEffect(() => {
-    if (!orderedSources.length) return;
+    if (!everPlayed || !orderedSources.length) return;
     const candidates = orderedSources
       .filter(
         (s) =>
           s.id !== activeSource?.id &&
+          isSameOriginPlaybackUrl(s.url) &&
           !isPoisonStreamUrl(s.url) &&
           s.probe == null &&
           probedHealth[s.id] == null &&
@@ -2475,15 +2439,16 @@ export function VideoPlayer({
       .slice(0, BG_HEALTH_PROBE_MAX_PER_PASS);
     if (!candidates.length) return;
 
-    let cancelled = false;
+    const abort = new AbortController();
     const byUrl = new Map(candidates.map((c) => [c.url, c.id] as const));
     for (const c of candidates) probeInFlightRef.current.add(c.id);
 
     runBoundedHealthProbes(
       candidates.map((c) => c.url),
       BG_HEALTH_PROBE_CONCURRENCY,
+      abort.signal,
+      probeSourceReachabilityCached,
       (url, probe) => {
-        if (cancelled) return;
         const id = byUrl.get(url);
         if (!id) return;
         setProbedHealth((prev) => (prev[id] ? prev : { ...prev, [id]: probe }));
@@ -2493,14 +2458,14 @@ export function VideoPlayer({
     });
 
     return () => {
-      cancelled = true;
+      abort.abort();
     };
     // Deliberately excludes `probedHealth` — it only gates which candidates
     // are queued (read fresh via closure whenever this re-runs), never a
     // trigger for re-running itself, or every resolved probe would re-arm
     // this effect and cycle indefinitely.
      
-  }, [orderedSources, activeSource?.id]);
+  }, [orderedSources, activeSource?.id, everPlayed]);
 
   // Assigned in an effect rather than during render: `failActiveSource` only
   // ever reads this from timers, engine callbacks and event handlers, all of

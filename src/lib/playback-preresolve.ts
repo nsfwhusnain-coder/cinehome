@@ -3,6 +3,8 @@
  * Cap 3 concurrent; abort on navigation; skip when saveData.
  */
 
+import { getPlaybackDiscoveryPreferenceKey } from "@/lib/player-preferences";
+
 type Job = {
   url: string;
   key: string;
@@ -171,9 +173,10 @@ export function playbackMemKey(
   mediaType: string,
   tmdbId: number,
   season?: number,
-  episode?: number
+  episode?: number,
+  discoveryPreference = getPlaybackDiscoveryPreferenceKey()
 ): string {
-  return `${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
+  return `${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${discoveryPreference}`;
 }
 
 export function getMemPlayback(key: string): unknown | null {
@@ -247,6 +250,12 @@ export function abortAllPreresolve(): void {
   }
   pump();
   abortManifestWarmups();
+}
+
+export function clearPlaybackPreresolveCache(): void {
+  abortAllPreresolve();
+  memory.clear();
+  recentManifestWarmups.clear();
 }
 
 /** Preconnect to stream origin once a source URL is known. */

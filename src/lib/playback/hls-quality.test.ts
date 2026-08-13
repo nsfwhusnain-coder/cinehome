@@ -120,6 +120,21 @@ describe("annotateLevelHeights", () => {
     expect(out.map((l) => l.height).sort((a, b) => a - b)).toEqual([480, 720, 1080]);
   });
 
+  it("keeps an 8 Mbps no-height top rung at exact source-ladder 4K", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 0, bitrate: 4_000_000 },
+      { index: 1, height: 0, bitrate: 8_000_000 },
+    ];
+    const out = annotateLevelHeights(levels, [2160, 1080], 2160);
+    expect(out.map((level) => level.height)).toEqual([1080, 2160]);
+    const single = annotateLevelHeights(
+      [{ index: 0, height: 0, bitrate: 8_000_000 }],
+      [2160, 1080],
+      2160
+    );
+    expect(single[0]?.height).toBe(2160);
+  });
+
   it("single level uses source maxHeight", () => {
     const out = annotateLevelHeights([{ index: 0, height: 0, bitrate: 0 }], [], 1080);
     expect(out[0]!.height).toBe(1080);

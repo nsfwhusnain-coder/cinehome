@@ -4,17 +4,35 @@ export interface RosterHealthSource {
   url: string;
   verified?: boolean;
   probe?: { ok?: boolean };
+  maxHeight?: number;
+  ladder?: number[];
+}
+
+function isAutoPlayable(source: RosterHealthSource): boolean {
+  return (
+    source.verified !== false &&
+    source.probe?.ok !== false &&
+    !isPoisonStreamUrl(source.url)
+  );
 }
 
 export function countAutoPlayableRosterSources(
   sources: RosterHealthSource[]
 ): number {
   return sources.filter(
-    (source) =>
-      source.verified !== false &&
-      source.probe?.ok !== false &&
-      !isPoisonStreamUrl(source.url)
+    (source) => isAutoPlayable(source)
   ).length;
+}
+
+export function rosterHasPlayableHeight(
+  sources: RosterHealthSource[],
+  targetHeight: number
+): boolean {
+  return sources.some((source) => {
+    if (!isAutoPlayable(source)) return false;
+    const ladderTop = source.ladder?.[0] ?? 0;
+    return Math.max(source.maxHeight ?? 0, ladderTop) >= targetHeight;
+  });
 }
 
 /** Strict health evidence used before deciding that fallback providers may stop. */

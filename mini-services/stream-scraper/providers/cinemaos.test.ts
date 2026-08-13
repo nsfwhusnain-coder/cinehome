@@ -1,5 +1,5 @@
 /// <reference types="bun-types" />
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   cinemaosHash,
   cinemaosQualityRank,
@@ -8,11 +8,18 @@ import {
   isCinemaosRejectedStreamUrl,
   isCinemaosEnglish,
   parseCinemaosQuality,
+  resolveCinemaos,
   sortCinemaosStreams,
   CINEMAOS_MAX_STREAMS,
   CINEMAOS_OUTER_TIMEOUT_MS,
   CINEMAOS_TIMEOUT_MS,
 } from "./cinemaos";
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 describe("CinemaOS worker quarantine", () => {
   it("drops the rate-limited worker DASH fallback but keeps direct MP4 CDNs", () => {
@@ -170,5 +177,23 @@ describe("cinemaos constants", () => {
     expect(CINEMAOS_OUTER_TIMEOUT_MS).toBe(14_000);
     expect(CINEMAOS_OUTER_TIMEOUT_MS).toBeGreaterThan(CINEMAOS_TIMEOUT_MS);
     expect(CINEMAOS_MAX_STREAMS).toBe(6);
+  });
+});
+
+describe("resolveCinemaos stream declaration", () => {
+  it("declares extensionless progressive sources as MP4", async () => {
+    globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+      streams: [{
+        name: "AoneRoom (English) 1080p [MP4]",
+        title: "Fight Club",
+        quality: "1080p",
+        url: "https://hcdn.hakunaymatata.com/resource/opaque-token",
+      }],
+    }), { headers: { "Content-Type": "application/json" } })) as typeof fetch;
+
+    const streams = await resolveCinemaos(550, "movie");
+
+    expect(streams).toHaveLength(1);
+    expect(streams[0]?.type).toBe("mp4");
   });
 });

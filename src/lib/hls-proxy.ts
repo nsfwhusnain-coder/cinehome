@@ -1,6 +1,13 @@
 import { createHash } from "crypto";
 import type { HlsSession } from "@/lib/hls-session";
-import { onHlsSessionEnd, proxyUrlFor, rememberUpstreamHost } from "@/lib/hls-session";
+import {
+  buildDashTemplateProxyUrl,
+  dashRepresentationIdForProxy,
+  homeProxyUrlFor,
+  onHlsSessionEnd,
+  proxyUrlFor,
+  rememberUpstreamHost,
+} from "@/lib/hls-session";
 import {
   firstMediaSegmentUri,
   isPureHlsMediaPlaylist,
@@ -1491,8 +1498,12 @@ function remapCineproLoopback(absolute: string, session: HlsSession): string {
   }
 }
 
-/** Resolve media URI → absolute, remember host, return proxy URL (or null if private/invalid). */
-function rewriteToProxy(session: HlsSession, value: string, baseUrl: string): string | null {
+/** Resolve a manifest URI to a session-approved absolute upstream URL. */
+function resolveProxyUpstream(
+  session: HlsSession,
+  value: string,
+  baseUrl: string
+): string | null {
   const decoded = value.replace(/&amp;/g, "&");
   let absolute =
     decoded.startsWith("http://") || decoded.startsWith("https://")
@@ -1513,7 +1524,13 @@ function rewriteToProxy(session: HlsSession, value: string, baseUrl: string): st
     return null;
   }
   rememberUpstreamHost(session, absolute);
-  return proxyUrlFor(session, absolute);
+  return absolute;
+}
+
+/** Resolve media URI → absolute, remember host, return proxy URL (or null if private/invalid). */
+function rewriteToProxy(session: HlsSession, value: string, baseUrl: string): string | null {
+  const absolute = resolveProxyUpstream(session, value, baseUrl);
+  return absolute ? proxyUrlFor(session, absolute) : null;
 }
 
 /**
@@ -1542,26 +1559,402 @@ function isCdnPath(value: string, session: HlsSession): boolean {
   return isKnownCdnHost(decoded) || CDN_HOSTS.some((h) => decoded.includes(h));
 }
 
-function rewriteSegmentAttr(value: string, session: HlsSession, baseUrl: string): string {
-  return rewriteToProxy(session, value, baseUrl) ?? value.replace(/&amp;/g, "&");
+interface MpdElement {
+  rawName: string;
+  name: string;
+  openStart: number;
+  openEnd: number;
+  closeStart: number;
+  closeEnd: number;
+  parent: MpdElement | null;
+  children: MpdElement[];
+  inheritedBase: string;
+  effectiveBase: string;
+  resolvedBase: string | null;
+  selectedBase: boolean;
 }
 
-function rewriteMpd(body: string, session: HlsSession, baseUrl: string): string {
-  let result = body.replace(
-    /(initialization|media|sourceURL)="([^"]+)"/g,
-    (match, attr: string, value: string) => {
-      if (!isCdnPath(value, session)) return match;
-      return `${attr}="${rewriteSegmentAttr(value, session, baseUrl)}"`;
+interface XmlTag {
+  rawName: string;
+  closing: boolean;
+  selfClosing: boolean;
+  end: number;
+}
+
+interface XmlReplacement {
+  start: number;
+  end: number;
+  value: string;
+}
+
+interface DashRepresentationBase {
+  representationId: string;
+  baseUrl: string;
+}
+
+const DASH_TEMPLATE_IDENTIFIER_RE = /\$\$|\$[^$]+\$/;
+const MAX_MPD_XML_ELEMENTS = 20_000;
+const MAX_MPD_XML_DEPTH = 64;
+const DEFAULT_BASE_URL_PRIORITY = 1;
+
+function xmlMarkupEnd(body: string, start: number): number {
+  if (body.startsWith("<!--", start)) {
+    const end = body.indexOf("-->", start + 4);
+    return end < 0 ? body.length : end + 3;
+  }
+  if (body.startsWith("<![CDATA[", start)) {
+    const end = body.indexOf("]]>", start + 9);
+    return end < 0 ? body.length : end + 3;
+  }
+  if (body.startsWith("<?", start)) {
+    const end = body.indexOf("?>", start + 2);
+    return end < 0 ? body.length : end + 2;
+  }
+  let quote = "";
+  for (let index = start + 1; index < body.length; index++) {
+    const char = body[index] || "";
+    if (quote) {
+      if (char === quote) quote = "";
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return index + 1;
+    }
+  }
+  return body.length;
+}
+
+function readXmlTag(body: string, start: number): XmlTag | null {
+  const end = xmlMarkupEnd(body, start);
+  const source = body.slice(start, end);
+  if (source.startsWith("<!--") || source.startsWith("<!") || source.startsWith("<?")) {
+    return { rawName: "", closing: false, selfClosing: true, end };
+  }
+  const match = source.match(/^<\s*(\/?)\s*([A-Za-z_][\w:.-]*)/);
+  if (!match) return null;
+  return {
+    rawName: match[2] || "",
+    closing: match[1] === "/",
+    selfClosing: /\/\s*>$/.test(source),
+    end,
+  };
+}
+
+function xmlLocalName(rawName: string): string {
+  return (rawName.split(":").pop() || rawName).toLowerCase();
+}
+
+function closeMpdElement(
+  stack: MpdElement[],
+  rawName: string,
+  start: number,
+  end: number
+): void {
+  const wanted = rawName.toLowerCase();
+  for (let index = stack.length - 1; index >= 0; index--) {
+    if (stack[index]?.rawName.toLowerCase() !== wanted) continue;
+    stack[index]!.closeStart = start;
+    stack[index]!.closeEnd = end;
+    stack.length = index;
+    return;
+  }
+}
+
+function parseMpdElements(body: string): MpdElement[] | null {
+  if (
+    body.length > MANIFEST_MAX_BYTES ||
+    Buffer.byteLength(body, "utf8") > MANIFEST_MAX_BYTES
+  ) {
+    return null;
+  }
+  const elements: MpdElement[] = [];
+  const stack: MpdElement[] = [];
+  let cursor = 0;
+  while (cursor < body.length) {
+    const start = body.indexOf("<", cursor);
+    if (start < 0) break;
+    const tag = readXmlTag(body, start);
+    if (!tag) {
+      cursor = start + 1;
+      continue;
+    }
+    cursor = tag.end;
+    if (!tag.rawName) continue;
+    if (tag.closing) {
+      closeMpdElement(stack, tag.rawName, start, tag.end);
+      continue;
+    }
+    if (elements.length >= MAX_MPD_XML_ELEMENTS) return null;
+    if (!tag.selfClosing && stack.length >= MAX_MPD_XML_DEPTH) return null;
+    const parent = stack.at(-1) ?? null;
+    const element: MpdElement = {
+      rawName: tag.rawName,
+      name: xmlLocalName(tag.rawName),
+      openStart: start,
+      openEnd: tag.end,
+      closeStart: tag.end,
+      closeEnd: tag.end,
+      parent,
+      children: [],
+      inheritedBase: "",
+      effectiveBase: "",
+      resolvedBase: null,
+      selectedBase: false,
+    };
+    parent?.children.push(element);
+    elements.push(element);
+    if (!tag.selfClosing) stack.push(element);
+  }
+  return elements;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value.replace(
+    /&(?:#(\d+)|#x([\da-f]+)|amp|lt|gt|quot|apos);/gi,
+    (entity: string, decimal?: string, hex?: string) => {
+      const codePoint = decimal
+        ? Number(decimal)
+        : hex
+          ? Number.parseInt(hex, 16)
+          : Number.NaN;
+      if (Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff) {
+        return String.fromCodePoint(codePoint);
+      }
+      const named: Record<string, string> = {
+        "&amp;": "&",
+        "&lt;": "<",
+        "&gt;": ">",
+        "&quot;": '"',
+        "&apos;": "'",
+      };
+      return named[entity.toLowerCase()] ?? entity;
     }
   );
+}
 
-  result = result.replace(/<BaseURL>([^<]+)<\/BaseURL>/g, (match, value: string) => {
-    const trimmed = value.trim();
-    if (!isCdnPath(trimmed, session)) return match;
-    const proxied = rewriteToProxy(session, trimmed, baseUrl);
-    if (!proxied) return match;
-    return `<BaseURL>${proxied}</BaseURL>`;
-  });
+function resolveMpdBase(value: string, inheritedBase: string): string | null {
+  const decoded = decodeXmlEntities(value.trim());
+  if (!decoded) return null;
+  const resolved = resolveUrl(decoded, inheritedBase);
+  try {
+    const parsed = new URL(resolved);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+function baseUrlPriority(node: MpdElement, body: string): number {
+  const tag = body.slice(node.openStart, node.openEnd);
+  const match = tag.match(/(?:^|\s)(?:[A-Za-z_][\w.-]*:)?priority\s*=\s*["'](\d+)["']/i);
+  const priority = Number(match?.[1] ?? DEFAULT_BASE_URL_PRIORITY);
+  return Number.isSafeInteger(priority) && priority > 0
+    ? priority
+    : DEFAULT_BASE_URL_PRIORITY;
+}
+
+function selectMpdBaseUrl(
+  node: MpdElement,
+  inheritedBase: string,
+  body: string,
+  session: HlsSession
+): MpdElement | null {
+  const candidates = node.children
+    .filter((child) => child.name === "baseurl")
+    .map((child, index) => ({ child, index, priority: baseUrlPriority(child, body) }))
+    .sort((a, b) => a.priority - b.priority || a.index - b.index);
+  for (const candidate of candidates) {
+    const raw = body.slice(candidate.child.openEnd, candidate.child.closeStart);
+    const resolved = resolveMpdBase(raw, inheritedBase);
+    if (!resolved) continue;
+    const approved = resolveProxyUpstream(session, resolved, inheritedBase);
+    if (!approved) continue;
+    candidate.child.resolvedBase = approved;
+    candidate.child.selectedBase = true;
+    return candidate.child;
+  }
+  return null;
+}
+
+function assignMpdBases(
+  roots: MpdElement[],
+  inheritedBase: string,
+  body: string,
+  session: HlsSession
+): void {
+  const pending = roots.map((node) => ({ node, inheritedBase })).reverse();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    const { node, inheritedBase: nodeBase } = current;
+    node.inheritedBase = nodeBase;
+    const selected = selectMpdBaseUrl(node, nodeBase, body, session);
+    node.effectiveBase = selected?.resolvedBase ?? nodeBase;
+    for (const child of node.children) {
+      if (child.name === "baseurl") {
+        child.inheritedBase = nodeBase;
+        child.effectiveBase = child.resolvedBase ?? nodeBase;
+      }
+    }
+    for (let index = node.children.length - 1; index >= 0; index--) {
+      const child = node.children[index];
+      if (child && child.name !== "baseurl") {
+        pending.push({ node: child, inheritedBase: node.effectiveBase });
+      }
+    }
+  }
+}
+
+function escapeXmlAttribute(value: string, quote: string): string {
+  let escaped = value.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  escaped = quote === '"' ? escaped.replace(/"/g, "&quot;") : escaped.replace(/'/g, "&apos;");
+  return escaped;
+}
+
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+function rewriteDashRepresentationId(tag: string, session: HlsSession): string {
+  return tag.replace(
+    /(\bid\s*=\s*)(["'])(.*?)\2/i,
+    (match: string, prefix: string, quote: string, value: string) => {
+      const decoded = decodeXmlEntities(value);
+      const transported = dashRepresentationIdForProxy(session, decoded);
+      if (!transported || transported === decoded) return match;
+      return `${prefix}${quote}${escapeXmlAttribute(transported, quote)}${quote}`;
+    }
+  );
+}
+
+function mpdAttributeValue(tag: string, name: string): string | null {
+  const pattern = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])(.*?)\\1`, "i");
+  const value = tag.match(pattern)?.[2];
+  return value === undefined ? null : decodeXmlEntities(value);
+}
+
+function descendantRepresentations(node: MpdElement): MpdElement[] {
+  const result: MpdElement[] = [];
+  const scope = node.parent ?? node;
+  const pending = [...scope.children].reverse();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    if (current.name === "representation") result.push(current);
+    if (current !== node && current.name === "segmenttemplate") continue;
+    for (let index = current.children.length - 1; index >= 0; index--) {
+      const child = current.children[index];
+      if (child) pending.push(child);
+    }
+  }
+  return result;
+}
+
+function inheritedTemplateRepresentationBases(
+  node: MpdElement,
+  body: string
+): DashRepresentationBase[] {
+  const result: DashRepresentationBase[] = [];
+  for (const representation of descendantRepresentations(node)) {
+    const tag = body.slice(representation.openStart, representation.openEnd);
+    const representationId = mpdAttributeValue(tag, "id");
+    if (!representationId || !representation.effectiveBase) continue;
+    result.push({ representationId, baseUrl: representation.effectiveBase });
+  }
+  return result.some((entry) => entry.baseUrl !== node.effectiveBase) ? result : [];
+}
+
+function rewriteMpdUrlAttributes(
+  tag: string,
+  session: HlsSession,
+  effectiveBase: string,
+  representationBases: readonly DashRepresentationBase[] = []
+): string {
+  return tag.replace(
+    /(\b(?:initialization|media|sourceURL)\s*=\s*)(["'])(.*?)\2/gi,
+    (match: string, prefix: string, quote: string, value: string) => {
+      const decoded = decodeXmlEntities(value);
+      if (!isCdnPath(decoded, session)) return match;
+      const absolute = resolveProxyUpstream(session, decoded, effectiveBase);
+      if (!absolute) return match;
+      const hasTemplateIdentifier = DASH_TEMPLATE_IDENTIFIER_RE.test(decoded);
+      const proxied = hasTemplateIdentifier
+        ? buildDashTemplateProxyUrl(session, absolute, representationBases, decoded)
+        : proxyUrlFor(session, absolute);
+      if (!proxied) return match;
+      return `${prefix}${quote}${escapeXmlAttribute(proxied, quote)}${quote}`;
+    }
+  );
+}
+
+function baseUrlReplacement(
+  node: MpdElement,
+  body: string,
+  session: HlsSession
+): XmlReplacement | null {
+  if (!node.selectedBase) {
+    return { start: node.openStart, end: node.closeEnd, value: "" };
+  }
+  if (!node.resolvedBase || node.closeStart <= node.openEnd) return null;
+  const original = body.slice(node.openEnd, node.closeStart);
+  const value = original.trim();
+  if (!value || !isCdnPath(decodeXmlEntities(value), session)) return null;
+  const proxied = homeProxyUrlFor(session, node.resolvedBase);
+  const leading = original.match(/^\s*/)?.[0] ?? "";
+  const trailing = original.match(/\s*$/)?.[0] ?? "";
+  return {
+    start: node.openEnd,
+    end: node.closeStart,
+    value: `${leading}${escapeXmlText(proxied)}${trailing}`,
+  };
+}
+
+function applyXmlReplacements(body: string, replacements: XmlReplacement[]): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  replacements.sort((a, b) => a.start - b.start);
+  for (const replacement of replacements) {
+    if (replacement.start < cursor) continue;
+    parts.push(body.slice(cursor, replacement.start), replacement.value);
+    cursor = replacement.end;
+  }
+  parts.push(body.slice(cursor));
+  return parts.join("");
+}
+
+export function rewriteMpd(body: string, session: HlsSession, baseUrl: string): string {
+  const elements = parseMpdElements(body);
+  if (!elements) return body;
+  const roots = elements.filter((element) => element.parent === null);
+  assignMpdBases(roots, baseUrl, body, session);
+
+  const replacements: XmlReplacement[] = [];
+  const usesRepresentationTemplate = body.includes("$RepresentationID$");
+  for (const element of elements) {
+    if (element.name === "baseurl") {
+      const replacement = baseUrlReplacement(element, body, session);
+      if (replacement) replacements.push(replacement);
+      continue;
+    }
+    const tag = body.slice(element.openStart, element.openEnd);
+    const withRepresentationId =
+      usesRepresentationTemplate && element.name === "representation"
+        ? rewriteDashRepresentationId(tag, session)
+        : tag;
+    const rewritten = rewriteMpdUrlAttributes(
+      withRepresentationId,
+      session,
+      element.effectiveBase || baseUrl,
+      element.name === "segmenttemplate"
+        ? inheritedTemplateRepresentationBases(element, body)
+        : []
+    );
+    if (rewritten !== tag) {
+      replacements.push({ start: element.openStart, end: element.openEnd, value: rewritten });
+    }
+  }
+
+  let result = applyXmlReplacements(body, replacements);
 
   result = result.replace(/https?:\/\/[^\s"'<>]+/g, (match) => {
     try {
@@ -2069,6 +2462,17 @@ export async function fetchProxied(
   });
 }
 
+function isDirectPlaybackFile(url: string): boolean {
+  try {
+    return /\.(?:mp4|m4v|mov|webm|mkv)$/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+/** Root manifests must be sniffed/re-written at home; obvious direct files may use the Worker. */
 export function buildPlaybackProxyUrl(session: HlsSession): string {
-  return proxyUrlFor(session, session.rootUrl);
+  return isDirectPlaybackFile(session.rootUrl)
+    ? proxyUrlFor(session, session.rootUrl)
+    : homeProxyUrlFor(session, session.rootUrl);
 }

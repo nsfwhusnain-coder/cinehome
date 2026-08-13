@@ -1,6 +1,11 @@
 import type { PlaybackSource } from "./types";
 
 const GENERIC_LABELS = new Set(["hls", "dash", "mp4", "direct", "stream", "auto", "link"]);
+const SOURCE_ID_HASH_OFFSET = 0x811c9dc5;
+const SOURCE_ID_HASH_PRIME = 0x01000193;
+const SOURCE_ID_MAX_LENGTH = 64;
+const SOURCE_ID_HASH_WIDTH = 7;
+const PROXY_DATA_MAX_LENGTH = 32_768;
 
 /**
  * One logical server row. Numbered multi-CDN captures (Solstice 2, Phoenix 3)
@@ -69,7 +74,7 @@ export function sourceIdentity(provider: string, label: string): string {
 }
 
 export function playbackSourceKey(source: PlaybackSource): string {
-  return sourceIdentity(source.provider, source.label);
+  return source.id;
 }
 
 /**
@@ -84,8 +89,6 @@ const EPHEMERAL_AUTH_PARAMS = new Set([
   "exp",
   "sig",
   "signature",
-  "key",
-  "hash",
   "auth",
   "authorization",
   "jwt",
@@ -93,6 +96,24 @@ const EPHEMERAL_AUTH_PARAMS = new Set([
   "timestamp",
   "nonce",
 ]);
+
+const VOLATILE_AUTH_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "api-key",
+  "apikey",
+  "x-api-key",
+  "x-auth-token",
+  "x-access-token",
+  "x-csrf-token",
+  "x-xsrf-token",
+  "x-amz-date",
+  "x-amz-security-token",
+]);
+
+type NormalizedHeader = [string, string | string[]];
 
 /** Browser-safe base64url → utf8 (proxy `u=` param). */
 function decodeBase64Url(encoded: string): string {
@@ -129,25 +150,136 @@ function unwrapProxyUpstream(url: string): string {
   return url;
 }
 
+function compareText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stableJson(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => compareText(left, right));
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+    .join(",")}}`;
+}
+
+function isVolatileAuthHeader(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  const withoutExtensionPrefix = normalized.startsWith("x-")
+    ? normalized.slice(2)
+    : normalized;
+  const paramStyle = withoutExtensionPrefix.replace(/-/g, "_");
+  return (
+    VOLATILE_AUTH_HEADERS.has(normalized) ||
+    EPHEMERAL_AUTH_PARAMS.has(paramStyle)
+  );
+}
+
+function normalizeProxyHeaders(value: unknown): NormalizedHeader[] | null {
+  if (value === undefined || value === null) return [];
+  if (!isRecord(value)) return null;
+  const headers: NormalizedHeader[] = [];
+  for (const [rawName, rawValue] of Object.entries(value)) {
+    const name = rawName.trim().toLowerCase();
+    if (!name || isVolatileAuthHeader(name)) continue;
+    if (typeof rawValue === "string") headers.push([name, rawValue]);
+    else if (Array.isArray(rawValue) && rawValue.every((item) => typeof item === "string")) {
+      headers.push([name, rawValue]);
+    } else return null;
+  }
+  return headers.sort((left, right) => {
+    const nameOrder = compareText(left[0], right[0]);
+    return nameOrder || compareText(stableJson(left[1]), stableJson(right[1]));
+  });
+}
+
+function buildUrlKey(url: URL, normalizeProxyDataValue: boolean): string {
+  const path = url.pathname.replace(/\/+/g, "/");
+  const isDataProxy = normalizeProxyDataValue && path.endsWith("/v1/proxy");
+  const clean = new URLSearchParams();
+  for (const [key, value] of url.searchParams) {
+    if (EPHEMERAL_AUTH_PARAMS.has(key.toLowerCase())) continue;
+    const normalizedValue =
+      isDataProxy && key.toLowerCase() === "data"
+        ? normalizeNestedProxyData(value)
+        : value;
+    clean.append(key, normalizedValue);
+  }
+  const query = clean.toString();
+  return `${url.host || ""}${path}${query ? `?${query}` : ""}`;
+}
+
+function normalizeAbsoluteUpstreamKey(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return buildUrlKey(url, false);
+  } catch {
+    return null;
+  }
+}
+
+function opaqueProxyData(rawData: string): string {
+  return `opaque:${rawData.length}:${stableSourceHash(rawData)}`;
+}
+
+function normalizeNestedProxyData(rawData: string): string {
+  const fallback = opaqueProxyData(rawData);
+  if (!rawData || rawData.length > PROXY_DATA_MAX_LENGTH) return fallback;
+  try {
+    const payload: unknown = JSON.parse(rawData);
+    if (!isRecord(payload) || typeof payload.url !== "string") return fallback;
+    const url = normalizeAbsoluteUpstreamKey(payload.url);
+    const headers = normalizeProxyHeaders(payload.headers);
+    if (!url || headers === null) return fallback;
+    const fields: [string, unknown][] = Object.entries(payload)
+      .filter(([key]) => key !== "url" && key !== "headers");
+    fields.push(["headers", headers], ["url", url]);
+    fields.sort(([left], [right]) => compareText(left, right));
+    return stableJson(fields);
+  } catch {
+    return fallback;
+  }
+}
+
 /** Normalize URL for dedup — strip token/expiry so same stream collapses. */
 export function normalizeUrlKey(url: string): string {
   try {
     const unwrapped = unwrapProxyUpstream(url);
     const u = new URL(unwrapped, "http://local");
-    const clean = new URLSearchParams();
-    for (const [k, v] of u.searchParams) {
-      if (EPHEMERAL_AUTH_PARAMS.has(k.toLowerCase())) continue;
-      clean.set(k, v);
-    }
-    // Host + path so same CDN path across hosts still collapses when auth-only differs;
-    // origin kept so distinct CDNs with identical paths stay separate.
-    const path = u.pathname.replace(/\/+/g, "/");
-    const q = clean.toString();
-    const host = u.host || "";
-    return `${host}${path}${q ? `?${q}` : ""}`;
+    return buildUrlKey(u, true);
   } catch {
     return url.split("?")[0] ?? url;
   }
+}
+
+function stableSourceHash(value: string): string {
+  let hash = SOURCE_ID_HASH_OFFSET;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, SOURCE_ID_HASH_PRIME);
+  }
+  return (hash >>> 0).toString(36).padStart(SOURCE_ID_HASH_WIDTH, "0");
+}
+
+/**
+ * Distinguish separate fixed/adaptive URLs that share a human server label.
+ * Authentication parameters are normalized out, so token refreshes retain the
+ * same id while genuine 1080p/2160p siblings remain independently selectable.
+ */
+export function sourceInstanceId(baseId: string, upstreamUrl: string): string {
+  const suffix = stableSourceHash(normalizeUrlKey(upstreamUrl));
+  const prefixMax = SOURCE_ID_MAX_LENGTH - suffix.length - 1;
+  return `${baseId.slice(0, prefixMax)}-${suffix}`;
 }
 
 export function dedupePlaybackSources(sources: PlaybackSource[]): PlaybackSource[] {

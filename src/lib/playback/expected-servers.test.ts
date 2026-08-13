@@ -60,17 +60,33 @@ describe("buildServerSlots — single source of truth for naming", () => {
    * It is kept, marked, and sorted last instead.
    */
   it("keeps a session-failed source visible, marked and sorted last", () => {
-    const a = source({ id: "a", provider: "vidking", label: "Solstice" });
-    const b = source({ id: "b", provider: "vidlink", label: "Phoenix" });
+    const a = source({
+      id: "a",
+      url: "https://solstice.example/master.m3u8",
+      provider: "vidking",
+      label: "Solstice",
+    });
+    const b = source({
+      id: "b",
+      url: "https://phoenix.example/master.m3u8",
+      provider: "vidlink",
+      label: "Phoenix",
+    });
     const slots = buildServerSlots([a, b], ["a"], false, undefined);
     expect(slots.map((s) => s.id)).toEqual(["b", "a"]);
     expect(slots.find((s) => s.id === "a")?.status).toBe("failed");
   });
 
   it("shows a curated flag when known and an honest globe when geography is unknown", () => {
-    const free = source({ id: "free", provider: "vidking", label: "Solstice" });
+    const free = source({
+      id: "free",
+      url: "https://solstice.example/master.m3u8",
+      provider: "vidking",
+      label: "Solstice",
+    });
     const premium = source({
       id: "debrid-tt1-movie-0-0-native-1080-1",
+      url: "https://library.example/movie.mp4",
       provider: "Debrid",
       label: "1080p • Debrid",
       origin: "debrid",
@@ -93,6 +109,7 @@ describe("buildServerSlots — single source of truth for naming", () => {
   it("keeps distinct quality rungs of one server as separate rows", () => {
     const ru1080 = source({
       id: "cinemaos-cinema-ru-1080",
+      url: "https://cinema.example/movie-1080.mp4",
       provider: "CinemaOS",
       label: "Cinema RU 1080",
       type: "mp4",
@@ -100,6 +117,7 @@ describe("buildServerSlots — single source of truth for naming", () => {
     });
     const ru720 = source({
       id: "cinemaos-cinema-ru-720",
+      url: "https://cinema.example/movie-720.mp4",
       provider: "CinemaOS",
       label: "Cinema RU 720",
       type: "mp4",
@@ -117,6 +135,25 @@ describe("buildServerSlots — single source of truth for naming", () => {
     const a = source({ id: "dup-a", provider: "CinemaOS", label: "Cinema RU 1080", type: "mp4", maxHeight: 1080 });
     const b = source({ id: "dup-b", provider: "CinemaOS", label: "Cinema RU 1080", type: "mp4", maxHeight: 1080 });
     expect(buildServerSlots([a, b], [], false, undefined)).toHaveLength(1);
+  });
+
+  it("keeps distinct same-name 4K URLs as separate server rows", () => {
+    const first = source({
+      id: "licensed-4k-a",
+      url: "https://a.media.example/master.m3u8",
+      provider: "Licensed CDN",
+      label: "HLS",
+      maxHeight: 2160,
+    });
+    const second = source({
+      id: "licensed-4k-b",
+      url: "https://b.media.example/master.m3u8",
+      provider: "Licensed CDN",
+      label: "HLS",
+      maxHeight: 2160,
+    });
+
+    expect(buildServerSlots([first, second], [], false, undefined)).toHaveLength(2);
   });
 
   it("EXPECTED_SERVERS identity table names are all Greek — no cosmic string leaks through", () => {

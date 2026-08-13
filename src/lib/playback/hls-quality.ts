@@ -92,7 +92,7 @@ export function buildQualityOptions(levels: QualityLevel[]): QualityOption[] {
 
 /**
  * Annotate hls.js levels with heights when the master omits RESOLUTION.
- * Prefer: native height → bitrate derive → scrape ladder (desc) by rank → source max.
+ * Prefer: native dimensions → exact scrape ladder by rank → source max → bitrate guess.
  */
 export function annotateLevelHeights(
   levels: ReadonlyArray<QualityLevel>,
@@ -116,7 +116,10 @@ export function annotateLevelHeights(
     const ladderAsc = [...ladderDesc].sort((a, b) => a - b);
     for (let i = 0; i < byBitrateAsc.length; i++) {
       const level = byBitrateAsc[i]!;
-      const native = effectiveLevelHeight(level.l);
+      const native = effectiveLevelHeight({
+        height: level.l.height,
+        width: level.l.width,
+      });
       if (native > 0) {
         heightByIndex.set(level.l.index, native);
         continue;
@@ -131,7 +134,7 @@ export function annotateLevelHeights(
   }
 
   return levels.map((l) => {
-    let height = effectiveLevelHeight(l);
+    let height = effectiveLevelHeight({ height: l.height, width: l.width });
     if (height <= 0 && heightByIndex.has(l.index)) {
       height = heightByIndex.get(l.index)!;
     }

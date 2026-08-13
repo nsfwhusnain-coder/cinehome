@@ -3,6 +3,7 @@ export interface ProviderStream {
   quality: string;
   label: string;
   provider: string;
+  type?: "hls" | "mp4" | "dash";
   referer: string;
   origin: string;
   userAgent: string;

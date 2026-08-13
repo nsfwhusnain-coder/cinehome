@@ -10,6 +10,7 @@ import {
 } from "@/lib/playback/source-quality";
 import { mergeProgressivePlaybackSources } from "@/lib/playback/merge-sources";
 import {
+  getPlaybackDiscoveryPreferenceKey,
   getPreferredQualityHeight,
   syncProfilePlaybackPreferences,
 } from "@/lib/player-preferences";
@@ -23,6 +24,11 @@ import {
   PlaybackRequestError,
   shouldRetryPlaybackRequest,
 } from "@/lib/playback/request-error";
+import {
+  advanceMaximumStartupGate,
+  preferredQualityDiscoveryPending,
+  shouldWaitForMaximumFourK,
+} from "@/lib/playback/quality-discovery";
 
 interface Args {
   tmdbId: number;
@@ -38,9 +44,18 @@ export function playbackQueryKey(
   tmdbId: number,
   season?: number,
   episode?: number,
-  fast?: boolean
+  fast?: boolean,
+  discoveryPreference = "auto:fast"
 ) {
-  return ["playback", mediaType, tmdbId, season, episode, fast ? "fast" : "full"] as const;
+  return [
+    "playback",
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+    fast ? "fast" : "full",
+    discoveryPreference,
+  ] as const;
 }
 
 /** Match server scraper budgets — never hang UX on Playwright. */
@@ -101,6 +116,15 @@ const SOURCE_POLL_AGGRESSIVE_UNTIL = 3;
 const SOURCE_POLL_TARGET = 4;
 /** Wall-clock budget for progressive hunting / refetchInterval. */
 const POLL_WALL_MS = 30_000;
+
+export function playbackPollRefetchCount(
+  dataUpdateCount: number,
+  baselineUpdates: number
+): number {
+  const completedSinceMount = dataUpdateCount - baselineUpdates;
+  const initialFetchOffset = baselineUpdates === 0 ? 1 : 0;
+  return Math.max(0, completedSinceMount - initialFetchOffset);
+}
 /**
  * After this many ms with at least one source, stop advertising "searching for more"
  * even if the scraper still marks partial (Playwright bg). Overlay must not hang minutes.
@@ -197,9 +221,17 @@ export function usePlayback({ tmdbId, mediaType, season, episode, enabled = true
   const { data: session } = useSession();
   const qc = useQueryClient();
   const canFetch = enabled && !!session;
+  const discoveryPreference = getPlaybackDiscoveryPreferenceKey();
 
   const query = useQuery({
-    queryKey: playbackQueryKey(mediaType, tmdbId, season, episode, prefetch),
+    queryKey: playbackQueryKey(
+      mediaType,
+      tmdbId,
+      season,
+      episode,
+      prefetch,
+      discoveryPreference
+    ),
     queryFn: () => fetchPlayback(mediaType, tmdbId, season, episode, prefetch),
     enabled: canFetch,
     retry: prefetch ? 1 : false,
@@ -209,7 +241,14 @@ export function usePlayback({ tmdbId, mediaType, season, episode, enabled = true
 
   useEffect(() => {
     if (!canFetch || !prefetch || query.isSuccess) return;
-    const fullKey = playbackQueryKey(mediaType, tmdbId, season, episode, false);
+    const fullKey = playbackQueryKey(
+      mediaType,
+      tmdbId,
+      season,
+      episode,
+      false,
+      discoveryPreference
+    );
     const timer = setTimeout(() => {
       qc.prefetchQuery({
         queryKey: fullKey,
@@ -218,7 +257,17 @@ export function usePlayback({ tmdbId, mediaType, season, episode, enabled = true
       });
     }, 5000);
     return () => clearTimeout(timer);
-  }, [canFetch, prefetch, query.isSuccess, mediaType, tmdbId, season, episode, qc]);
+  }, [
+    canFetch,
+    prefetch,
+    query.isSuccess,
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+    discoveryPreference,
+    qc,
+  ]);
 
   return { data: query.data, isLoading: query.isLoading, error: query.error, refetch: query.refetch };
 }
@@ -232,6 +281,8 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const { data: session } = useSession();
   const qc = useQueryClient();
   const canFetch = (args.enabled ?? true) && !!session;
+  const discoveryPreference = getPlaybackDiscoveryPreferenceKey();
+  const pollTarget = `${args.mediaType}:${args.tmdbId}:${args.season ?? ""}:${args.episode ?? ""}:${discoveryPreference}`;
   /** Only `retryFull()` may force a bounded recovery refresh. */
   const forceRefreshRef = useRef(false);
 
@@ -248,10 +299,23 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     const r = hit.data as PlaybackResponse;
     if (!hasPlayableSources(r)) return undefined;
     return { data: r, updatedAt: hit.updatedAt };
-  }, [args.mediaType, args.tmdbId, args.season, args.episode]);
+  }, [
+    args.mediaType,
+    args.tmdbId,
+    args.season,
+    args.episode,
+    discoveryPreference,
+  ]);
 
   const fast = useQuery({
-    queryKey: playbackQueryKey(args.mediaType, args.tmdbId, args.season, args.episode, true),
+    queryKey: playbackQueryKey(
+      args.mediaType,
+      args.tmdbId,
+      args.season,
+      args.episode,
+      true,
+      discoveryPreference
+    ),
     queryFn: () => fetchPlayback(args.mediaType, args.tmdbId, args.season, args.episode, true),
     enabled: canFetch,
     // No retry: full now fires in parallel (not gated on fast settling), so a slow/
@@ -269,9 +333,17 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const fastData = usableCachedPlayback(fast.data, fast.dataUpdatedAt);
 
   const pollStartedAtRef = useRef<number | null>(null);
+  const pollBudgetRef = useRef({ target: "", baselineUpdates: 0 });
 
   const full = useQuery({
-    queryKey: playbackQueryKey(args.mediaType, args.tmdbId, args.season, args.episode, false),
+    queryKey: playbackQueryKey(
+      args.mediaType,
+      args.tmdbId,
+      args.season,
+      args.episode,
+      false,
+      discoveryPreference
+    ),
     queryFn: () => {
       const recoveryRefresh = forceRefreshRef.current;
       forceRefreshRef.current = false;
@@ -291,6 +363,13 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
+      if (pollBudgetRef.current.target !== pollTarget) {
+        pollBudgetRef.current = {
+          target: pollTarget,
+          baselineUpdates: query.state.dataUpdateCount,
+        };
+        pollStartedAtRef.current = null;
+      }
       // A closed server bucket is authoritative. Retrying every 1–2 seconds
       // cannot enrich the roster and only adds load; manual exhausted-roster
       // recovery remains independently available.
@@ -301,14 +380,21 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
       const mergedCount = query.state.data
         ? usableSourceCount(query.state.data)
         : usableSourceCount(fastData);
-      const stillPartial =
-        Boolean(query.state.data?.partial) || Boolean(fastData?.partial);
+      const discoveryResponse = query.state.data ?? fastData;
+      const stillPartial = Boolean(discoveryResponse?.partial);
+      const preferredQualityPending =
+        preferredQualityDiscoveryPending(discoveryResponse);
       // Enough sources + complete → stop.
       if (mergedCount >= SOURCE_POLL_TARGET && !stillPartial) return false;
       // Healthy roster is enough even if scraper still marks partial (PW bg).
-      if (mergedCount >= SOURCE_POLL_TARGET) return false;
+      if (mergedCount >= SOURCE_POLL_TARGET && !preferredQualityPending) {
+        return false;
+      }
       if (!query.state.data || query.state.fetchStatus === "fetching") return false;
-      const extraFetches = query.state.dataUpdateCount - 1;
+      const extraFetches = playbackPollRefetchCount(
+        query.state.dataUpdateCount,
+        pollBudgetRef.current.baselineUpdates
+      );
       if (extraFetches >= MAX_SOURCE_POLL_REFETCHES) return false;
 
       if (pollStartedAtRef.current == null) {
@@ -328,13 +414,12 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   // means full itself hasn't completed a first attempt yet.
   const fullStillOpen =
     canFetch && (full.isLoading || full.isFetching || !full.isFetched);
+  const initialFullResolveOpen = canFetch && !full.isFetched;
 
-  const data = useMemo(
+  const mergedData = useMemo(
     () => mergePlaybackResponses(fastData, full.data, fullStillOpen),
     [fastData, full.data, fullStillOpen]
   );
-
-  const hasSources = hasPlayableSources(data);
 
   // Force re-renders when discovery walls elapse so "searching for more" clears.
   const [discoveryWallHit, setDiscoveryWallHit] = useState(false);
@@ -348,7 +433,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
    * that had barely started resolving.
    */
   const wallTarget = canFetch
-    ? `${args.mediaType}:${args.tmdbId}:${args.season ?? ""}:${args.episode ?? ""}`
+    ? pollTarget
     : null;
   const [wallsFor, setWallsFor] = useState<string | null>(null);
   if (wallTarget !== wallsFor) {
@@ -356,6 +441,37 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     if (discoveryWallHit) setDiscoveryWallHit(false);
     if (softMissWallHit) setSoftMissWallHit(false);
   }
+
+  const [maximumGate, setMaximumGate] = useState({
+    target: "",
+    released: false,
+  });
+  const gateReleased =
+    maximumGate.target === wallTarget && maximumGate.released;
+  const maximumDiscoveryOpen =
+    !discoveryWallHit &&
+    (initialFullResolveOpen || preferredQualityDiscoveryPending(mergedData));
+  const holdMaximumStartup = shouldWaitForMaximumFourK(
+    mergedData,
+    maximumDiscoveryOpen,
+    gateReleased
+  );
+  const data = holdMaximumStartup ? undefined : mergedData;
+  const hasSources = hasPlayableSources(data);
+
+  if (wallTarget) {
+    const nextGate = advanceMaximumStartupGate(
+      maximumGate,
+      wallTarget,
+      mergedData,
+      holdMaximumStartup
+    );
+    if (nextGate !== maximumGate) setMaximumGate(nextGate);
+  }
+
+  useEffect(() => {
+    pollStartedAtRef.current = null;
+  }, [wallTarget]);
 
   useEffect(() => {
     if (!canFetch) {
@@ -456,11 +572,19 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
         args.tmdbId,
         args.season,
         args.episode,
-        false
+        false,
+        discoveryPreference
       ),
       exact: true,
     });
-  }, [qc, args.mediaType, args.tmdbId, args.season, args.episode]);
+  }, [
+    qc,
+    args.mediaType,
+    args.tmdbId,
+    args.season,
+    args.episode,
+    discoveryPreference,
+  ]);
 
   return {
     data,

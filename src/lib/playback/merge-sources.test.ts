@@ -34,4 +34,17 @@ describe("mergeProgressivePlaybackSources", () => {
     expect(merged?.url).toBe("https://fresh.example/video");
     expect(merged?.maxHeight).toBe(1080);
   });
+
+  it("carries measured top-rung bitrate into the fast source", () => {
+    const fast = source("https://media.example/video?token=old", 1080);
+    const full = {
+      ...source("https://media.example/video?token=new", 2160),
+      bitrateBps: 18_000_000,
+      ladder: [2160, 1080, 720],
+    };
+    const [merged] = mergeProgressivePlaybackSources([fast], [full]);
+
+    expect(merged?.bitrateBps).toBe(18_000_000);
+    expect(merged?.ladder).toEqual([2160, 1080, 720]);
+  });
 });

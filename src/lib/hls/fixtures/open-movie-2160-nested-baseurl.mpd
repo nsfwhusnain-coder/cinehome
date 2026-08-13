@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic CC0 fixture using RFC 2606 example domains. -->
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     xmlns:dvb="urn:dvb:dash:extensions:2014-1"
+     type="static"
+     mediaPresentationDuration="PT12S"
+     minBufferTime="PT1.5S"
+     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+  <BaseURL serviceLocation="open-fixture" dvb:priority="1">https://media.example/dash/</BaseURL>
+  <Period id="feature" duration="PT12S">
+    <BaseURL availabilityTimeOffset="1.5">open-movie/</BaseURL>
+    <AdaptationSet id="video" contentType="video" mimeType="video/mp4">
+      <BaseURL serviceLocation="video-backup" dvb:priority="2">video-backup/</BaseURL>
+      <BaseURL serviceLocation="video-cdn" dvb:priority="1">video/</BaseURL>
+      <SegmentTemplate timescale="1000"
+                       startNumber="1"
+                       initialization="init-$RepresentationID$-$Bandwidth$.mp4"
+                       media="segments/$RepresentationID$/chunk-$Number%05d$-$Time$.m4s">
+        <SegmentTimeline>
+          <S t="0" d="4000" r="2"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="hd-1080" bandwidth="7000000" width="1920" height="1080">
+        <BaseURL serviceLocation="hd">hd-main/</BaseURL>
+      </Representation>
+      <Representation id="uhd-2160" bandwidth="18000000" width="3840" height="2160">
+        <BaseURL serviceLocation="uhd" availabilityTimeComplete="false">main/</BaseURL>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="audio" contentType="audio" mimeType="audio/mp4">
+      <BaseURL serviceLocation="audio-cdn">audio/</BaseURL>
+      <Representation id="stereo" bandwidth="192000">
+        <SegmentTemplate timescale="48000"
+                         initialization="init-$RepresentationID$.mp4"
+                         media="chunk-$Number$.m4s"
+                         duration="192000"
+                         startNumber="1"/>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

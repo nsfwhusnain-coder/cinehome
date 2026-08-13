@@ -295,6 +295,14 @@ export async function resolveCinepro(
         quality,
         label,
         provider: `CinePro/${providerName(src.provider)}`,
+        ...(typ
+          ? {
+              type: (typ === "file" ? "mp4" : typ) as
+                | "hls"
+                | "mp4"
+                | "dash",
+            }
+          : {}),
         referer: isVix ? "https://vixsrc.to/" : base,
         origin: isVix ? "https://vixsrc.to" : base,
         userAgent: DEFAULT_UA,

@@ -115,9 +115,14 @@ export function rawScrapeCacheKey(
   tmdbId: number,
   season: number | undefined,
   episode: number | undefined,
-  fast: boolean | undefined
+  fast: boolean | undefined,
+  qualityPreference: "auto" | number = "auto"
 ): string {
-  return `raw:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}`;
+  const qualityBucket =
+    typeof qualityPreference === "number" && qualityPreference >= 1080
+      ? Math.min(Math.round(qualityPreference), 4320)
+      : 1080;
+  return `raw:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}:q${qualityBucket}`;
 }
 
 export function getCachedRawScrape<T>(key: string): T | null {

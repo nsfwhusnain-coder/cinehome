@@ -4,6 +4,7 @@ import {
   countAutoPlayableRosterSources,
   countMeasuredPlayableRosterSources,
   partialForPlayableRoster,
+  rosterHasPlayableHeight,
 } from "./roster-health";
 
 describe("playable roster completion", () => {
@@ -37,5 +38,21 @@ describe("playable roster completion", () => {
       { url: "https://dead.example/video.mp4", probe: { ok: false } },
     ];
     expect(countMeasuredPlayableRosterSources(sources)).toBe(2);
+  });
+
+  it("keeps Ultra discovery open until a playable 4K source appears", () => {
+    const hd = Array.from({ length: 4 }, (_, index) => ({
+      url: `https://cdn.example/hd-${index}.m3u8`,
+      verified: true,
+      maxHeight: 1080,
+    }));
+    const uhd = {
+      url: "https://cdn.example/uhd.m3u8",
+      verified: true,
+      ladder: [2160, 1080, 720],
+    };
+
+    expect(rosterHasPlayableHeight(hd, 2160)).toBe(false);
+    expect(rosterHasPlayableHeight([...hd, uhd], 2160)).toBe(true);
   });
 });
