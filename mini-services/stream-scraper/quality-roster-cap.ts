@@ -6,6 +6,7 @@ export interface QualityDiscoveryEntry {
   type?: "hls" | "mp4" | "dash";
   maxHeight?: number;
   ladder?: number[];
+  bitrateBps?: number;
   qualitySource?: "manifest" | "label" | "probe" | "unknown";
   verified?: boolean;
   probe?: { ok?: boolean };
@@ -27,8 +28,21 @@ function isQualityDiscoveryCandidate(
     preferredHeight > knownHeight &&
     entry.qualitySource !== "manifest" &&
     entry.qualitySource !== "probe";
-  if (knownHeight > 0 && !needsMeasuredCorrection) return false;
   const lower = entry.url.toLowerCase();
+  const adaptiveManifest =
+    entry.type === "hls" ||
+    entry.type === "dash" ||
+    lower.includes(".m3u8") ||
+    lower.includes(".mpd");
+  const needsBitrateMeasurement =
+    adaptiveManifest &&
+    knownHeight >= 1080 &&
+    (entry.bitrateBps == null || entry.bitrateBps <= 0) &&
+    entry.qualitySource !== "manifest" &&
+    entry.qualitySource !== "probe";
+  if (knownHeight > 0 && !needsMeasuredCorrection && !needsBitrateMeasurement) {
+    return false;
+  }
   return (
     entry.type === "hls" ||
     entry.type === "dash" ||

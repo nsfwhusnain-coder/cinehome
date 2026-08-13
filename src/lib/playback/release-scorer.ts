@@ -133,12 +133,10 @@ const MULTI_AUDIO_BONUS = 4;
 /**
  * Ceiling for a non-capture release: 90 + 14 + 10 + 4.
  *
- * Kept deliberately in the same band as the seeders term (max 100) and well
- * under size fitness (max 400). Provenance should reorder releases of broadly
- * similar size, not overturn a tuned startup-latency preference on its own —
- * that preference was measured, and a 60 GB REMUX genuinely does start slower.
- * Raising this constant is the single knob for "prefer the best master even
- * when it is slower to start".
+ * Kept deliberately in the same band as the seeders term (max 100) and below
+ * the bounded size-richness signal (max 400). Provenance reorders broadly
+ * comparable releases while substantial same-resolution richness remains the
+ * primary picture-quality signal.
  */
 export const RELEASE_QUALITY_MAX_SCORE = 118;
 

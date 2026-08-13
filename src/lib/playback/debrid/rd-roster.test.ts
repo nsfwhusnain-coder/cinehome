@@ -181,16 +181,9 @@ describe("Real-Debrid roster — full + fast paths", () => {
         url: resolveProxyUrl(hash, 0, `movie.1080p.${i}.h264.mp4`),
       })),
       {
-        // A genuine MKV (h264-in-mkv, 1080p) with far more seeders than the
-        // three native-1080p releases above. It is KEPT by the parser (no
-        // longer dropped — torrentio.ts's module header), but MKV forces
-        // `compat:"safari"` regardless of codec, so it lands in the
-        // "safari-1080" class — a class this roster has NO slot for at all
-        // (RD_SLOTS only defines native-2160/safari-2160/native-1080-1/2/3,
-        // see index.ts). So it still never wins one of the 5 slots below,
-        // but for an honest, unrelated reason (no matching slot exists),
-        // never because it was dropped as MKV — see the dedicated MKV/HEVC
-        // 4K test further down for a case that DOES win a slot.
+        // A genuine high-bitrate H.264-in-MKV release. The video codec is
+        // natively decodable and the container is remuxed without re-encoding,
+        // so its richer same-resolution source is valid premium inventory.
         title: "Movie.2024.1080p.BluRay.x264-GRP.mkv\n👤 999 💾 5 GB ⚙️ X",
         infoHash: MKV_1080_HASH,
         fileIdx: 0,
@@ -199,7 +192,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
     ];
   }
 
-  it("full path: resolves the entire 5-slot roster, honestly tagged, the safari-1080-classed MKV doesn't win a slot (no such slot exists)", async () => {
+  it("full path: resolves the richest five-slot roster with honest remux metadata", async () => {
     mockTorrentioStreams(buildStreams());
     const sources = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
 
@@ -212,16 +205,11 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(safari2160.length).toBe(1);
     expect(native1080.length).toBe(3);
 
-    // Three DISTINCT native 1080p releases, not the same one three times —
-    // the far-higher-seeded MKV release doesn't steal one of these slots
-    // (it's a different class: safari-1080, not native-1080).
+    // Three distinct native-codec 1080p releases. The richer H.264 MKV wins a
+    // slot and is tagged for lossless container remux rather than hidden.
     expect(new Set(native1080.map((s) => s.url)).size).toBe(3);
-    expect(native1080.some((s) => s.url.includes(MKV_1080_HASH))).toBe(false);
-
-    // No slot in this roster is safari-1080, so the MKV candidate doesn't
-    // surface here — NOT because it was dropped as MKV (see the dedicated
-    // "kept" test below for a class that does have a slot).
-    expect(sources.some((s) => s.container === "mkv")).toBe(false);
+    expect(native1080.some((s) => s.url.includes(MKV_1080_HASH))).toBe(true);
+    expect(sources.some((s) => s.container === "mkv")).toBe(true);
 
     // Honest tagging.
     expect(safari2160[0]?.codec).toBe("hevc");
@@ -297,14 +285,8 @@ describe("Real-Debrid roster — full + fast paths", () => {
     );
   });
 
-  /**
-   * The real "kept, not dropped" regression coverage (transcoder-link task):
-   * a 4K HEVC-in-MKV release, when it's the top-ranked candidate in a class
-   * that DOES have an RD slot (safari-2160), must win that slot — honestly
-   * tagged `container: "mkv"` — rather than being dropped or silently
-   * displaced by a lower-seeded non-MKV candidate.
-   */
-  it("full path: a top-ranked 4K MKV/HEVC release wins the safari-2160 slot, honestly tagged container:mkv", async () => {
+  /** A richer same-class 4K release wins even when a leaner peer has more seeders. */
+  it("full path: the richest 4K HEVC release wins the safari-2160 slot", async () => {
     const MKV_2160_HASH = "9".repeat(40);
     mockTorrentioStreams([
       {
@@ -314,16 +296,16 @@ describe("Real-Debrid roster — full + fast paths", () => {
         url: resolveProxyUrl(NATIVE_2160_HASH, 0, "movie.2160p.h264.mp4"),
       },
       {
-        // Lower-seeded non-MKV Safari-only 4K candidate — should lose the
-        // safari-2160 slot to the higher-seeded MKV release below.
+        // The 40 GB release is the richer same-class encode and must win even
+        // though the 12 GB alternative has many more seeders.
         title: "Movie.2024.2160p.UHD.BluRay.x265.HDR-GRP\n👤 90 💾 40 GB ⚙️ X",
         infoHash: SAFARI_2160_HASH,
         fileIdx: 0,
         url: resolveProxyUrl(SAFARI_2160_HASH, 0, "movie.2160p.hevc.hdr.mp4"),
       },
       {
-        // Top-seeded, streaming-fit 4K HEVC encode packaged as MKV — it must
-        // survive selection and win the safari-2160 slot (previously dropped).
+        // A valid MKV alternative remains discoverable, but its smaller file
+        // no longer wins purely for sitting near the old startup-size target.
         title: "Movie.2024.2160p.UHD.BluRay.x265.HDR.mkv\n👤 500 💾 12 GB ⚙️ X",
         infoHash: MKV_2160_HASH,
         fileIdx: 0,
@@ -335,8 +317,8 @@ describe("Real-Debrid roster — full + fast paths", () => {
     const safari2160 = sources.filter((s) => s.compat === "safari" && s.maxHeight === 2160);
 
     expect(safari2160.length).toBe(1);
-    expect(safari2160[0]?.url).toContain(MKV_2160_HASH);
-    expect(safari2160[0]?.container).toBe("mkv");
+    expect(safari2160[0]?.url).toContain(SAFARI_2160_HASH);
+    expect(safari2160[0]?.container).toBe("mp4");
     expect(safari2160[0]?.codec).toBe("hevc");
   });
 

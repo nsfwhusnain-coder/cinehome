@@ -64,7 +64,10 @@ export function buildQualityOptions(levels: QualityLevel[]): QualityOption[] {
   const withHeights = levels
     .map((l) => ({ ...l, height: effectiveLevelHeight(l) }))
     .filter((l) => l.height > 0)
-    .sort((a, b) => b.height - a.height);
+    .sort(
+      (a, b) =>
+        b.height - a.height || (b.bitrate ?? 0) - (a.bitrate ?? 0)
+    );
 
   if (!withHeights.length) return [];
 
@@ -207,18 +210,24 @@ export function findMinLevelIndexForHeight(levels: QualityLevel[], minHeight: nu
   if (levels.length === 0) return -1;
   let bestIdx = -1;
   let bestH = Infinity;
+  let bestBitrate = -1;
   for (const level of levels) {
     const h = effectiveLevelHeight(level);
-    if (h >= minHeight && h < bestH) {
+    const bitrate = level.bitrate ?? 0;
+    if (h >= minHeight && (h < bestH || (h === bestH && bitrate > bestBitrate))) {
       bestH = h;
+      bestBitrate = bitrate;
       bestIdx = level.index;
     }
   }
   if (bestIdx >= 0) return bestIdx;
   // Ladder max is below minHeight — use best available.
-  return levels.reduce((best, l) =>
-    effectiveLevelHeight(l) > effectiveLevelHeight(best) ? l : best
-  ).index;
+  return levels.reduce((best, level) => {
+    const height = effectiveLevelHeight(level);
+    const bestHeight = effectiveLevelHeight(best);
+    if (height !== bestHeight) return height > bestHeight ? level : best;
+    return (level.bitrate ?? 0) > (best.bitrate ?? 0) ? level : best;
+  }).index;
 }
 
 /**
@@ -269,21 +278,35 @@ export function adaptiveRecoveryPhase(
  */
 export function findBestLevelForTarget(levels: QualityLevel[], targetHeight: number): number {
   if (!levels.length) return -1;
-  let aboveIdx = -1;
-  let aboveDiff = Infinity;
+  let best: QualityLevel | null = null;
   for (const level of levels) {
     const h = effectiveLevelHeight(level);
     if (h < targetHeight) continue;
-    const diff = h - targetHeight;
-    if (diff < aboveDiff) {
-      aboveDiff = diff;
-      aboveIdx = level.index;
+    const bestHeight = best ? effectiveLevelHeight(best) : Infinity;
+    if (
+      h < bestHeight ||
+      (h === bestHeight && (level.bitrate ?? 0) > (best?.bitrate ?? 0))
+    ) {
+      best = level;
     }
   }
-  if (aboveIdx >= 0) return aboveIdx;
-  return levels.reduce((best, l) =>
-    effectiveLevelHeight(l) > effectiveLevelHeight(best) ? l : best
-  ).index;
+  if (best) return best.index;
+  return levels.reduce((current, level) => {
+    const height = effectiveLevelHeight(level);
+    const currentHeight = effectiveLevelHeight(current);
+    if (height !== currentHeight) return height > currentHeight ? level : current;
+    return (level.bitrate ?? 0) > (current.bitrate ?? 0) ? level : current;
+  }).index;
+}
+
+/** Highest bitrate at the lowest rendition height meeting the requested floor. */
+export function findFloorBitrateKbps(
+  levels: QualityLevel[],
+  minHeight: number
+): number {
+  const index = findBestLevelForTarget(levels, minHeight);
+  const bitrate = levels.find((level) => level.index === index)?.bitrate ?? 0;
+  return bitrate > 0 ? Math.round(bitrate / 1000) : 0;
 }
 
 /**
@@ -306,7 +329,10 @@ export function pickDefaultQualityIndex(levels: QualityLevel[]): number {
   const withHeights = levels.map((l) => ({ ...l, height: effectiveLevelHeight(l) }));
   const atLeastFloor = withHeights.filter((l) => l.height >= MIN_QUALITY_OPTION_HEIGHT);
   if (!atLeastFloor.length) return -1;
-  return atLeastFloor.reduce((best, l) => (l.height < best.height ? l : best)).index;
+  return atLeastFloor.reduce((best, level) => {
+    if (level.height !== best.height) return level.height < best.height ? level : best;
+    return (level.bitrate ?? 0) > (best.bitrate ?? 0) ? level : best;
+  }).index;
 }
 
 /**

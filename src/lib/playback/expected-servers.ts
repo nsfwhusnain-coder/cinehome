@@ -2,7 +2,7 @@ import type { PlaybackSource } from "./types";
 import {
   isSourcePlayableHere,
   pickDefaultSource,
-  scoreSource,
+  sortSourcesForPicker,
 } from "./source-quality";
 import { normalizeUrlKey } from "./source-identity";
 import {
@@ -199,10 +199,14 @@ export function buildServerSlots(
     return 2; // reachable as far as we know, just never measured
   };
 
+  const pickerOrder = new Map(
+    sortSourcesForPicker(sources).map((source, index) => [source.id, index])
+  );
   const ranked = [...sources].sort((a, b) => {
     const tier = rank(a) - rank(b);
     if (tier !== 0) return tier;
-    return scoreSource(b) - scoreSource(a);
+    return (pickerOrder.get(a.id) ?? sources.length) -
+      (pickerOrder.get(b.id) ?? sources.length);
   });
 
   /**

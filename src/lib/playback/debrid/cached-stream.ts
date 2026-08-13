@@ -26,6 +26,7 @@
  */
 import { db } from "@/lib/db";
 import type { MediaType } from "../types";
+import { storedQualityForCache } from "./cache-policy";
 import type { ReleaseCompat } from "./torrentio";
 
 /** TorBox's cache identity — unchanged, one row per height. */
@@ -76,6 +77,10 @@ export interface CachedStreamRecord {
   container?: "mp4" | "mkv" | "webm" | "mov" | "unknown";
 }
 
+function storedQualityFor(key: CachedStreamKey): string {
+  return storedQualityForCache(key.provider, key.quality);
+}
+
 function whereFor(key: CachedStreamKey) {
   return {
     imdbId_mediaType_season_episode_quality_provider: {
@@ -83,7 +88,7 @@ function whereFor(key: CachedStreamKey) {
       mediaType: key.mediaType,
       season: key.season ?? 0,
       episode: key.episode ?? 0,
-      quality: key.quality,
+      quality: storedQualityFor(key),
       provider: key.provider,
     },
   };
@@ -147,7 +152,7 @@ export async function upsertCachedStream(
         mediaType: key.mediaType,
         season: key.season ?? 0,
         episode: key.episode ?? 0,
-        quality: key.quality,
+        quality: storedQualityFor(key),
         provider: key.provider,
         ...shared,
       },

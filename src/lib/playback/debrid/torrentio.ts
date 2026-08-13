@@ -19,11 +19,12 @@
  * (the old behavior) can miss every browser-safe H.264 release entirely, even
  * though 14-37 usually exist per title. So candidates are now: parsed,
  * bucketed by compatibility and resolution, ranked within each class by a
- * media-type-aware size envelope plus bounded seeders and container
- * confidence, then capped PER CLASS (`PER_CLASS_CAP`) so the returned pool
- * always has representation across classes instead of being dominated by
- * whichever class happens to have the most raw entries. Native 720p is kept
- * only as an availability fallback when no higher native release survives.
+ * media-type-aware, monotonically increasing size richness plus bounded
+ * seeders and container confidence, then capped PER CLASS (`PER_CLASS_CAP`)
+ * so the returned pool always has representation across classes instead of
+ * being dominated by whichever class happens to have the most raw entries.
+ * Native 720p is kept only as an availability fallback when no higher native
+ * release survives.
  *
  * CONTAINER — MKV/WebM candidates are kept in the resolved inventory. No
  * browser opens them directly (see `isBrowserPlayableContainer`), but they are
@@ -327,7 +328,8 @@ export function parseSizeBytes(text: string): number | null {
     unit === "gib" || unit === "gb"
       ? 1024 ** 3
       : 1024 ** 2;
-  return Math.round(value * multiplier);
+  const bytes = value * multiplier;
+  return Number.isFinite(bytes) ? Math.round(bytes) : null;
 }
 
 function compatRank(c: DebridCandidate): number {
@@ -341,9 +343,11 @@ const MOV_CONTAINER_BONUS = 30;
 const SEEDERS_SCORE_CAP = 50;
 const SEEDERS_WEIGHT = 2;
 
-const SIZE_FITNESS_MAX_SCORE = 400;
-const SIZE_FITNESS_LOG2_PENALTY = 200;
-const TARGET_SIZE_BYTES: Record<MediaType, Record<720 | 1080 | 2160, number>> = {
+const SIZE_RICHNESS_MAX_SCORE = 400;
+const SIZE_RICHNESS_HALF_SATURATION_BYTES: Record<
+  MediaType,
+  Record<720 | 1080 | 2160, number>
+> = {
   movie: {
     720: Math.round(1.2 * 1024 ** 3),
     1080: 3 * 1024 ** 3,
@@ -357,29 +361,30 @@ const TARGET_SIZE_BYTES: Record<MediaType, Record<720 | 1080 | 2160, number>> = 
 };
 
 /**
- * Prefer a streaming-friendly size envelope within each resolution class.
- * Huge remux-like MP4s have materially slower Chromium startup; tiny encodes
- * sacrifice quality. Log distance keeps the signal symmetric and bounded.
+ * Treat selected-file size as a bounded bitrate-richness proxy. Duration is
+ * constant for candidates of one title/episode, so a larger file within the
+ * same resolution/compatibility class is monotonically preferred. The
+ * half-saturation point scales movies and episodes without making it a target:
+ * scores keep increasing above it and approach, but never reach, the cap.
+ * Missing size contributes nothing, preserving the neutral legacy behavior.
  */
-function sizeFitnessScore(c: DebridCandidate, mediaType: MediaType): number {
-  if (!c.sizeBytes) return 0;
-  const target = TARGET_SIZE_BYTES[mediaType][c.resolutionHeight];
-  const distance = Math.abs(Math.log2(c.sizeBytes / target));
-  return Math.max(
-    0,
-    Math.round(
-      SIZE_FITNESS_MAX_SCORE - distance * SIZE_FITNESS_LOG2_PENALTY
-    )
+function sizeRichnessScore(c: DebridCandidate, mediaType: MediaType): number {
+  if (c.sizeBytes == null) return 0;
+  const halfSaturation =
+    SIZE_RICHNESS_HALF_SATURATION_BYTES[mediaType][c.resolutionHeight];
+  return Math.round(
+    SIZE_RICHNESS_MAX_SCORE *
+      (c.sizeBytes / (c.sizeBytes + halfSaturation))
   );
 }
 
 /**
- * Composite size fitness + bounded popularity + container confidence + how the
- * release was mastered.
+ * Composite size richness + bounded popularity + container confidence + how
+ * the release was mastered.
  *
  * That last term is what stops a cam rip winning a class on seeders alone —
  * and a freshly-leaked cam has excellent seeders. See release-scorer.ts for
- * why it is bounded well below size fitness rather than allowed to dominate.
+ * why it is bounded well below size richness rather than allowed to dominate.
  */
 function candidateRankScore(c: DebridCandidate, mediaType: MediaType): number {
   const seederScore = Math.min(c.seeders, SEEDERS_SCORE_CAP) * SEEDERS_WEIGHT;
@@ -387,14 +392,14 @@ function candidateRankScore(c: DebridCandidate, mediaType: MediaType): number {
     c.container === "mp4" ? MP4_CONTAINER_BONUS : c.container === "mov" ? MOV_CONTAINER_BONUS : 0;
   return (
     c.resolutionHeight +
-    sizeFitnessScore(c, mediaType) +
+    sizeRichnessScore(c, mediaType) +
     seederScore +
     containerScore +
     releaseQualityScore(c)
   );
 }
 
-/** 1080p/4K H.264 MP4 first (browser-compat); HEVC/HDR releases sink to the back; ties broken by the resolution+seeders+container score. */
+/** Native-compatible releases first, then resolution; in-class ties use bounded richness, health, container confidence, and mastering quality. */
 function sortCandidates(
   list: DebridCandidate[],
   mediaType: MediaType
@@ -442,10 +447,11 @@ function candidateClass(c: DebridCandidate): CandidateClass {
 
 /**
  * Ranks the full eligible (1080p+, MKV/WebM included — see module header)
- * pool by resolution+seeders+container, then keeps only the top N per class
- * so the returned roster always has representation across native/safari ×
- * 1080/2160 instead of being swamped by whichever class Torrentio happens to
- * return the most of (usually 4K HEVC/HDR remuxes, often MKV).
+ * pool by size richness, seeders, container, and mastering quality, then keeps
+ * only the top N per class so the returned roster always has representation
+ * across native/safari × 1080/2160 instead of being swamped by whichever class
+ * Torrentio happens to return the most of (usually 4K HEVC/HDR remuxes, often
+ * MKV).
  */
 function selectTopPerClass(
   candidates: DebridCandidate[],

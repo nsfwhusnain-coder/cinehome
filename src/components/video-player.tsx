@@ -20,6 +20,7 @@ import {
   withClientHealthProbe,
   speedScoreFromLatencyMs,
   isMultiRendition,
+  isMeaningfullyRicherSource,
   isSourcePlayableHere,
   sourceDelivery,
   HD_FLOOR_HEIGHT,
@@ -69,6 +70,7 @@ import {
   annotateLevelHeights,
   effectiveLevelHeight,
   findBestLevelForTarget,
+  findFloorBitrateKbps,
   findLowerLevelIndexForHeight,
   findMinLevelIndexForHeight,
   hlsPromotionTargetHeight,
@@ -1007,24 +1009,6 @@ function mapDashLevels(player: MediaPlayerClass): QualityLevel[] {
   }));
 }
 
-/**
- * Lowest bitrate (kbps — dash.js's abr.minBitrate/initialBitrate unit) among
- * levels meeting minHeight. Gives dash.js's own ABR a 1080 floor hint so Auto
- * doesn't start (or settle) at the bottom of the ladder — parity with the
- * hls.js floor. dash.js's minBitrate is a soft preference, not a hard clamp,
- * so genuine starvation can still ride below it (no separate relax needed).
- */
-function findDashFloorBitrateKbps(levels: QualityLevel[], minHeight: number): number {
-  let best = -1;
-  for (const level of levels) {
-    const h = effectiveLevelHeight(level);
-    if (h < minHeight) continue;
-    const bitrate = level.bitrate ?? 0;
-    if (bitrate > 0 && (best < 0 || bitrate < best)) best = bitrate;
-  }
-  return best > 0 ? Math.round(best / 1000) : 0;
-}
-
 function pickPreferredAudioId(
   hls: Hls,
   selection: AudioTrackSelection
@@ -1892,7 +1876,7 @@ export function VideoPlayer({
       : pickDefaultSource(pool, preferred, preferredHeight);
 
     if (stillValid && !activeFailed && activeSource && best) {
-      if (userSelectedSourceRef.current || everPlayedRef.current || autoUpgradedRef.current) {
+      if (userSelectedSourceRef.current || everPlayedRef.current) {
         return;
       }
       // Cold start only: jump to multi-rung / better ranked source before first frame.
@@ -1901,6 +1885,7 @@ export function VideoPlayer({
         isMultiRendition(best) && !isMultiRendition(activeSource);
       const betterHeight =
         sourceMaxHeight(best) > sourceMaxHeight(activeSource) + 100;
+      if (autoUpgradedRef.current && !betterHeight) return;
       /**
        * Transport quality, not just pixel count. `isFasterSource` already owns
        * this comparison — including the rule that a natively-playable debrid
@@ -1916,7 +1901,10 @@ export function VideoPlayer({
        * declined to adopt it, and the slower embed kept the session.
        */
       const betterTransport = isFasterSource(activeSource, best);
-      if (!betterMulti && !betterHeight && !betterTransport) return;
+      const richerEncode = isMeaningfullyRicherSource(activeSource, best);
+      if (!betterMulti && !betterHeight && !betterTransport && !richerEncode) return;
+      // Consume same-height richness upgrades once; the guard above still
+      // permits a later higher-resolution (for example 4K) source to replace it.
       autoUpgradedRef.current = true;
       initialTimeAppliedRef.current = false;
       setError(null);
@@ -2966,7 +2954,7 @@ export function VideoPlayer({
               // own checkPlaybackQuality (a real floor on the ABR decision,
               // not merely an initial guess) — the QUALITY_CHANGE_REQUESTED
               // guard above is the hard backstop regardless.
-              const floorKbps = findDashFloorBitrateKbps(levelList, HLS_MIN_HEIGHT);
+              const floorKbps = findFloorBitrateKbps(levelList, HLS_MIN_HEIGHT);
               player.updateSettings({
                 streaming: {
                   abr: {

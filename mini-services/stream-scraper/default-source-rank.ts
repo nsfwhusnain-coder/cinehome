@@ -23,7 +23,9 @@ export interface RankableSource {
   verified?: boolean;
   maxHeight?: number;
   ladder?: number[];
-  probe?: { ok?: boolean; speedScore?: number } | null;
+  /** Manifest-declared bitrate for the `maxHeight` rendition. */
+  bitrateBps?: number;
+  probe?: { ok?: boolean; speedScore?: number; bytesPerSec?: number } | null;
 }
 
 export type HeightInfer = (text: string) => number;
@@ -69,6 +71,26 @@ export interface SortSourcesOptions {
 }
 
 const noopInfer: HeightInfer = () => 0;
+const BITRATE_STARTUP_HEADROOM_RATIO = 1.25;
+
+/** Declared rates rank ahead of unknown rates, then richer known rates win. */
+function compareDeclaredBitrate(a: RankableSource, b: RankableSource): number {
+  const aRate = a.bitrateBps ?? 0;
+  const bRate = b.bitrateBps ?? 0;
+  const aKnown = aRate > 0 ? 1 : 0;
+  const bKnown = bRate > 0 ? 1 : 0;
+  if (aKnown !== bKnown) return bKnown - aKnown;
+  if (!aKnown) return 0;
+  return bRate - aRate;
+}
+
+function bitrateSustainabilityRank(source: RankableSource): -1 | 0 | 1 {
+  const bitrate = source.bitrateBps ?? 0;
+  const throughput = source.probe?.bytesPerSec ?? 0;
+  if (bitrate <= 0 || source.probe?.ok !== true || throughput <= 0) return 0;
+  if ((source.ladder?.length ?? 0) > 1) return 0;
+  return throughput * 8 >= bitrate * BITRATE_STARTUP_HEADROOM_RATIO ? 1 : -1;
+}
 
 /**
  * Sort sources for default streamUrl pick.
@@ -108,6 +130,10 @@ export function sortSourcesForDefault<T extends RankableSource>(
     const bTier = heightTierForRank(bH);
     if (aTier !== bTier) return bTier - aTier;
 
+    const aInsufficient = bitrateSustainabilityRank(a) < 0 ? 1 : 0;
+    const bInsufficient = bitrateSustainabilityRank(b) < 0 ? 1 : 0;
+    if (aInsufficient !== bInsufficient) return aInsufficient - bInsufficient;
+
     // Among HD (tier 2): prefer meeting qualityHint when target is above floor (4K pref).
     if (qualityHint > HD_FLOOR_HEIGHT && aTier === 2) {
       const aMeet = aH >= qualityHint ? 1 : 0;
@@ -115,24 +141,40 @@ export function sortSourcesForDefault<T extends RankableSource>(
       if (aMeet !== bMeet) return bMeet - aMeet;
     }
 
+    if (anyProbe) {
+      const probeRank = (source: RankableSource): number =>
+        source.probe?.ok === true ? 1 : source.probe?.ok === false ? -1 : 0;
+      const aOk = probeRank(a);
+      const bOk = probeRank(b);
+      if (aOk !== bOk) return bOk - aOk;
+    }
+
     // Within tier 2 / tier 0: higher known height wins (4K > 1080; 720 > 480).
-    // Tier 1 (unknown): heights are ≤0 — skip numeric thrash.
+    // A requested 2160 target already won above; otherwise health evidence is
+    // established first so an unproven 4K URL cannot displace working HD.
     if (aTier !== 1 && aH !== bH) return bH - aH;
 
-    // Multi-rung ladder > single-rung at equal tier/height.
-    const aLadder = (a.ladder?.length ?? 0) > 1 ? 1 : 0;
-    const bLadder = (b.ladder?.length ?? 0) > 1 ? 1 : 0;
-    if (aLadder !== bLadder) return bLadder - aLadder;
-
     if (anyProbe) {
-      const aOk = a.probe?.ok ? 1 : 0;
-      const bOk = b.probe?.ok ? 1 : 0;
-      if (aOk !== bOk) return bOk - aOk;
+
+      const supportOrder =
+        bitrateSustainabilityRank(b) - bitrateSustainabilityRank(a);
+      if (supportOrder !== 0) return supportOrder;
+
+      const bitrateOrder = compareDeclaredBitrate(a, b);
+      if (bitrateOrder !== 0) return bitrateOrder;
 
       const aSp = a.probe?.ok ? (a.probe.speedScore ?? -1) : -1;
       const bSp = b.probe?.ok ? (b.probe.speedScore ?? -1) : -1;
       if (aSp !== bSp) return bSp - aSp;
+    } else {
+      const bitrateOrder = compareDeclaredBitrate(a, b);
+      if (bitrateOrder !== 0) return bitrateOrder;
     }
+
+    // Adaptive delivery is the tie-break only after measured encode richness.
+    const aLadder = (a.ladder?.length ?? 0) > 1 ? 1 : 0;
+    const bLadder = (b.ladder?.length ?? 0) > 1 ? 1 : 0;
+    if (aLadder !== bLadder) return bLadder - aLadder;
 
     // HLS preferred over MP4 at equal rank.
     const aHls = a.url.includes(".m3u8") ? 1 : 0;

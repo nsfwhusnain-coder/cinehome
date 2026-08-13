@@ -638,14 +638,23 @@ const CODEC_BITRATE_EFFICIENCY: Record<string, number> = {
 };
 /** Unknown codec is assumed H.264 — the common embed case, and never inflates. */
 const DEFAULT_CODEC_EFFICIENCY = 1;
+/** Startup bandwidth must exceed the declared stream rate by this safety margin. */
+const BITRATE_STARTUP_HEADROOM_RATIO = 1.25;
+/** Avoid tearing down a cold start for tiny manifest-rate changes. */
+const BITRATE_RICHNESS_SWITCH_RATIO = 1.25;
 /**
- * How much richer one encode must be before it wins the tie. Encoder variance,
- * per-title tuning and AVERAGE-vs-peak reporting all move declared bitrate by
- * a few percent between otherwise identical releases; acting on that noise
- * would just reshuffle the roster on every scrape. 25% is roughly where the
- * difference stops being reportable and starts being visible.
+ * Minimum H.264-equivalent rate that justifies replacing a cold source whose
+ * own rate is unknown. This prevents any merely-declared bitrate from causing
+ * a restart while still allowing a clearly rich encode to win before frame 1.
  */
-const BITRATE_MEANINGFUL_RATIO = 1.25;
+const UNKNOWN_RATE_SWITCH_FLOOR_BPS: ReadonlyArray<readonly [number, number]> = [
+  [2160, 15_000_000],
+  [1440, 9_000_000],
+  [1080, 6_000_000],
+  [720, 3_000_000],
+  [480, 1_500_000],
+  [0, 750_000],
+];
 /**
  * Score contribution ceiling for the bitrate term. Must stay under the 30-point
  * gap between the 4K (120) and 1080p (90) height bands, so a fat 1080p encode
@@ -671,10 +680,10 @@ export function normalizedBitrate(source: PlaybackSource): number {
 /**
  * Tie-break for two sources of the SAME height: the richer encode wins.
  *
- * Returns 0 unless both declare a bitrate and the gap clears
- * `BITRATE_MEANINGFUL_RATIO`, so a source that simply never reported one is
- * never punished for the omission, and near-identical encodes fall through to
- * the existing ordering untouched.
+ * Sources with declared rates rank ahead of unknown rates at equal height,
+ * then richer known rates rank first. Presence must be an explicit rank: an
+ * unknown value cannot tie every known value while known values are ordered
+ * without creating comparator cycles and arrival-order-dependent defaults.
  *
  * Callers must have already established equal height — bitrate across
  * different resolutions is meaningless (4K at 8 Mbps beats 1080p at 10).
@@ -683,12 +692,90 @@ export function compareBitrateAtEqualHeight(
   a: PlaybackSource,
   b: PlaybackSource
 ): number {
-  const aRate = normalizedBitrate(a);
-  const bRate = normalizedBitrate(b);
-  if (aRate <= 0 || bRate <= 0) return 0;
-  const [hi, lo] = aRate >= bRate ? [aRate, bRate] : [bRate, aRate];
-  if (hi < lo * BITRATE_MEANINGFUL_RATIO) return 0;
+  return compareNormalizedBitrates(normalizedBitrate(a), normalizedBitrate(b));
+}
+
+function compareNormalizedBitrates(aRate: number, bRate: number): number {
+  const aKnown = aRate > 0 ? 1 : 0;
+  const bKnown = bRate > 0 ? 1 : 0;
+  if (aKnown !== bKnown) return bKnown - aKnown;
+  if (!aKnown) return 0;
   return bRate - aRate;
+}
+
+function sourceTopMatchesTarget(
+  source: PlaybackSource,
+  targetHeight: number
+): boolean {
+  const topHeight = sourceMaxHeight(source);
+  const tolerance = Math.max(40, targetHeight * 0.12);
+  return Math.abs(topHeight - targetHeight) <= tolerance;
+}
+
+function normalizedBitrateForTarget(
+  source: PlaybackSource,
+  targetHeight: number | null
+): number {
+  if (targetHeight == null || !sourceOffersTarget(source, targetHeight)) {
+    return normalizedBitrate(source);
+  }
+  // bitrateBps is the top rendition's rate. It says nothing about a lower
+  // selected rung in a taller ladder unless per-rung metadata is available.
+  return sourceTopMatchesTarget(source, targetHeight)
+    ? normalizedBitrate(source)
+    : 0;
+}
+
+function unknownRateSwitchFloor(height: number): number {
+  return (
+    UNKNOWN_RATE_SWITCH_FLOOR_BPS.find(([minimum]) => height >= minimum)?.[1] ??
+    UNKNOWN_RATE_SWITCH_FLOOR_BPS.at(-1)![1]
+  );
+}
+
+/** -1 = measured link cannot sustain the encode, 0 = unknown, 1 = enough headroom. */
+export function bitrateSustainabilityRank(source: PlaybackSource): -1 | 0 | 1 {
+  const bitrate = source.bitrateBps ?? 0;
+  const throughput = source.probe?.bytesPerSec ?? 0;
+  if (bitrate <= 0 || source.probe?.ok !== true || throughput <= 0) return 0;
+  // bitrateBps describes the top rendition. A multi-rung source can start on
+  // a lower safe rung and retain its 4K upside, so top-rate shortfall is not a
+  // source-wide failure without per-rung bitrate metadata.
+  if (isMultiRendition(source)) return 0;
+  return throughput * 8 >= bitrate * BITRATE_STARTUP_HEADROOM_RATIO ? 1 : -1;
+}
+
+function compareBitrateSustainability(
+  a: PlaybackSource,
+  b: PlaybackSource
+): number {
+  return bitrateSustainabilityRank(b) - bitrateSustainabilityRank(a);
+}
+
+function compareInsufficientBitrate(a: PlaybackSource, b: PlaybackSource): number {
+  const aInsufficient = bitrateSustainabilityRank(a) < 0 ? 1 : 0;
+  const bInsufficient = bitrateSustainabilityRank(b) < 0 ? 1 : 0;
+  return aInsufficient - bInsufficient;
+}
+
+/** True only when `candidate` is a meaningfully richer encode at the same resolution. */
+export function isMeaningfullyRicherSource(
+  current: PlaybackSource,
+  candidate: PlaybackSource
+): boolean {
+  const height = sourceMaxHeight(current);
+  if (height !== sourceMaxHeight(candidate)) return false;
+  const currentRate = normalizedBitrate(current);
+  const candidateRate = normalizedBitrate(candidate);
+  const clearsRichnessThreshold =
+    currentRate > 0
+      ? candidateRate >= currentRate * BITRATE_RICHNESS_SWITCH_RATIO
+      : candidateRate >= unknownRateSwitchFloor(height);
+  return (
+    candidateRate > 0 &&
+    clearsRichnessThreshold &&
+    bitrateSustainabilityRank(candidate) >= 0
+  );
 }
 
 /** Bounded score contribution — richer encode scores higher inside its tier. */
@@ -773,8 +860,11 @@ export function scoreSource(source: PlaybackSource): number {
 }
 
 /**
- * Source picker: preferred first, then quality (height / multi-rung / verified),
- * then name. Servers act as the free-CDN quality ladder.
+ * Source picker: playable/healthy first, then resolution and encode richness,
+ * then the saved server and adaptive-ladder conveniences. The visible order
+ * mirrors auto-pick: 4K stays above HD, while a meaningfully richer 1080p
+ * encode is not hidden below a leaner one merely because the latter arrived
+ * from an adaptive manifest.
  */
 export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[] {
   const pref =
@@ -804,6 +894,19 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
     const runtimeOrder = compareRuntimeHealth(a, b);
     if (runtimeOrder !== 0) return runtimeOrder;
 
+    const insufficientOrder = compareInsufficientBitrate(a, b);
+    if (insufficientOrder !== 0) return insufficientOrder;
+
+    const aH = sourceMaxHeight(a);
+    const bH = sourceMaxHeight(b);
+    if (aH !== bH) return bH - aH;
+
+    const supportOrder = compareBitrateSustainability(a, b);
+    if (supportOrder !== 0) return supportOrder;
+
+    const bitrateOrder = compareBitrateAtEqualHeight(a, b);
+    if (bitrateOrder !== 0) return bitrateOrder;
+
     const aMatch = pref && matchesPreference(a, pref) ? 1 : 0;
     const bMatch = pref && matchesPreference(b, pref) ? 1 : 0;
     if (aMatch !== bMatch) return bMatch - aMatch;
@@ -811,10 +914,6 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
     const aMulti = isMultiRendition(a) ? 1 : 0;
     const bMulti = isMultiRendition(b) ? 1 : 0;
     if (aMulti !== bMulti) return bMulti - aMulti;
-
-    const aH = sourceMaxHeight(a);
-    const bH = sourceMaxHeight(b);
-    if (aH !== bH) return bH - aH;
 
     const nameA = `${a.provider} ${a.label}`.toLowerCase();
     const nameB = `${b.provider} ${b.label}`.toLowerCase();
@@ -1062,6 +1161,14 @@ function hasHealthEvidence(source: PlaybackSource): boolean {
   return source.origin === "debrid" && isSourcePlayableHere(source);
 }
 
+function sourceOffersTarget(source: PlaybackSource, targetHeight: number): boolean {
+  const heights = source.ladder?.length
+    ? source.ladder
+    : [sourceMaxHeight(source)];
+  const tolerance = Math.max(40, targetHeight * 0.12);
+  return heights.some((height) => Math.abs(height - targetHeight) <= tolerance);
+}
+
 /** Highest confirmed resolution across the whole roster (0 = nothing known yet). */
 export function sourceRosterMaxHeight(sources: PlaybackSource[]): number {
   return sources.reduce((max, s) => Math.max(max, sourceMaxHeight(s)), 0);
@@ -1085,40 +1192,12 @@ export function pickDefaultSource(
 ): PlaybackSource | null {
   if (!sources.length) return null;
   const pickPool = autoPlayPool(sources);
-  const heightTarget = resolvePreferredHeightTarget(preferredHeight);
 
-  // Honor a stored server only within the requested quality tier. A previous
-  // 1080p manual pick must not override Ultra when a playable 4K source exists.
+  // A stored server is a late tie-break, not an early return. This preserves
+  // the viewer's preference when quality evidence is tied or unknown, but a
+  // lean saved 1080p source must not suppress a meaningfully richer 1080p
+  // encode (and can never override an available Ultra target).
   const pref = (preferredProvider || DEFAULT_SOURCE_KEY || "").trim();
-  if (pref) {
-    const targetAvailable = pickPool.some(
-      (source) => sourceMaxHeight(source) >= heightTarget
-    );
-    const prefMatches = pickPool.filter(
-      (source) =>
-        matchesPreference(source, pref) &&
-        (!targetAvailable || sourceMaxHeight(source) >= heightTarget)
-    );
-    if (prefMatches.length) {
-      // Among preference matches: HD known > unknown > sub-HD (ranking only).
-      const sortedPref = [...prefMatches].sort((a, b) => {
-        const aH = sourceMaxHeight(a) || 0;
-        const bH = sourceMaxHeight(b) || 0;
-        const tier = (h: number) => (h >= HD_FLOOR_HEIGHT ? 2 : h <= 0 ? 1 : 0);
-        if (tier(aH) !== tier(bH)) return tier(bH) - tier(aH);
-        const aT = aH >= heightTarget ? 1 : 0;
-        const bT = bH >= heightTarget ? 1 : 0;
-        if (aT !== bT) return bT - aT;
-        if (aH !== bH) return bH - aH;
-        const aHevc = isHevcSource(a) && !browserSupportsHevc() ? 1 : 0;
-        const bHevc = isHevcSource(b) && !browserSupportsHevc() ? 1 : 0;
-        if (aHevc !== bHevc) return aHevc - bHevc;
-        return a.id.localeCompare(b.id);
-      });
-      const nonHevc = sortedPref.find((s) => !isHevcSource(s) || browserSupportsHevc());
-      return nonHevc || sortedPref[0] || null;
-    }
-  }
 
   // Ranking only — never filters the pool empty.
   // Poison gate first, then height tiers, multi-rung / probe / prio.
@@ -1129,33 +1208,30 @@ export function pickDefaultSource(
 
     const aH = sourceMaxHeight(a) || 0;
     const bH = sourceMaxHeight(b) || 0;
-    if (typeof preferredHeight === "number") {
-      const offersTarget = (source: PlaybackSource, maxHeight: number) => {
-        const heights = source.ladder?.length ? source.ladder : [maxHeight];
-        return heights.some(
-          (height) =>
-            Math.abs(height - preferredHeight) <=
-            Math.max(40, preferredHeight * 0.12)
-        );
-      };
-      const aTarget = offersTarget(a, aH) ? 1 : 0;
-      const bTarget = offersTarget(b, bH) ? 1 : 0;
+    const insufficientOrder = compareInsufficientBitrate(a, b);
+    if (insufficientOrder !== 0) return insufficientOrder;
+
+    const explicitTarget =
+      typeof preferredHeight === "number" ? preferredHeight : null;
+    let aOffersTarget = false;
+    let bOffersTarget = false;
+    if (explicitTarget != null) {
+      aOffersTarget = sourceOffersTarget(a, explicitTarget);
+      bOffersTarget = sourceOffersTarget(b, explicitTarget);
+      const aTarget = aOffersTarget ? 1 : 0;
+      const bTarget = bOffersTarget ? 1 : 0;
       if (aTarget !== bTarget) return bTarget - aTarget;
     }
+    const aRankH = aOffersTarget ? explicitTarget! : aH;
+    const bRankH = bOffersTarget ? explicitTarget! : bH;
     const heightTier = (h: number): number => {
       if (h >= HD_FLOOR_HEIGHT) return 2;
       if (h <= 0) return 1; // unknown — not treated as sub-HD
       return 0;
     };
-    const aTier = heightTier(aH);
-    const bTier = heightTier(bH);
+    const aTier = heightTier(aRankH);
+    const bTier = heightTier(bRankH);
     if (aTier !== bTier) return bTier - aTier;
-
-    if (heightTarget > HD_FLOOR_HEIGHT && aTier === 2) {
-      const aT = aH >= heightTarget ? 1 : 0;
-      const bT = bH >= heightTarget ? 1 : 0;
-      if (aT !== bT) return bT - aT;
-    }
 
     const runtimeOrder = compareRuntimeHealth(a, b);
     if (runtimeOrder !== 0) return runtimeOrder;
@@ -1167,6 +1243,33 @@ export function pickDefaultSource(
     const aVer = a.verified === false ? 0 : 1;
     const bVer = b.verified === false ? 0 : 1;
     if (aVer !== bVer) return bVer - aVer;
+
+    if (aTier !== 1 && aRankH !== bRankH) {
+      return bRankH - aRankH;
+    }
+
+    /**
+     * At equal resolution and comparable health, picture richness is the
+     * deciding quality signal. It deliberately runs before delivery format,
+     * adaptive-ladder and provider-name preferences: those are useful
+     * reliability conveniences, but they must not make a 2 Mbps 1080p encode
+     * beat a 10 Mbps 1080p encode. Direct comparison is transitive, so
+     * resolver arrival order cannot change the winner. A measured rate ranks
+     * ahead of unknown evidence.
+     */
+    if (aRankH === bRankH) {
+      const supportOrder = compareBitrateSustainability(a, b);
+      if (supportOrder !== 0) return supportOrder;
+      const bitrateOrder = compareNormalizedBitrates(
+        normalizedBitrateForTarget(a, explicitTarget),
+        normalizedBitrateForTarget(b, explicitTarget)
+      );
+      if (bitrateOrder !== 0) return bitrateOrder;
+    }
+
+    const aPref = pref && matchesPreference(a, pref) ? 1 : 0;
+    const bPref = pref && matchesPreference(b, pref) ? 1 : 0;
+    if (aPref !== bPref) return bPref - aPref;
 
     // Delivery cost, height-gated (see compareDelivery). Must sit ABOVE the
     // premium-direct rule below: without it, a 1080p MKV debrid source would
@@ -1218,25 +1321,6 @@ export function pickDefaultSource(
     const aTop = isTopTierSource(a) ? 1 : 0;
     const bTop = isTopTierSource(b) ? 1 : 0;
     if (aTop !== bTop) return bTop - aTop;
-
-    if (aH !== bH) return bH - aH;
-
-    /**
-     * Same height, so the number on the badge no longer separates these two —
-     * the encode does. A 1080p at 2 Mbps and a 1080p at 10 Mbps are the same
-     * "1080p" to every check above this line, and the roster routinely carries
-     * both. Codec-normalized so an efficient HEVC encode is not scored as the
-     * thinner release purely for needing fewer bits (`normalizedBitrate`), and
-     * gated on a 25% margin so encoder noise never reorders the roster.
-     *
-     * Sits below health, delivery and ladder deliberately: a richer encode on a
-     * CDN that stalls is still the worse watch, and this must not override the
-     * evidence that a source actually plays. It sits ABOVE failover priority
-     * and the speedScore deadband, which are proxies for quality — this is the
-     * real thing, when the manifest declares it.
-     */
-    const bitrateOrder = compareBitrateAtEqualHeight(a, b);
-    if (bitrateOrder !== 0) return bitrateOrder;
 
     const prio = sourceFailoverPriority(b) - sourceFailoverPriority(a);
     if (prio !== 0) return prio;

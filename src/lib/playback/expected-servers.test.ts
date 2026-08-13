@@ -156,6 +156,25 @@ describe("buildServerSlots — single source of truth for naming", () => {
     expect(buildServerSlots([first, second], [], false, undefined)).toHaveLength(2);
   });
 
+  it("shows richer 1080p above a leaner equal-resolution server", () => {
+    const lean = source({
+      id: "lean-1080",
+      url: "https://lean.example/master.m3u8",
+      bitrateBps: 2_500_000,
+      ladder: [1080, 720, 480],
+    });
+    const rich = source({
+      id: "rich-1080",
+      url: "https://rich.example/video.m3u8",
+      bitrateBps: 10_000_000,
+      ladder: [1080],
+    });
+
+    expect(buildServerSlots([lean, rich], [], false, undefined)[0]?.id).toBe(
+      "rich-1080"
+    );
+  });
+
   it("EXPECTED_SERVERS identity table names are all Greek — no cosmic string leaks through", () => {
     const oldCosmicNames = new Set([
       "Aether", "Horizon", "Solstice", "Pulse", "Luna", "Phoenix", "CinePro",

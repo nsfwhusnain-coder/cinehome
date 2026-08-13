@@ -131,8 +131,8 @@ describe("releaseQualityScore", () => {
       release("Movie 2160p BluRay REMUX HDR", { audioCodec: "truehd", hdr: true, multiAudio: true })
     );
     expect(best).toBe(RELEASE_QUALITY_MAX_SCORE);
-    // Bounded well under size fitness (400) on purpose — provenance reorders
-    // comparable releases, it does not overturn the startup-latency tuning.
+    // Bounded below size richness (400) on purpose — provenance reorders
+    // comparable releases without erasing a substantial bitrate-quality gap.
     expect(best).toBeLessThan(400);
   });
 

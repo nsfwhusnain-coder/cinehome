@@ -63,11 +63,35 @@ describe("quality discovery roster cap", () => {
     ).not.toContainEqual(mislabeled);
   });
 
+  it("reserves a label-known HD manifest so its bitrate can be measured", () => {
+    const known = Array.from({ length: 20 }, (_, index) => ({
+      url: `https://known.example/${index}.m3u8`,
+      provider: `known-${index}`,
+      type: "hls" as const,
+      maxHeight: 1080,
+      qualitySource: "manifest" as const,
+      bitrateBps: 2_000_000,
+    }));
+    const unmeasured = {
+      url: "https://licensed.example/rich-candidate.m3u8",
+      provider: "licensed-rich",
+      type: "hls" as const,
+      maxHeight: 1080,
+      qualitySource: "label" as const,
+    };
+
+    expect(capRosterWithQualityReserve([...known, unmeasured], 20, 4)).toContainEqual(
+      unmeasured
+    );
+  });
+
   it("does not displace ranked rows when no opaque adaptive candidate exists", () => {
     const known = Array.from({ length: 21 }, (_, index) => ({
       url: `https://known.example/${index}.m3u8`,
       provider: `known-${index}`,
       maxHeight: 1080,
+      qualitySource: "manifest" as const,
+      bitrateBps: 4_000_000,
     }));
 
     expect(capRosterWithQualityReserve(known, 20, 4)).toEqual(known.slice(0, 20));

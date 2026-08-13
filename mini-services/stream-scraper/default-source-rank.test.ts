@@ -21,6 +21,7 @@ function src(
     verified: partial.verified,
     maxHeight: partial.maxHeight,
     ladder: partial.ladder,
+    bitrateBps: partial.bitrateBps,
     probe: partial.probe,
   };
 }
@@ -133,6 +134,113 @@ describe("sortSourcesForDefault — R9 height tiers", () => {
     });
     const ranked = sortSourcesForDefault([single, multi]);
     expect(ranked[0]?.url).toBe(multi.url);
+  });
+});
+
+describe("sortSourcesForDefault — equal-resolution bitrate", () => {
+  it("keeps 4K ahead of a higher-bitrate 1080p source", () => {
+    const hd = src({ id: "hd", maxHeight: 1080, bitrateBps: 20_000_000 });
+    const uhd = src({ id: "uhd", maxHeight: 2160, bitrateBps: 12_000_000 });
+
+    expect(sortSourcesForDefault([hd, uhd])[0]?.url).toBe(uhd.url);
+  });
+
+  it("prefers rich fixed 1080p over lean adaptive 1080p", () => {
+    const lean = src({
+      id: "lean-adaptive",
+      maxHeight: 1080,
+      ladder: [1080, 720, 480],
+      bitrateBps: 2_500_000,
+    });
+    const rich = src({
+      id: "rich-fixed",
+      maxHeight: 1080,
+      ladder: [1080],
+      bitrateBps: 10_000_000,
+    });
+
+    expect(sortSourcesForDefault([lean, rich])[0]?.url).toBe(rich.url);
+  });
+
+  it("keeps probe failure ahead of no quality preference", () => {
+    const healthy = src({
+      id: "healthy",
+      maxHeight: 1080,
+      bitrateBps: 3_000_000,
+      probe: { ok: true, speedScore: 60 },
+    });
+    const deadRich = src({
+      id: "dead-rich",
+      maxHeight: 1080,
+      bitrateBps: 18_000_000,
+      probe: { ok: false, speedScore: 0 },
+    });
+
+    expect(sortSourcesForDefault([deadRich, healthy])[0]?.url).toBe(healthy.url);
+  });
+
+  it("keeps an unprobed fallback above a known-dead rich source", () => {
+    const fallback = src({
+      id: "fallback",
+      maxHeight: 1080,
+      bitrateBps: 3_000_000,
+    });
+    const deadRich = src({
+      id: "dead-rich",
+      maxHeight: 1080,
+      bitrateBps: 12_000_000,
+      probe: { ok: false, speedScore: 0, bytesPerSec: 0 },
+    });
+    expect(sortSourcesForDefault([deadRich, fallback])[0]?.url).toBe(
+      fallback.url
+    );
+  });
+
+  it("rejects a fixed rich encode that measured throughput cannot sustain", () => {
+    const lean = src({
+      id: "lean",
+      maxHeight: 1080,
+      bitrateBps: 3_000_000,
+      probe: { ok: true, speedScore: 60, bytesPerSec: 1_000_000 },
+    });
+    const starving = src({
+      id: "starving",
+      maxHeight: 1080,
+      bitrateBps: 10_000_000,
+      probe: { ok: true, speedScore: 85, bytesPerSec: 500_000 },
+    });
+    expect(sortSourcesForDefault([starving, lean])[0]?.url).toBe(lean.url);
+  });
+
+  it("is permutation-stable with measured and unknown rates", () => {
+    const lean = src({
+      id: "lean",
+      maxHeight: 1080,
+      bitrateBps: 4_000_000,
+      ladder: [1080, 720],
+    });
+    const unknown = src({
+      id: "unknown",
+      maxHeight: 1080,
+      ladder: [1080, 720],
+    });
+    const rich = src({ id: "rich", maxHeight: 1080, bitrateBps: 6_000_000 });
+    const permutations = [
+      [lean, unknown, rich],
+      [lean, rich, unknown],
+      [unknown, lean, rich],
+      [unknown, rich, lean],
+      [rich, lean, unknown],
+      [rich, unknown, lean],
+    ];
+
+    for (const roster of permutations) {
+      expect(sortSourcesForDefault(roster).map((entry) => entry.id)).toEqual([
+        "rich",
+        "lean",
+        "unknown",
+      ]);
+    }
   });
 });
 

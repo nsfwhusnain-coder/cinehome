@@ -6,6 +6,7 @@ import {
   buildQualityOptions,
   deriveHeightFromBitrate,
   findBestLevelForTarget,
+  findFloorBitrateKbps,
   findLowerLevelIndexForHeight,
   findMinLevelIndexForHeight,
   hlsPromotionTargetHeight,
@@ -93,6 +94,19 @@ describe("buildQualityOptions", () => {
     expect(options.map((o) => o.label)).toEqual(["4K", "1080p"]);
   });
 
+  it("retains the highest-bitrate representation when heights repeat", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 3_000_000 },
+      { index: 1, height: 2160, bitrate: 12_000_000 },
+      { index: 2, height: 1080, bitrate: 8_000_000 },
+    ];
+    const options = buildQualityOptions(levels);
+    expect(options).toEqual([
+      { index: 1, height: 2160, label: "4K" },
+      { index: 2, height: 1080, label: "1080p" },
+    ]);
+  });
+
   it("includes 4K + full ladder", () => {
     const levels: QualityLevel[] = [
       { index: 0, height: 480 },
@@ -161,6 +175,15 @@ describe("pickDefaultQualityIndex", () => {
     expect(pickDefaultQualityIndex(levels)).toBe(2);
   });
 
+  it("defaults to the highest-bitrate representation on the 1080 floor", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 3_000_000 },
+      { index: 1, height: 2160, bitrate: 14_000_000 },
+      { index: 2, height: 1080, bitrate: 9_000_000 },
+    ];
+    expect(pickDefaultQualityIndex(levels)).toBe(2);
+  });
+
   it("single [1080] level -> defaults to it", () => {
     expect(pickDefaultQualityIndex([{ index: 0, height: 1080 }])).toBe(0);
   });
@@ -198,6 +221,24 @@ describe("ABR floor guard (findMinLevelIndexForHeight / findBestLevelForTarget)"
     expect(findMinLevelIndexForHeight(levels, 1080)).toBe(1);
   });
 
+  it("findMinLevelIndexForHeight picks the highest bitrate at the floor height", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 3_000_000 },
+      { index: 1, height: 2160, bitrate: 12_000_000 },
+      { index: 2, height: 1080, bitrate: 8_000_000 },
+    ];
+    expect(findMinLevelIndexForHeight(levels, 1080)).toBe(2);
+  });
+
+  it("findMinLevelIndexForHeight picks the highest bitrate at the fallback height", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 720, bitrate: 2_000_000 },
+      { index: 1, height: 480, bitrate: 4_000_000 },
+      { index: 2, height: 720, bitrate: 6_000_000 },
+    ];
+    expect(findMinLevelIndexForHeight(levels, 1080)).toBe(2);
+  });
+
   it("findBestLevelForTarget prefers the lowest rung >= target (1080), not 1440/4K", () => {
     const levels: QualityLevel[] = [
       { index: 0, height: 720 },
@@ -213,6 +254,32 @@ describe("ABR floor guard (findMinLevelIndexForHeight / findBestLevelForTarget)"
       { index: 1, height: 1080 },
     ];
     expect(findBestLevelForTarget(levels, 1080)).toBe(1);
+  });
+
+  it("findBestLevelForTarget picks the highest bitrate at the closest qualifying height", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 3_000_000 },
+      { index: 1, height: 2160, bitrate: 15_000_000 },
+      { index: 2, height: 1080, bitrate: 8_000_000 },
+    ];
+    expect(findBestLevelForTarget(levels, 1080)).toBe(2);
+  });
+
+  it("findBestLevelForTarget keeps 4K above a higher-bitrate 1080 representation", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 20_000_000 },
+      { index: 1, height: 2160, bitrate: 12_000_000 },
+    ];
+    expect(findBestLevelForTarget(levels, 2160)).toBe(1);
+  });
+
+  it("uses the richest duplicate 1080 rendition for the DASH Auto floor", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 2_500_000 },
+      { index: 1, height: 2160, bitrate: 14_000_000 },
+      { index: 2, height: 1080, bitrate: 9_000_000 },
+    ];
+    expect(findFloorBitrateKbps(levels, 1080)).toBe(9_000);
   });
 
   it("adaptive downshift chooses a real lower rung on sparse ladders", () => {
@@ -318,6 +385,15 @@ describe("findBestLevelForTarget fixed-pick honesty", () => {
       { index: 1, height: 2160 },
     ];
     expect(findBestLevelForTarget(levels, 1080)).toBe(0);
+  });
+
+  it("uses the highest-bitrate representation at the fallback height", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 3_000_000 },
+      { index: 1, height: 720, bitrate: 6_000_000 },
+      { index: 2, height: 1080, bitrate: 9_000_000 },
+    ];
+    expect(findBestLevelForTarget(levels, 2160)).toBe(2);
   });
 });
 

@@ -219,6 +219,7 @@ describe("parseSizeBytes", () => {
     expect(parseSizeBytes("Release without a size")).toBeNull();
     expect(parseSizeBytes("Release 0 GB")).toBeNull();
     expect(parseSizeBytes("Release many GB")).toBeNull();
+    expect(parseSizeBytes(`Release ${"1"}${"0".repeat(300)} GB`)).toBeNull();
   });
 });
 
@@ -245,16 +246,16 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
     });
   }
 
-  it("prefers a balanced movie encode over an oversized peer and drops obvious captures/packs", async () => {
+  it("prefers a larger legitimate 1080p BluRay over a lean WEB-DL while dropping captures/packs", async () => {
     globalThis.fetch = (async () =>
       jsonResponse({
         streams: [
           {
-            title: "Movie.2024.1080p.WEB-DL.H264.mp4\n👤 5 💾 3 GB",
+            title: "Movie.2024.1080p.WEB-DL.H264.mp4\n👤 40 💾 3 GB",
             infoHash: "b".repeat(40),
           },
           {
-            title: "Movie.2024.1080p.BluRay.H264.mp4\n👤 9999 💾 8 GB",
+            title: "Movie.2024.1080p.BluRay.H264.mp4\n👤 5 💾 8 GB",
             infoHash: "h".repeat(40),
           },
           {
@@ -279,9 +280,37 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
     });
 
     expect(candidates.map((candidate) => candidate.infoHash)).toEqual([
-      "b".repeat(40),
       "h".repeat(40),
+      "b".repeat(40),
     ]);
+  });
+
+  it("keeps unknown size neutral and preserves deterministic input order on a full tie", async () => {
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        streams: [
+          {
+            title: "Movie.2024.1080p.WEB-DL.H264.FIRST.mp4\n👤 20",
+            infoHash: "1".repeat(40),
+          },
+          {
+            title: "Movie.2024.1080p.WEB-DL.H264.SECOND.mp4\n👤 20",
+            infoHash: "2".repeat(40),
+          },
+        ],
+      })) as unknown as typeof fetch;
+
+    const candidates = await fetchTorrentioCandidates({
+      imdbId: "tt0000010",
+      mediaType: "movie",
+      rdToken: FAKE_TOKEN,
+    });
+
+    expect(candidates.map((candidate) => candidate.infoHash)).toEqual([
+      "1".repeat(40),
+      "2".repeat(40),
+    ]);
+    expect(candidates.every((candidate) => candidate.sizeBytes == null)).toBe(true);
   });
 
   it("breaks a size/seeder tie on how the release was mastered", async () => {
