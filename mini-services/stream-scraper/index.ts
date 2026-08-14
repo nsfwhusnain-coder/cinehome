@@ -72,6 +72,7 @@ import {
 import { isDebugEnabled, recordDebugCapture, flushDebugDump } from "./debug-dump";
 import { raceWithHardTimeout } from "./enrich-timeout";
 import { raceProviderArms } from "./provider-race";
+import { filterHighQualitySources } from "./quality-floor";
 import {
   effectiveMaxHeight as rankEffectiveMaxHeight,
   pickFactDefaultUrl as rankPickFactDefaultUrl,
@@ -680,8 +681,9 @@ function buildMergedResult(entries: SourceEntry[], error?: string): ScrapeResult
         : entry
     );
   const withHints = attachCheapQualityHints(mergeSourceEntries(durationSafeEntries));
+  const qualityFiltered = filterHighQualitySources(withHints);
   const sources = capRosterWithQualityReserve(
-    sortSourcesForDefault(withHints),
+    sortSourcesForDefault(qualityFiltered),
     MAX_SOURCES,
     QUALITY_DISCOVERY_RESERVED_SLOTS,
     currentQualityHintHeight()
@@ -803,7 +805,7 @@ async function applyLatencyProbes(
     );
   }
 
-  const sorted = sortSourcesForDefault(sources);
+  const sorted = sortSourcesForDefault(filterHighQualitySources(sources));
   const okCount = sorted.filter((s) => s.probe?.ok).length;
   const defaultUrl = pickDefaultStreamUrl(sorted);
   const defaultEntry = sorted.find((s) => s.url === defaultUrl) ?? sorted[0];

@@ -9,6 +9,8 @@ import {
   parseReleaseTitle,
   parseSeeders,
   parseSizeBytes,
+  filterLeanDebridCandidates,
+  isLeanDebridSize,
   effectiveReleaseContainer,
   isDirectPlayDebridRelease,
   isMoviePackRelease,
@@ -52,6 +54,28 @@ describe("extractInfoHashFromResolveUrl", () => {
   it("does not guess from unrelated or malformed URLs", () => {
     expect(extractInfoHashFromResolveUrl("https://example.com/not-a-resolve/aabb")).toBeUndefined();
     expect(extractInfoHashFromResolveUrl("not a url")).toBeUndefined();
+  });
+});
+
+describe("debrid size floor", () => {
+  it("treats an 800 MB 1080p movie as too thin", () => {
+    expect(
+      isLeanDebridSize({ resolutionHeight: 1080, sizeBytes: 800 * 1024 ** 2 }, "movie")
+    ).toBe(true);
+    expect(
+      isLeanDebridSize({ resolutionHeight: 1080, sizeBytes: 5 * 1024 ** 3 }, "movie")
+    ).toBe(false);
+  });
+
+  it("drops the skinny file when a rich one exists", () => {
+    const kept = filterLeanDebridCandidates(
+      [
+        { resolutionHeight: 1080 as const, sizeBytes: 700 * 1024 ** 2, title: "thin" },
+        { resolutionHeight: 1080 as const, sizeBytes: 8 * 1024 ** 3, title: "rich" },
+      ],
+      "movie"
+    );
+    expect(kept.map((row) => row.title)).toEqual(["rich"]);
   });
 });
 

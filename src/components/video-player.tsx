@@ -53,7 +53,6 @@ import {
   wantsFourKDiscovery,
 } from "@/lib/playback/late-fourk";
 import {
-  PLAYBACK_4K_PREWARM_ENABLED,
   PLAYBACK_FAST_4K_ENABLED,
   PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED,
   PLAYBACK_TRACK_POLICY_ENABLED,
@@ -918,8 +917,6 @@ export function VideoPlayer({
   const userSelectedQualityRef = useRef(false);
   /** At most one Luna→fast CDN auto-upgrade per watch session (pre-first-frame). */
   const autoUpgradedRef = useRef(false);
-  /** One background 4K remux preparation attempt per source and watch session. */
-  const fourKPrewarmAttemptedRef = useRef<Set<string>>(new Set());
   const lateFourKAttemptedRef = useRef<Set<string>>(new Set());
   /**
    * One-shot "adopt a refreshed URL for the currently-active source id" flag.
@@ -4280,90 +4277,9 @@ export function VideoPlayer({
     }
   }, []);
 
-  /**
-   * Explicit Ultra users get a quick direct-HD first frame while a cold 4K
-   * remux prepares behind it. The successful handoff uses the normal source
-   * switch path, which captures the live playhead and rolls back through
-   * ordinary failover if the prepared stream later fails to decode.
-   */
-  useEffect(() => {
-    if (
-      !PLAYBACK_4K_PREWARM_ENABLED ||
-      !PLAYBACK_FAST_4K_ENABLED ||
-      !everPlayed ||
-      !wantsFourKDiscovery(qualityTargetRef.current) ||
-      fourKStartupRef.current !== "fast" ||
-      !activeSource ||
-      !tmdbId ||
-      sourceDelivery(activeSource) !== "direct"
-    ) {
-      return;
-    }
-    const decision = decidePlayback(orderedSources, {
-      preferredProvider: getPreferredProvider(),
-      preferredHeight: 2160,
-      fourKStartup: "fast",
-    });
-    const candidate = decision.deferredFourK;
-    if (
-      !candidate ||
-      failedSourceIdsRef.current.has(candidate.id) ||
-      fourKPrewarmAttemptedRef.current.has(candidate.id)
-    ) {
-      return;
-    }
-    fourKPrewarmAttemptedRef.current.add(candidate.id);
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 70_000);
-    const prewarmStartAt = normalizeRemuxStart(
-      logicalPlayhead(videoRef.current?.currentTime ?? 0),
-      fallbackDurationSRef.current
-    );
-    const prewarmUrl = buildRemuxUrl({
-      source: candidate,
-      mediaType: mediaType ?? "movie",
-      tmdbId,
-      season: tvSeason,
-      episode: tvEpisode,
-      audio: audioSelectionRef.current,
-      prewarm: true,
-      startAtSeconds: prewarmStartAt,
-    });
-    void prewarmRemuxPosition(prewarmUrl, { signal: controller.signal })
-      .then(() => {
-        if (controller.signal.aborted) return;
-        if (
-          !wantsFourKDiscovery(qualityTargetRef.current) ||
-          userSelectedSourceRef.current ||
-          activeSourceRef.current?.id !== activeSource.id
-        ) {
-          return;
-        }
-        showStatusNotice("4K ready — switching…", 2_200);
-        handleSourceChange(candidate, {
-          remuxStartAtSeconds: prewarmStartAt,
-        });
-      })
-      .catch(() => {
-        // The direct HD stream remains active; a failed prewarm is invisible.
-      })
-      .finally(() => window.clearTimeout(timeout));
-    return () => {
-      window.clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [
-    activeSource,
-    everPlayed,
-    handleSourceChange,
-    logicalPlayhead,
-    mediaType,
-    orderedSources,
-    showStatusNotice,
-    tmdbId,
-    tvEpisode,
-    tvSeason,
-  ]);
+  // Remux 4K stays in the server list. Auto-switching to it after first
+  // frame is what made a small skip wait for ffmpeg to "prepare" the next
+  // offset. Native 4K can still arrive through findLateFourKSource below.
 
   useEffect(() => {
     if (!everPlayed || !activeSource || userSelectedSourceRef.current) return;

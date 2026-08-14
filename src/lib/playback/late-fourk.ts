@@ -19,7 +19,7 @@ export function wantsFourKDiscovery(
 
 /**
  * After first frame, adopt a newly arrived playable 4K once.
- * Remux 4K is left to the existing prewarm path so the HD stream keeps playing.
+ * Remux 4K stays picker-only so small seeks do not wait on ffmpeg prepare.
  */
 export function findLateFourKSource(
   current: PlaybackSource,

@@ -83,8 +83,17 @@ export function shouldAdoptRosterUpgrade(options: {
     return false;
   }
 
-  if (everPlayed && candidateLang <= currentLang) return false;
   if (candidateLang > currentLang) return true;
+
+  // After first frame, remux is never an upgrade — it makes small skips wait
+  // for ffmpeg to prepare the next offset. Native height/bitrate upgrades may.
+  if (everPlayed) {
+    if (candidateRemux || sourceDelivery(candidate) !== "direct") return false;
+    const betterHeight =
+      sourceMaxHeight(candidate) >
+      sourceMaxHeight(current) + ROSTER_HEIGHT_UPGRADE_PX;
+    return betterHeight || isMeaningfullyRicherSource(current, candidate);
+  }
 
   const betterMulti = isMultiRendition(candidate) && !isMultiRendition(current);
   const betterHeight =
@@ -150,17 +159,6 @@ export function selectActiveSource(
         reason: "hold",
       };
     }
-    if (
-      input.everPlayed &&
-      !isLanguageRescueUpgrade(input.active, best, input.contentClass)
-    ) {
-      return {
-        next: input.active,
-        deferredFourK: decision.deferredFourK,
-        replace: false,
-        reason: "hold",
-      };
-    }
     if (best.id === input.active.id) {
       return {
         next: input.active,
@@ -172,7 +170,10 @@ export function selectActiveSource(
     const betterHeight =
       sourceMaxHeight(best) >
       sourceMaxHeight(input.active) + ROSTER_HEIGHT_UPGRADE_PX;
-    if (input.autoUpgraded && !betterHeight) {
+    const richerNative =
+      sourceDelivery(best) === "direct" &&
+      isMeaningfullyRicherSource(input.active, best);
+    if (input.autoUpgraded && !betterHeight && !richerNative) {
       return {
         next: input.active,
         deferredFourK: decision.deferredFourK,

@@ -161,6 +161,27 @@ describe("decidePlayback contract", () => {
     expect(decision.deferredFourK?.id).toBe("hades");
   });
 
+  it("starts the rich native 1080p, not a skinny labelled 1080p", () => {
+    const leanLuna = src({
+      id: "lean-luna",
+      provider: "Vixsrc",
+      label: "Luna",
+      audioLanguage: "en",
+      type: "hls",
+      maxHeight: 1080,
+      bitrateBps: 2_200_000,
+    });
+    const richKronos = src({
+      ...kronos,
+      bitrateBps: 12_000_000,
+    });
+    const decision = decidePlayback([leanLuna, richKronos, hades], {
+      preferredHeight: 2160,
+      fourKStartup: "fast",
+    });
+    expect(decision.immediate?.id).toBe("kronos");
+  });
+
   it("drops failed ids before ranking", () => {
     const decision = decidePlayback([kronos, luna], {
       fourKStartup: "fast",

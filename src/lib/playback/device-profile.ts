@@ -33,9 +33,9 @@ export interface MediaBufferProfile {
 
 /** Desktop values — unchanged from the constants this profile replaced. */
 const DESKTOP_PROFILE: MediaBufferProfile = {
-  maxBufferLengthS: 30,
-  maxMaxBufferLengthS: 60,
-  maxBufferSizeBytes: 64_000_000,
+  maxBufferLengthS: 60,
+  maxMaxBufferLengthS: 90,
+  maxBufferSizeBytes: 96_000_000,
   backBufferLengthS: 30,
   abrInitialEstimateBps: 10_000_000,
 };
@@ -47,9 +47,9 @@ const DESKTOP_PROFILE: MediaBufferProfile = {
  * an 85-inch set only ever locked 1080p even when the ladder had Ultra.
  */
 const TV_PROFILE: MediaBufferProfile = {
-  maxBufferLengthS: 16,
-  maxMaxBufferLengthS: 32,
-  maxBufferSizeBytes: 48_000_000,
+  maxBufferLengthS: 24,
+  maxMaxBufferLengthS: 40,
+  maxBufferSizeBytes: 56_000_000,
   backBufferLengthS: 12,
   abrInitialEstimateBps: 12_000_000,
 };

@@ -15,6 +15,7 @@ import {
   sourceDelivery,
   sourceMaxHeight,
 } from "./source-quality";
+import { filterHighQualitySources } from "./quality-floor";
 
 const STARTUP_UHD_HEIGHT = 2160;
 
@@ -127,6 +128,11 @@ function isAutoEligible(source: PlaybackSource): boolean {
   return true;
 }
 
+function autoQualityPool(sources: readonly PlaybackSource[]): PlaybackSource[] {
+  const eligible = sources.filter(isAutoEligible);
+  return filterHighQualitySources(eligible.length ? eligible : [...sources]);
+}
+
 function compareForAutoStart(
   a: PlaybackSource,
   b: PlaybackSource,
@@ -171,8 +177,9 @@ function pickFrom(
   options: DecidePlaybackOptions,
   height: DecidePlaybackOptions["preferredHeight"]
 ): PlaybackSource | null {
-  const eligible = sources.filter(isAutoEligible);
-  const pool = eligible.length ? eligible : [...sources].filter(isSourcePlayableHere);
+  const pool = autoQualityPool(sources).filter(
+    (source) => isAutoEligible(source) || isSourcePlayableHere(source)
+  );
   if (!pool.length) return null;
   return [...pool].sort((a, b) => compareForAutoStart(a, b, options, height))[0] ?? null;
 }

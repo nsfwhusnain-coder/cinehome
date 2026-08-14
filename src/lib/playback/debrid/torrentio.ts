@@ -302,6 +302,37 @@ export function isEligibleDebridQuality(height: number | null): height is 720 | 
   return height === 720 || height === 1080 || height === 2160;
 }
 
+/** Known-size floors so a 800 MB "1080p" cannot occupy a native HD slot. */
+const MIN_DEBRID_SIZE_BYTES: Record<MediaType, Record<720 | 1080 | 2160, number>> = {
+  movie: {
+    720: Math.round(0.7 * 1024 ** 3),
+    1080: 2 * 1024 ** 3,
+    2160: 6 * 1024 ** 3,
+  },
+  tv: {
+    720: Math.round(0.25 * 1024 ** 3),
+    1080: Math.round(0.7 * 1024 ** 3),
+    2160: Math.round(1.8 * 1024 ** 3),
+  },
+};
+
+export function isLeanDebridSize(
+  candidate: { resolutionHeight: 720 | 1080 | 2160; sizeBytes?: number },
+  mediaType: MediaType
+): boolean {
+  if (candidate.sizeBytes == null || candidate.sizeBytes <= 0) return false;
+  return candidate.sizeBytes < MIN_DEBRID_SIZE_BYTES[mediaType][candidate.resolutionHeight];
+}
+
+export function filterLeanDebridCandidates<T extends {
+  resolutionHeight: 720 | 1080 | 2160;
+  sizeBytes?: number;
+}>(candidates: T[], mediaType: MediaType): T[] {
+  if (candidates.length <= 1) return candidates;
+  const kept = candidates.filter((candidate) => !isLeanDebridSize(candidate, mediaType));
+  return kept.length ? kept : candidates;
+}
+
 /**
  * The real, absolute NATIVE browser-playability gate — MKV plays in NO
  * browser (not even Safari) and WebM movie releases are exotic/unsupported
@@ -644,7 +675,10 @@ function parseTorrentioStreams(
       ...(sizeBytes != null ? { sizeBytes } : {}),
     });
   }
-  return selectTopPerClass(candidates, mediaType).slice(0, MAX_CANDIDATES);
+  return selectTopPerClass(
+    filterLeanDebridCandidates(candidates, mediaType),
+    mediaType
+  ).slice(0, MAX_CANDIDATES);
 }
 
 /**

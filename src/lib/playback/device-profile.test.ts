@@ -71,9 +71,9 @@ describe("uaPlatformToken", () => {
 describe("bufferProfileFor", () => {
   it("leaves the desktop envelope exactly as it was", () => {
     expect(bufferProfileFor("desktop")).toEqual({
-      maxBufferLengthS: 30,
-      maxMaxBufferLengthS: 60,
-      maxBufferSizeBytes: 64_000_000,
+      maxBufferLengthS: 60,
+      maxMaxBufferLengthS: 90,
+      maxBufferSizeBytes: 96_000_000,
       backBufferLengthS: 30,
       abrInitialEstimateBps: 10_000_000,
     });

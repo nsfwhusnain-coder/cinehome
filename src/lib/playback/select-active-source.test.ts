@@ -80,6 +80,43 @@ describe("selectActiveSource", () => {
     expect(rescue.reason).toBe("language_rescue");
   });
 
+  it("upgrades a lean native start to a richer native encode", () => {
+    const lean = src("lean-luna", 1080, {
+      origin: "embed",
+      provider: "Vixsrc",
+      bitrateBps: 2_200_000,
+      container: "mp4",
+    });
+    const rich = src("rich-kronos", 1080, {
+      bitrateBps: 12_000_000,
+      container: "mp4",
+    });
+    const upgrade = selectActiveSource({
+      roster: [lean, rich],
+      active: lean,
+      userPicked: false,
+      everPlayed: true,
+      autoUpgraded: false,
+      fourKStartup: "fast",
+      preferredHeight: 2160,
+    });
+    expect(upgrade.replace).toBe(true);
+    expect(upgrade.next?.id).toBe("rich-kronos");
+    expect(upgrade.reason).toBe("roster_upgrade");
+  });
+
+  it("does not switch a playing native HD stream to remux 4K", () => {
+    expect(
+      shouldAdoptRosterUpgrade({
+        current: direct1080,
+        candidate: remux4k,
+        everPlayed: true,
+        fourKStartup: "fast",
+        userPicked: false,
+      })
+    ).toBe(false);
+  });
+
   it("does not let Hindi steal an English HD start", () => {
     expect(
       shouldAdoptRosterUpgrade({
