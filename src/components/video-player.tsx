@@ -23,6 +23,7 @@ import {
   isMeaningfullyRicherSource,
   isSourcePlayableHere,
   sourceDelivery,
+  findDirectDebridAlternative,
   HD_FLOOR_HEIGHT,
   TRANSCODE_MAX_HEIGHT,
 } from "@/lib/playback/source-quality";
@@ -2310,8 +2311,10 @@ export function VideoPlayer({
     (source: PlaybackSource) => {
       if (!isSourcePlayableHere(source)) return;
       userSelectedSourceRef.current = true;
-      const resolved =
+      const picked =
         orderedSourcesRef.current.find((row) => row.id === source.id) ?? source;
+      const resolved =
+        findDirectDebridAlternative(picked, orderedSourcesRef.current) ?? picked;
       const playing = everPlayedRef.current;
       const video = videoRef.current;
       const playhead = logicalPlayhead(video?.currentTime ?? 0);

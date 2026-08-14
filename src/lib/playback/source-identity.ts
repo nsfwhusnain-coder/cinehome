@@ -133,7 +133,7 @@ function decodeBase64Url(encoded: string): string {
  * Unwrap home `/api/hls/{session}?u=` proxy so dedup keys on real upstream,
  * not per-user session path segments.
  */
-function unwrapProxyUpstream(url: string): string {
+export function unwrapProxyUpstream(url: string): string {
   try {
     const u = new URL(url, "http://local");
     const path = u.pathname.replace(/\/+/g, "/");

@@ -8,6 +8,7 @@ import {
   isRuntimeSourceUnhealthy,
   isSourcePlayableHere,
   sourceDelivery,
+  findDirectDebridAlternative,
   parseMaxHeight,
   pickDefaultSource,
   qualityBadge,
@@ -1134,6 +1135,28 @@ describe("findQualityUpgradeSource — never upgrades to an unplayable-here sour
   });
 });
 
+describe("findDirectDebridAlternative", () => {
+  it("replaces a remux debrid pick with a same-height direct sibling", () => {
+    const remux = makeSource({
+      id: "poseidon-mkv",
+      origin: "debrid",
+      type: "mp4",
+      codec: "h264",
+      container: "mkv",
+      maxHeight: 2160,
+    });
+    const direct = makeSource({
+      id: "kronos-mp4",
+      origin: "debrid",
+      type: "mp4",
+      codec: "h264",
+      container: "mp4",
+      maxHeight: 2160,
+    });
+    expect(findDirectDebridAlternative(remux, [remux, direct])?.id).toBe("kronos-mp4");
+  });
+});
+
 describe("sourceDelivery - never pack HLS/DASH", () => {
   it("plays HLS and DASH directly even when audio looks exotic", () => {
     expect(
@@ -1200,6 +1223,22 @@ describe("sourceDelivery - audio safety", () => {
           container: "mp4",
           audioCodec: "aac",
           multiAudio: true,
+        })
+      )
+    ).toBe("direct");
+  });
+
+  it("plays a REMUX-named debrid file directly when the URL is actually MP4", () => {
+    expect(
+      sourceDelivery(
+        makeSource({
+          id: "poseidon-mp4",
+          origin: "debrid",
+          type: "mp4",
+          codec: "h264",
+          container: "mkv",
+          audioCodec: "eac3",
+          url: "https://cdn.example/d/ABC/Movie.2024.2160p.REMUX.mp4",
         })
       )
     ).toBe("direct");

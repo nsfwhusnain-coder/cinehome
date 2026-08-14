@@ -6,7 +6,12 @@ import {
   isPoisonStreamUrl,
   POISON_SCORE_PENALTY,
 } from "./poison-url";
-import { isBrowserPlayableContainer } from "./debrid/torrentio";
+import {
+  containerFromDirectUrl,
+  isBrowserPlayableContainer,
+  type ReleaseContainer,
+} from "./debrid/torrentio";
+import { unwrapProxyUpstream } from "./source-identity";
 
 /**
  * Live-transcode target cap (task: transcode-target policy). 4K live
@@ -451,6 +456,12 @@ function codecDecodableHere(source: PlaybackSource): boolean {
  * choice. In either case the existing remux worker can copy video untouched
  * while producing one selected AAC track.
  */
+function resolvedSourceContainer(source: PlaybackSource): ReleaseContainer | undefined {
+  const fromUrl = containerFromDirectUrl(unwrapProxyUpstream(source.url));
+  if (fromUrl) return fromUrl;
+  return source.container;
+}
+
 function audioCodecDecodableHere(source: PlaybackSource): boolean {
   const codec = source.audioCodec;
   if (!codec || codec === "unknown" || codec === "aac" || codec === "mp3") {
@@ -460,8 +471,8 @@ function audioCodecDecodableHere(source: PlaybackSource): boolean {
   // AC-3 / E-AC-3 / Opus in MP4: play the file. Remuxing a 4K progressive
   // just in case the browser dislikes the audio is why Poseidon sat on
   // "Repackaging" while Pan (same height, direct MP4) started immediately.
-  const containerOk =
-    !source.container || isBrowserPlayableContainer(source.container);
+  const container = resolvedSourceContainer(source);
+  const containerOk = !container || isBrowserPlayableContainer(container);
   if (containerOk && (codec === "ac3" || codec === "eac3" || codec === "opus")) {
     return true;
   }
@@ -487,8 +498,8 @@ function audioNeedsRemux(source: PlaybackSource): boolean {
 
 export function sourceDelivery(source: PlaybackSource): SourceDelivery {
   if (!codecDecodableHere(source)) return "unavailable";
-  const containerOk =
-    !source.container || isBrowserPlayableContainer(source.container);
+  const container = resolvedSourceContainer(source);
+  const containerOk = !container || isBrowserPlayableContainer(container);
   // HLS/DASH playlists are already browser-legal. Packing them is the
   // "Repackaging" stall. An MKV still remuxes even if someone labelled it HLS.
   if ((source.type === "hls" || source.type === "dash") && containerOk) {
@@ -509,6 +520,32 @@ export function sourceDelivery(source: PlaybackSource): SourceDelivery {
  */
 export function isSourcePlayableHere(source: PlaybackSource): boolean {
   return sourceDelivery(source) !== "unavailable";
+}
+
+/**
+ * When the user picks a remux-only debrid row, switch to a same-height
+ * progressive sibling instead of waiting on the packer.
+ */
+export function findDirectDebridAlternative(
+  source: PlaybackSource,
+  roster: readonly PlaybackSource[]
+): PlaybackSource | null {
+  if (source.origin !== "debrid" || sourceDelivery(source) !== "remux") {
+    return null;
+  }
+  const height = sourceMaxHeight(source);
+  const direct = roster.filter(
+    (row) =>
+      row.origin === "debrid" &&
+      row.id !== source.id &&
+      sourceDelivery(row) === "direct"
+  );
+  return (
+    direct.find((row) => sourceMaxHeight(row) >= height && height > 0) ??
+    direct.find((row) => sourceMaxHeight(row) >= HD_FLOOR_HEIGHT) ??
+    direct[0] ??
+    null
+  );
 }
 
 /**

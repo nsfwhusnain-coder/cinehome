@@ -311,6 +311,52 @@ export function isBrowserPlayableContainer(container: ReleaseContainer): boolean
   return container !== "mkv" && container !== "webm";
 }
 
+/** File extension on the unrestricted CDN URL is ground truth. */
+export function containerFromDirectUrl(url: string): ReleaseContainer | undefined {
+  try {
+    const pathname = decodeURIComponent(new URL(url).pathname).toLowerCase();
+    if (/\.mkv$/.test(pathname)) return "mkv";
+    if (/\.webm$/.test(pathname)) return "webm";
+    if (/\.mp4$/.test(pathname)) return "mp4";
+    if (/\.mov$/.test(pathname)) return "mov";
+  } catch {
+    /* opaque URL stays unknown */
+  }
+  return undefined;
+}
+
+/**
+ * Title heuristics (especially a bare "REMUX") lose to the actual file.
+ * Switching Poseidon used to remux a playable MP4 because the torrent name
+ * said REMUX/MKV.
+ */
+export function effectiveReleaseContainer(
+  url: string,
+  parsed?: ReleaseContainer
+): ReleaseContainer | undefined {
+  const fromUrl = containerFromDirectUrl(url);
+  if (fromUrl) return fromUrl;
+  if (parsed && parsed !== "unknown") return parsed;
+  return parsed;
+}
+
+/**
+ * Real-Debrid rows the player can attach as progressive files. MKV/WebM and
+ * DTS/TrueHD/FLAC always take the remux worker, which is why switching to
+ * Poseidon/Kronos felt like "packaging." Those files stay out of the RD
+ * roster so every debrid chip starts immediately.
+ */
+export function isDirectPlayDebridRelease(
+  container?: ReleaseContainer,
+  audioCodec?: ReleaseAudioCodec
+): boolean {
+  if (container && !isBrowserPlayableContainer(container)) return false;
+  if (audioCodec === "dts" || audioCodec === "truehd" || audioCodec === "flac") {
+    return false;
+  }
+  return true;
+}
+
 /** Parsed from Torrentio's "👤 N" seeders footer (see sample titles in the test suite) — 0 when absent, never thrown on malformed text. */
 export function parseSeeders(text: string): number {
   const m = (text || "").match(SEEDERS_PATTERN);

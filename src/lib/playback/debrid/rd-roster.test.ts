@@ -205,11 +205,11 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(safari2160.length).toBe(1);
     expect(native1080.length).toBe(3);
 
-    // Three distinct native-codec 1080p releases. The richer H.264 MKV wins a
-    // slot and is tagged for lossless container remux rather than hidden.
+    // Three distinct native 1080p MP4s. The richer H.264 MKV is skipped so
+    // switching to Kronos never waits on remux packaging.
     expect(new Set(native1080.map((s) => s.url)).size).toBe(3);
-    expect(native1080.some((s) => s.url.includes(MKV_1080_HASH))).toBe(true);
-    expect(sources.some((s) => s.container === "mkv")).toBe(true);
+    expect(native1080.some((s) => s.url.includes(MKV_1080_HASH))).toBe(false);
+    expect(sources.some((s) => s.container === "mkv")).toBe(false);
 
     // Honest tagging.
     expect(safari2160[0]?.codec).toBe("hevc");
@@ -357,7 +357,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(refreshed.length).toBe(5);
   });
 
-  it("fast path: legacy cache URL restores an omitted MKV container before it reaches the player", async () => {
+  it("fast path: cached MKV native slot is a miss so the player never remuxes", async () => {
     mockTorrentioStreams([]);
     cacheStore.set(`${IMDB}|movie|0|0|native-1080-1|realdebrid`, {
       title: "Legacy.1080p.H264",
@@ -372,8 +372,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
       mediaType: "movie",
     });
 
-    expect(sources).toHaveLength(1);
-    expect(sources[0]?.container).toBe("mkv");
+    expect(sources).toHaveLength(0);
   });
 
   it("full path: rejects a resolved short clip and falls through to the next ranked release", async () => {

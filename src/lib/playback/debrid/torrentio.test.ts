@@ -8,6 +8,8 @@ import {
   parseReleaseTitle,
   parseSeeders,
   parseSizeBytes,
+  effectiveReleaseContainer,
+  isDirectPlayDebridRelease,
 } from "./torrentio";
 
 describe("extractInfoHashFromResolveUrl", () => {
@@ -180,6 +182,35 @@ describe("parseReleaseTitle — container detection", () => {
 
   it("no container/remux token at all -> unknown (never fabricated)", () => {
     expect(parseReleaseTitle("Movie.2024.1080p.WEB-DL.H264-GRP").container).toBe("unknown");
+  });
+});
+
+describe("effectiveReleaseContainer — URL wins over REMUX title", () => {
+  it("plays a REMUX-named file as MP4 when the unrestricted URL is .mp4", () => {
+    expect(
+      effectiveReleaseContainer(
+        "https://cdn.example/d/ABC/Movie.2024.2160p.UHD.BluRay.REMUX.mkv.mp4",
+        "mkv"
+      )
+    ).toBe("mp4");
+  });
+
+  it("keeps MKV when the unrestricted URL really is .mkv", () => {
+    expect(
+      effectiveReleaseContainer(
+        "https://cdn.example/d/ABC/Movie.2024.2160p.UHD.BluRay.REMUX.mkv",
+        "mp4"
+      )
+    ).toBe("mkv");
+  });
+});
+
+describe("isDirectPlayDebridRelease", () => {
+  it("rejects MKV and lossless audio that would remux", () => {
+    expect(isDirectPlayDebridRelease("mkv", "aac")).toBe(false);
+    expect(isDirectPlayDebridRelease("mp4", "dts")).toBe(false);
+    expect(isDirectPlayDebridRelease("mp4", "eac3")).toBe(true);
+    expect(isDirectPlayDebridRelease("unknown", "aac")).toBe(true);
   });
 });
 

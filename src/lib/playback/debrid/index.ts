@@ -21,12 +21,11 @@
  * 2160p source above a native 1080p one, so whichever height actually landed
  * a native slot naturally becomes the default.
  *
- * Explicit MKV/WebM candidates remain in the inventory with their honest
- * container/compat metadata, but the player never auto-selects a container
- * the current browser cannot play. Native candidates whose container is
- * unknown are stricter: their resolved object must prove an ISO-BMFF
- * (MP4/MOV) signature before it can be cached or surfaced. This prevents
- * Blu-ray M2TS objects from masquerading as browser-native sources.
+ * MKV/WebM and DTS/TrueHD/FLAC are never surfaced on the RD roster. Those
+ * files only play after a server remux, which is why switching to
+ * Poseidon/Kronos used to sit on "Repackaging." Slots are progressive
+ * MP4/MOV only. Unknown-container natives must still prove an ISO-BMFF
+ * signature so M2TS cannot masquerade as browser-native.
  *
  * FAST PATH (see `resolveFastDebridSources`, called from route.ts's `fast`/
  * `prefetch` branch): CACHE-ONLY — checks the two best-native slots with a
@@ -79,6 +78,8 @@ import {
   fetchTorrentioCandidatesNoDebrid,
   parseReleaseTitle,
   resolveImdbId,
+  effectiveReleaseContainer,
+  isDirectPlayDebridRelease,
   type DebridCandidate,
   type ReleaseCodec,
   type ReleaseCompat,
@@ -291,25 +292,7 @@ function slotQuality(slot: DebridSlot): RdQuality {
   return height === 2160 ? "2160p" : height === 1080 ? "1080p" : "720p";
 }
 
-/** Infer only an explicit media extension from a token-free direct URL.
- * Legacy cache rows may predate persisted container metadata; without this
- * bridge an H.264-in-MKV URL is mislabeled native and handed to `<video>`. */
-function effectiveReleaseContainer(
-  url: string,
-  parsed?: ReleaseContainer
-): ReleaseContainer | undefined {
-  if (parsed && parsed !== "unknown") return parsed;
-  try {
-    const pathname = decodeURIComponent(new URL(url).pathname).toLowerCase();
-    if (/\.mkv$/.test(pathname)) return "mkv";
-    if (/\.webm$/.test(pathname)) return "webm";
-    if (/\.mp4$/.test(pathname)) return "mp4";
-    if (/\.mov$/.test(pathname)) return "mov";
-  } catch {
-    // An opaque but already-sanitized URL remains unknown, never fabricated.
-  }
-  return parsed;
-}
+
 
 /** Builds the honestly-tagged `PlaybackSource` for one RD roster slot. */
 function toRdPlaybackSource(
@@ -352,11 +335,21 @@ function nativeCandidatesAt(
   candidates: DebridCandidate[],
   height: 720 | 1080 | 2160
 ): DebridCandidate[] {
-  return candidates.filter((c) => c.compat === "native" && c.resolutionHeight === height);
+  return candidates.filter(
+    (c) =>
+      c.compat === "native" &&
+      c.resolutionHeight === height &&
+      isDirectPlayDebridRelease(c.container, c.audioCodec)
+  );
 }
 
 function safariCandidatesAt(candidates: DebridCandidate[], height: 1080 | 2160): DebridCandidate[] {
-  return candidates.filter((c) => c.compat === "safari" && c.resolutionHeight === height);
+  return candidates.filter(
+    (c) =>
+      c.compat === "safari" &&
+      c.resolutionHeight === height &&
+      isDirectPlayDebridRelease(c.container, c.audioCodec)
+  );
 }
 
 /**
@@ -507,7 +500,10 @@ async function resolveSlotCandidate(
       resolved.directUrl,
       resolved.container
     );
-    if (resolved.compat === "native" && effectiveContainer === "unknown") {
+    if (!isDirectPlayDebridRelease(effectiveContainer, resolved.audioCodec)) {
+      continue;
+    }
+    if (effectiveContainer === "unknown") {
       const containerRemaining = deadline - Date.now();
       if (containerRemaining <= 0) return null;
       const containerValidation = await validateNativeBrowserContainer(
@@ -657,11 +653,24 @@ async function readCachedRdSlots(
         safeUrl,
         hit.container
       );
+      const release = parseReleaseTitle(hit.title);
       if (
         validation.acceptable &&
-        hit.compat === "native" &&
-        effectiveContainer === "unknown"
+        !isDirectPlayDebridRelease(effectiveContainer, release.audioCodec)
       ) {
+        return {
+          hit,
+          safeUrl,
+          validation: {
+            acceptable: false,
+            reason: "unsupported_container" as const,
+            totalBytes: validation.totalBytes,
+            status: validation.status,
+            elapsedMs: validation.elapsedMs,
+          },
+        };
+      }
+      if (validation.acceptable && effectiveContainer === "unknown") {
         const containerValidation = await validateNativeBrowserContainer(
           safeUrl,
           validationTimeoutMs
@@ -970,7 +979,16 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
       hit && safeUrl
         ? await validateDebridMediaLink(safeUrl, req.mediaType, RD_FAST_VALIDATION_TIMEOUT_MS)
         : null;
-    if (hit && safeUrl && validation?.acceptable) {
+    const effectiveContainer = hit
+      ? effectiveReleaseContainer(safeUrl ?? hit.url, hit.container)
+      : undefined;
+    const release = hit ? parseReleaseTitle(hit.title) : null;
+    if (
+      hit &&
+      safeUrl &&
+      validation?.acceptable &&
+      isDirectPlayDebridRelease(effectiveContainer, release?.audioCodec)
+    ) {
       return [
         toRdPlaybackSource(
           slot,
@@ -980,7 +998,7 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
           episode,
           { ...hit, url: safeUrl },
           hit.codec,
-          hit.container
+          effectiveContainer
         ),
       ];
     }
