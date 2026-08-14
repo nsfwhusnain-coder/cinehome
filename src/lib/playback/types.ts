@@ -109,6 +109,11 @@ export interface PlaybackSource {
   /** How the resolver knew this file is the right title. */
   identityEvidence?: IdentityEvidence;
   /**
+   * Opaque AES-GCM ticket for /api/transcode. Encodes the already-resolved
+   * URL so remux never scrapes again, even after a process restart.
+   */
+  remuxTicket?: string;
+  /**
    * Actual container format, when known. Debrid sources always drop MKV/WebM
    * before ever becoming a PlaybackSource (see
    * src/lib/playback/debrid/torrentio.ts `isBrowserPlayableContainer` +

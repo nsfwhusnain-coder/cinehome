@@ -13,8 +13,7 @@ import {
 } from "@/lib/playback/refresh-mode";
 import { proxyRecoveryDebridSources } from "@/lib/playback/recovery-proxy";
 import { consumePlaybackResolveBudget } from "@/lib/playback/resolve-budget";
-import { PLAYBACK_COORDINATOR_SHADOW_ENABLED } from "@/lib/playback/features";
-import { buildCoordinatorShadowDecision } from "@/lib/playback/coordinator-shadow";
+import { stampSourceUrlTickets } from "@/lib/playback/source-url-ticket";
 import {
   providerHealthRegistry,
   sourcesWithProviderHealth,
@@ -316,17 +315,6 @@ export async function GET(
     setCachedPlayback(cacheKey, result, ttl);
   }
 
-  if (PLAYBACK_COORDINATOR_SHADOW_ENABLED && result.sources?.length) {
-    console.info(
-      JSON.stringify({
-        event: "playback_coordinator_shadow",
-        mediaType: type,
-        tmdbId,
-        ...buildCoordinatorShadowDecision(result.sources, profilePreferences),
-      })
-    );
-  }
-
   const healthAwareResult = withRuntimeProviderHealth(
     result,
     userId,
@@ -359,9 +347,10 @@ function withRuntimeProviderHealth(
     { contentClass, viewerId }
   );
   const best = decideImmediateSource(sources, { preferredHeight: qualityHint });
+  const ticketed = stampSourceUrlTickets(sources, viewerId);
   return {
     ...result,
-    sources,
+    sources: ticketed,
     streamUrl: best?.url ?? result.streamUrl,
   };
 }

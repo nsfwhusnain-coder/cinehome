@@ -5,6 +5,7 @@ import {
   HD_FLOOR_HEIGHT,
   heightTierForRank,
   pickDefaultStreamUrl,
+  pickFactDefaultUrl,
   sortSourcesForDefault,
   type RankableSource,
 } from "./default-source-rank";
@@ -24,6 +25,7 @@ function src(
     ladder: partial.ladder,
     bitrateBps: partial.bitrateBps,
     probe: partial.probe,
+    audioLanguage: partial.audioLanguage,
   };
 }
 
@@ -293,6 +295,26 @@ describe("sortSourcesForDefault — anime ranking boost", () => {
     expect(
       sortSourcesForDefault([rock, luna], { contentClass: "anime" })[0]?.id
     ).toBe("luna");
+  });
+});
+
+describe("pickFactDefaultUrl — not a quality ranker", () => {
+  it("returns stamped English before Hindi even if Hindi is listed first", () => {
+    const hindi = src({
+      id: "cinema-hi",
+      label: "Cinema HI",
+      provider: "CinemaOS",
+      audioLanguage: "hi",
+      maxHeight: 1080,
+    });
+    const cinema = src({
+      id: "cinema",
+      label: "Cinema",
+      provider: "CinemaOS",
+      audioLanguage: "en",
+      maxHeight: 720,
+    });
+    expect(pickFactDefaultUrl([hindi, cinema])).toBe(cinema.url);
   });
 });
 

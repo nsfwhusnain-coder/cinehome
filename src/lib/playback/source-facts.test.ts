@@ -34,14 +34,17 @@ describe("source facts", () => {
     expect(sourceAudioLanguageRank(src({ label: "Cinema HI", audioLanguage: "hi" }))).toBe(
       0
     );
-    expect(sourceAudioLanguageRank(src({ label: "Luna", provider: "Vixsrc" }))).toBe(2);
+    expect(sourceAudioLanguageRank(src({ label: "Luna", provider: "Vixsrc" }))).toBe(1);
+    expect(
+      sourceAudioLanguageRank(src({ label: "Cinema", audioLanguage: "en" }))
+    ).toBe(3);
   });
 
   it("keeps anime Japanese below English but above Hindi", () => {
     const ja = src({ audioLanguage: "ja", label: "Cinema JA" });
     const en = src({ audioLanguage: "en", label: "Cinema" });
     expect(sourceAudioLanguageRank(ja, "anime")).toBe(1);
-    expect(sourceAudioLanguageRank(en, "anime")).toBe(2);
+    expect(sourceAudioLanguageRank(en, "anime")).toBe(3);
     expect(sourceAudioLanguageRank(ja)).toBe(0);
   });
 

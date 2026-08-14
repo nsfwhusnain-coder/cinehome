@@ -119,11 +119,9 @@ const av1Cache: { value: DecodeSupport | null } = { value: null };
  * — but that answer must never be CACHED. These caches are module-level, and a
  * Next.js server process is long-lived, so one server-side call would latch
  * "this machine cannot decode HEVC" for every request the process ever serves
- * afterwards. `buildCoordinatorShadowDecision` calls straight into
- * `isSourcePlayableHere` from the playback route, which is exactly that path:
- * without this guard every shadow decision reports the entire HEVC tier
- * ineligible, and the telemetry meant to inform codec decisions is measuring
- * Node rather than the viewer's browser.
+ * afterwards. Server-side `isSourcePlayableHere` must not latch that
+ * answer: it would report the entire HEVC tier ineligible for every
+ * request the process ever serves.
  */
 function cachedProbe(
   cache: { value: DecodeSupport | null },

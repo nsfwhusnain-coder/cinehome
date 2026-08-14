@@ -74,7 +74,7 @@ import { raceWithHardTimeout } from "./enrich-timeout";
 import { raceProviderArms } from "./provider-race";
 import {
   effectiveMaxHeight as rankEffectiveMaxHeight,
-  pickDefaultStreamUrl as rankPickDefaultStreamUrl,
+  pickFactDefaultUrl as rankPickFactDefaultUrl,
   sortSourcesForDefault as rankSortSourcesForDefault,
 } from "./default-source-rank";
 import {
@@ -665,9 +665,8 @@ function attachCheapQualityHints(sources: SourceEntry[]): SourceEntry[] {
 }
 
 function pickDefaultStreamUrl(sources: SourceEntry[]): string | null {
-  // Rank order is the default: verified > soft-kept, HD > unknown > sub-HD.
-  // Do not re-prefer probe.ok over a higher height tier (would re-break R9).
-  return rankPickDefaultStreamUrl(sources, defaultRankOptions());
+  // Facts only. The Next app re-ranks with decidePlayback.
+  return rankPickFactDefaultUrl(sources);
 }
 
 function buildMergedResult(entries: SourceEntry[], error?: string): ScrapeResult {

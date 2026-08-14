@@ -44,10 +44,9 @@ afterEach(() => {
 
 describe("server-side probe is never cached", () => {
   it("does not latch a windowless 'unsupported' into the module cache", () => {
-    // buildCoordinatorShadowDecision calls isSourcePlayableHere from the
-    // playback API route, so this path runs inside a long-lived Node process.
-    // Caching its answer would mark the whole HEVC tier ineligible for every
-    // request that process served afterwards.
+    // isSourcePlayableHere runs on the playback API route inside a
+    // long-lived Node process. Caching that answer would mark the whole
+    // HEVC tier ineligible for every request that process served afterwards.
     expect(supportsHevc()).toBe(false);
 
     installFakeBrowser(true);

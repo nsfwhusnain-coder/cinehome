@@ -28,6 +28,26 @@ import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
 import { decidePlayback } from "@/lib/playback/decide-playback";
 import { selectActiveSource } from "@/lib/playback/select-active-source";
+import { buildRemuxUrl } from "@/lib/playback/remux-url";
+import {
+  HLS_WORKER_PATH,
+  attemptAutoplay,
+  bufferedAheadSeconds,
+  classifyPlaybackUrl,
+  freezeLastVideoFrame,
+  hlsWorkerSupportedHere,
+  isSessionExpiredError,
+  preferNativeHls,
+} from "@/lib/playback/player-engine";
+import {
+  formatClock,
+  mapAudioTracks,
+  mapHlsLevels,
+  mapNativeAudioTracks,
+  mapNativeTextTracks,
+  mapSubtitleTracks,
+} from "@/lib/playback/player-media";
+import { usePlaybackSession } from "@/hooks/use-playback-session";
 import {
   findLateFourKSource,
   wantsFourKDiscovery,
@@ -48,8 +68,7 @@ import {
 import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
 
 import { activeBufferProfile } from "@/lib/playback/device-profile";
-import { hevcNeedsNativePath, warmDecodeCapabilities } from "@/lib/playback/decode-capability";
-import { shouldUseNativeHlsOnTv } from "@/lib/playback/hls-engine";
+import { warmDecodeCapabilities } from "@/lib/playback/decode-capability";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
 import {
@@ -71,7 +90,6 @@ import {
 } from "@/lib/tv-navigation";
 import {
   adaptiveRecoveryPhase,
-  annotateLevelHeights,
   effectiveLevelHeight,
   findBestLevelForTarget,
   findFloorBitrateKbps,
@@ -158,36 +176,6 @@ function isInteractivePlayerTarget(target: EventTarget | null): boolean {
     )
   );
 }
-
-function preferNativeHls(
-  _video: HTMLVideoElement,
-  source?: PlaybackSource | null
-): boolean {
-  if (!isTvLikeDevice()) return false;
-  // Native HLS forfeits the quality floor. Only HEVC remux on a TV whose MSE
-  // cannot carry HEVC pays that price. H.264 (Luna, Quasar, Vixsrc) must stay
-  // on hls.js — Hisense VIDAA is Chromium: mpegurl canPlayType is "" and
-  // skipping hls.js used to hard-error every HLS title.
-  return shouldUseNativeHlsOnTv({
-    isTv: true,
-    hevcNeedsNative: hevcNeedsNativePath(),
-    codec: source?.codec,
-    origin: source?.origin,
-    compat: source?.compat,
-    delivery: source ? sourceDelivery(source) : undefined,
-  });
-}
-
-function hlsWorkerSupportedHere(): boolean {
-  if (typeof navigator === "undefined") return true;
-  // A few Chromium forks have a known worker/MSE deadlock on multi-audio
-  // masters. Standard Chrome/Edge and non-native desktop browsers benefit
-  // substantially from parsing 4K manifests off the main UI thread.
-  return !/(?:OPR\/|Opera GX|Opera Air)/i.test(navigator.userAgent);
-}
-
-/** Must match the pinned hls.js package and vendored public worker asset. */
-const HLS_WORKER_PATH = "/hls.worker-1.6.16.js";
 
 /**
  * Double-hop residential proxy buffer policy.
@@ -444,246 +432,17 @@ interface Props {
   onSelectEpisode?: (season: number, episode: number) => void;
 }
 
-function buildRemuxUrl(options: {
-  source: PlaybackSource;
-  mediaType: "movie" | "tv";
-  tmdbId: number;
-  season?: number;
-  episode?: number;
-  audio: AudioTrackSelection;
-  prewarm?: boolean;
-  startAtSeconds?: number;
-}): string {
-  const params = new URLSearchParams({
-    type: options.mediaType,
-    id: String(options.tmdbId),
-    sourceId: options.source.id,
-    mode: "remux",
-    audioPreference: options.audio.preference,
-  });
-  const originalLanguage = normalizeTrackLanguage(options.audio.originalLanguage);
-  const preferredLanguage = normalizeTrackLanguage(options.audio.preferredLanguage);
-  if (originalLanguage) params.set("originalLanguage", originalLanguage);
-  if (preferredLanguage) params.set("audioLanguage", preferredLanguage);
-  if (
-    options.mediaType === "tv" &&
-    options.season != null &&
-    Number.isFinite(options.season) &&
-    options.episode != null &&
-    Number.isFinite(options.episode)
-  ) {
-    params.set("season", String(options.season));
-    params.set("episode", String(options.episode));
-  }
-  if (options.prewarm) params.set("prewarm", "1");
-  if (options.startAtSeconds && options.startAtSeconds > 0) {
-    params.set("startAt", String(Math.floor(options.startAtSeconds)));
-  }
-  return `/api/transcode?${params.toString()}`;
-}
 
-function isSessionExpiredError(data: { response?: { code?: number }; details?: string; reason?: string; url?: string }): boolean {
-  const code = data.response?.code;
-  const detail = String(data.details ?? data.reason ?? "").toLowerCase();
-  const url = String(data.url ?? "").toLowerCase();
-  return (
-    code === 410 ||
-    detail.includes("410") ||
-    detail.includes("session expired") ||
-    url.includes("session expired")
-  );
-}
 
-/**
- * Autoplay with a muted-retry fallback: browsers reject unmuted autoplay
- * (NotAllowedError) far more often than muted autoplay. Retrying muted keeps
- * playback moving instead of leaving the user staring at a paused frame;
- * `onMutedFallback` should surface a "tap to unmute" affordance.
- */
-function attemptAutoplay(
-  video: HTMLVideoElement,
-  onBlocked: () => void,
-  onMutedFallback?: () => void,
-  allowMutedFallback = true
-) {
-  video.play().catch((err: unknown) => {
-    const isNotAllowed = err instanceof DOMException && err.name === "NotAllowedError";
-    if (isNotAllowed && allowMutedFallback && !video.muted && onMutedFallback) {
-      video.muted = true;
-      video.play().then(onMutedFallback, () => onBlocked());
-      return;
-    }
-    onBlocked();
-  });
-}
 
-/** mm:ss (h:mm:ss past an hour) — used only for the "Resuming from …" toast. */
-/** Hold the last decoded frame as a poster so a source switch does not flash black. */
-function freezeLastVideoFrame(video: HTMLVideoElement): void {
-  if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) return;
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
-    video.poster = canvas.toDataURL("image/jpeg", 0.72);
-  } catch {
-    /* Cross-origin frames cannot be snapshotted — leave the last compositor frame. */
-  }
-}
 
-function formatClock(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+
+
+
+
+
 
 /** Base label for an audio track (lang-aware); disambiguate duplicates with track index. */
-function formatAudioTrackLabel(
-  track: { name?: string; lang?: string; channels?: string },
-  index: number,
-  all: Array<{ name?: string; lang?: string }>
-): string {
-  const lang = (track.lang ?? "").toLowerCase();
-  const name = (track.name ?? "").trim();
-  let base: string;
-  if (lang.startsWith("en") || name.toLowerCase().includes("english")) {
-    base = "English";
-  } else if (name) {
-    base = name;
-  } else if (track.lang) {
-    base = track.lang.toUpperCase();
-  } else {
-    base = `Audio ${index + 1}`;
-  }
-
-  if (all.length <= 1) return base;
-
-  const langKey = lang || name.toLowerCase() || `idx-${index}`;
-  const sameLang = all.filter((t, i) => {
-    const k = (t.lang ?? "").toLowerCase() || (t.name ?? "").toLowerCase() || `idx-${i}`;
-    return k === langKey;
-  });
-  if (sameLang.length <= 1) return base;
-
-  const ordinal =
-    all
-      .map((t, i) => ({ t, i }))
-      .filter(({ t, i }) => {
-        const k = (t.lang ?? "").toLowerCase() || (t.name ?? "").toLowerCase() || `idx-${i}`;
-        return k === langKey;
-      })
-      .findIndex(({ i }) => i === index) + 1;
-
-  if (name && name.toLowerCase() !== base.toLowerCase() && !name.toLowerCase().includes("english")) {
-    return `${base} · ${name}`;
-  }
-  if (track.channels) {
-    return `${base} · ${track.channels} · Track ${ordinal}`;
-  }
-  return `${base} · Track ${ordinal}`;
-}
-
-/** Prefer hls.js track.id (not array index) so dock selection matches AUDIO/SUBTITLE events. */
-function mapAudioTracks(hls: Hls): MediaTrack[] {
-  const raw = hls.audioTracks;
-  return raw.map((t, i) => ({
-    id: typeof t.id === "number" ? t.id : i,
-    name: formatAudioTrackLabel(t, i, raw),
-    lang: t.lang || undefined,
-    channels: t.channels || undefined,
-  }));
-}
-
-function mapSubtitleTracks(hls: Hls): MediaTrack[] {
-  return hls.subtitleTracks.map((t, i) => ({
-    id: typeof t.id === "number" ? t.id : i,
-    name: t.name || t.lang || `Subtitle ${i + 1}`,
-    lang: t.lang || undefined,
-  }));
-}
-
-/** Safari native HLS: surface TextTrackList so dock can list captions when present. */
-function mapNativeTextTracks(video: HTMLVideoElement): MediaTrack[] {
-  const list = video.textTracks;
-  const out: MediaTrack[] = [];
-  for (let i = 0; i < list.length; i++) {
-    const t = list[i];
-    if (!t) continue;
-    if (t.kind !== "subtitles" && t.kind !== "captions") continue;
-    // Ignore metadata / forced-only empty labels when kind is wrong already filtered
-    out.push({
-      id: i,
-      name: t.label || t.language || `Subtitle ${out.length + 1}`,
-      lang: t.language || undefined,
-    });
-  }
-  return out;
-}
-
-/** Safari audioTracks (non-standard) for multi-audio native HLS. */
-function mapNativeAudioTracks(video: HTMLVideoElement): MediaTrack[] {
-  const media = video as HTMLVideoElement & {
-    audioTracks?: {
-      length: number;
-      [index: number]: { id?: string; label?: string; language?: string; enabled?: boolean };
-    };
-  };
-  const list = media.audioTracks;
-  if (!list || list.length === 0) return [];
-  const raw: Array<{ name?: string; lang?: string }> = [];
-  for (let i = 0; i < list.length; i++) {
-    const t = list[i];
-    if (!t) continue;
-    raw.push({ name: t.label || undefined, lang: t.language || undefined });
-  }
-  const out: MediaTrack[] = [];
-  for (let i = 0; i < list.length; i++) {
-    const t = list[i];
-    if (!t) continue;
-    out.push({
-      id: i,
-      name: formatAudioTrackLabel(
-        { name: t.label || undefined, lang: t.language || undefined },
-        i,
-        raw
-      ),
-      lang: t.language || undefined,
-    });
-  }
-  return out;
-}
-
-/**
- * Map hls.js levels → QualityLevel with full height annotation.
- * Uses native RESOLUTION, bitrate heuristics, and scraper ladder/maxHeight
- * so the Quality menu lists every real rung (not a single wrong 480/720).
- */
-function mapHlsLevels(
-  hls: Hls,
-  sourceMaxHeightFallback = 0,
-  sourceLadder: ReadonlyArray<number> = []
-): QualityLevel[] {
-  const raw: QualityLevel[] = hls.levels.map((l, i) => ({
-    height: l.height || 0,
-    width: l.width || 0,
-    index: i,
-    bitrate: l.bitrate,
-    frameRate: l.frameRate || undefined,
-    videoCodec: l.videoCodec || undefined,
-    audioCodec: l.audioCodec || undefined,
-  }));
-  return annotateLevelHeights(raw, sourceLadder, sourceMaxHeightFallback);
-}
-
-/**
- * Highest-bitrate level with height <= maxHeight — used as hls.autoLevelCapping
- * (level index; hls.js levels are bandwidth-ascending).
  */
 function findAutoLevelCapIndex(levels: QualityLevel[], maxHeight: number): number {
   let bestIdx = -1;
@@ -1015,22 +774,6 @@ function maybePromoteHlsQuality(
 }
 
 /** Forward-buffer health in seconds from the <video> element's buffered ranges. */
-function bufferedAheadSeconds(video: HTMLVideoElement): number {
-  try {
-    const t = video.currentTime;
-    const ranges = video.buffered;
-    for (let i = 0; i < ranges.length; i++) {
-      const start = ranges.start(i);
-      const end = ranges.end(i);
-      if (t >= start && t <= end) return Math.max(0, end - t);
-      if (t < start) return 0;
-    }
-    return ranges.length ? Math.max(0, ranges.end(ranges.length - 1) - t) : 0;
-  } catch {
-    return -1;
-  }
-}
-
 function mapDashLevels(player: MediaPlayerClass): QualityLevel[] {
   const bitrateList = player.getBitrateInfoListFor("video") ?? [];
   return bitrateList.map((info) => ({
@@ -1113,6 +856,7 @@ export function VideoPlayer({
   tvEpisode,
   onSelectEpisode,
 }: Props) {
+  const playbackSession = usePlaybackSession();
   const userSelectedAudioRef = useRef(false);
   const manualAudioTrackRef = useRef<{
     sourceId: string;
@@ -1629,6 +1373,7 @@ export function VideoPlayer({
   }, []);
 
   const markEverPlayed = useCallback(() => {
+    playbackSession.dispatch({ type: "first_frame" });
     const source = activeSourceRef.current;
     const video = videoRef.current;
     const attempt = sourceAttemptControllerRef.current.currentToken();
@@ -1660,7 +1405,7 @@ export function VideoPlayer({
     everPlayedRef.current = true;
     setEverPlayed(true);
     setIsSwitchingServer(false);
-  }, []);
+  }, [playbackSession]);
 
   const requestAutomaticRosterRefresh = useCallback((): boolean => {
     if (
@@ -2765,28 +2510,11 @@ export function VideoPlayer({
       }
     };
 
-    // Home `/api/hls` (same-origin cookies) or Cloudflare Worker (signed token, no cookies).
-    const isHomeHlsProxy = effectiveSrc.startsWith("/api/hls/");
-    // Covers remux too: both are served as HLS from /api/transcode and both
-    // deserve the longer manifest/zero-progress windows while the first segment
-    // is produced.
-    const isTranscoded = effectiveSrc.startsWith("/api/transcode");
-    const isWorkerProxy =
-      effectiveSrc.includes("workers.dev") ||
-      (effectiveSrc.startsWith("https://") && effectiveSrc.includes("/?t=")) ||
-      Boolean(
-        process.env.NEXT_PUBLIC_WORKER_PROXY_HOST &&
-          effectiveSrc.includes(process.env.NEXT_PUBLIC_WORKER_PROXY_HOST)
-      );
-    const isProxied = isHomeHlsProxy || isWorkerProxy || isTranscoded;
-    // Trust server-assigned streamType only — do NOT force hls.js for every /api/hls URL
-    // (progressive mp4 proxied through /api/hls must stay progressive).
-    // Transcoded sources are always HLS (h264_vaapi → HLS ladder).
-    const useDash = effectiveStreamType === "dash" && !isTranscoded;
-    const useHls =
-      isTranscoded ||
-      effectiveStreamType === "hls" ||
-      (effectiveStreamType !== "mp4" && effectiveStreamType !== "dash" && effectiveSrc.includes(".m3u8"));
+    const { useDash, useHls, isTranscoded, isProxied } = classifyPlaybackUrl(
+      effectiveSrc,
+      effectiveStreamType
+    );
+    playbackSession.dispatch({ type: "attach" });
 
     const sourceAttempt = sourceAttemptControllerRef.current.begin(
       activeSourceRef.current?.id ?? effectiveSrc

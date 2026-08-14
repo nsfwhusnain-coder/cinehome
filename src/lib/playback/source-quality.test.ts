@@ -1207,8 +1207,8 @@ describe("pickDefaultSource — English over foreign CinemaOS", () => {
   it("ranks explicit foreign CinemaOS below unlabeled English", () => {
     expect(sourceAudioLanguageRank(hindi1080)).toBe(0);
     expect(sourceAudioLanguageRank(arabic1080)).toBe(0);
-    expect(sourceAudioLanguageRank(cinemaEn)).toBe(2);
-    expect(sourceAudioLanguageRank(luna)).toBe(2);
+    expect(sourceAudioLanguageRank(cinemaEn)).toBe(1);
+    expect(sourceAudioLanguageRank(luna)).toBe(1);
     expect(isEnglishPreferredSource(hindi1080)).toBe(false);
     expect(isEnglishPreferredSource(kronos)).toBe(true);
   });

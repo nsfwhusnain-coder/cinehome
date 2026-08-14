@@ -266,19 +266,42 @@ export function sortSourcesForDefault<T extends RankableSource>(
   });
 }
 
+function isForeignRankable(source: RankableSource): boolean {
+  return sourceAudioLanguageRank(source) === 0;
+}
+
+function isStampedEnglishRankable(source: RankableSource): boolean {
+  const stamped = (source.audioLanguage ?? "").trim().toLowerCase();
+  return stamped === "en" || stamped === "eng" || stamped === "english";
+}
+
 /**
- * First URL after sortSourcesForDefault — rank order is the default pick.
- * Soft-kept only wins when no verified source exists (sort already enforces).
- * Poison / trailer / sample only win as last resort when every candidate is blocked.
+ * Facts only — not a competing ranker. The app's decidePlayback owns quality.
+ * Returns a playable English (or unlabeled) URL so smoke/clients have *a*
+ * streamUrl. Height/provider scores must not live here.
+ */
+export function pickFactDefaultUrl<T extends RankableSource>(
+  sources: T[]
+): string | null {
+  if (!sources.length) return null;
+  const clean = sources.filter((source) => !isNeverAutoDefaultSource(source.url, source.label));
+  const pool = clean.length ? clean : sources;
+  const verified = pool.filter((source) => source.verified !== false);
+  const live = verified.length ? verified : pool;
+  const stampedEn = live.filter(isStampedEnglishRankable);
+  if (stampedEn[0]) return stampedEn[0].url;
+  const notForeign = live.filter((source) => !isForeignRankable(source));
+  if (notForeign[0]) return notForeign[0].url;
+  return live[0]?.url ?? null;
+}
+
+/**
+ * @deprecated App decidePlayback is the ranker. Kept for roster-cap tests.
  */
 export function pickDefaultStreamUrl<T extends RankableSource>(
   sources: T[],
   options: SortSourcesOptions = {}
 ): string | null {
   if (!sources.length) return null;
-  const ranked = sortSourcesForDefault(sources, options);
-  const clean = ranked.find((s) => !isNeverAutoDefaultSource(s.url, s.label));
-  if (clean) return clean.url;
-  // All blocked — still return first so UI isn't empty (manual switch only).
-  return ranked[0]?.url ?? null;
+  return pickFactDefaultUrl(sortSourcesForDefault(sources, options));
 }

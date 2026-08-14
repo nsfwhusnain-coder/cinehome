@@ -87,29 +87,47 @@ export function inferAudioLanguageFromText(text: string): string {
 export function sourceAudioLanguageCode(source: PlaybackSource): string {
   const stamped = normalizeAudioLanguageCode(source.audioLanguage);
   if (stamped) return stamped === "eng" ? "en" : stamped;
+  if (source.origin === "debrid") return "en";
   return inferAudioLanguageFromText(`${source.label} ${source.provider}`);
 }
 
+export function isStampedEnglish(source: PlaybackSource): boolean {
+  return normalizeAudioLanguageCode(source.audioLanguage) === "en";
+}
+
 /**
- * 2 = English / unlabeled. 1 = unknown locale or anime original.
- * 0 = explicit foreign. Anime JA/KO is 1 so English still wins when both exist.
+ * 3 = stamped English. 2 = inferred English from the label.
+ * 1 = unlabeled (`und`) / unknown locale / anime original.
+ * 0 = explicit foreign.
+ *
+ * `und` is not English. It only auto-plays when no stamped or inferred
+ * English row exists.
  */
 export function sourceAudioLanguageRank(
   source: PlaybackSource,
   contentClass?: string | null
 ): number {
   const code = sourceAudioLanguageCode(source);
-  if (code === "en" || code === "und") return 2;
-  if (code === "xx") return 1;
+  if (isStampedEnglish(source) || (code === "en" && source.audioLanguage)) {
+    return 3;
+  }
+  if (code === "en") return 2;
+  if (code === "und" || code === "xx") return 1;
   if (contentClass === "anime" && (code === "ja" || code === "ko")) return 1;
   return 0;
 }
 
 export function isEnglishPreferredSource(
   source: PlaybackSource,
-  contentClass?: string | null
+  _contentClass?: string | null
 ): boolean {
-  return sourceAudioLanguageRank(source, contentClass) >= 2;
+  return sourceAudioLanguageCode(source) === "en";
+}
+
+/** English or unlabeled — valid first-frame audio. Not Hindi/Arabic. */
+export function isHouseholdStartLanguage(source: PlaybackSource): boolean {
+  const code = sourceAudioLanguageCode(source);
+  return code === "en" || code === "und";
 }
 
 export function inferTitleMatchFromText(text: string): TitleMatch {

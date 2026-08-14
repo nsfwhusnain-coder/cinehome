@@ -144,6 +144,23 @@ describe("decidePlayback contract", () => {
     expect(decision.immediate?.id).toBe("luna");
   });
 
+  it("stamped English Kronos beats unlabeled Luna", () => {
+    const decision = decidePlayback([luna, kronos], {
+      preferredHeight: "auto",
+      fourKStartup: "fast",
+    });
+    expect(decision.immediate?.id).toBe("kronos");
+  });
+
+  it("keeps unlabeled Luna as first frame when the only stamped English is remux 4K", () => {
+    const decision = decidePlayback([luna, hades], {
+      preferredHeight: 2160,
+      fourKStartup: "fast",
+    });
+    expect(decision.immediate?.id).toBe("luna");
+    expect(decision.deferredFourK?.id).toBe("hades");
+  });
+
   it("drops failed ids before ranking", () => {
     const decision = decidePlayback([kronos, luna], {
       fourKStartup: "fast",

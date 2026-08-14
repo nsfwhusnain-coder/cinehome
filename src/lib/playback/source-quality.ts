@@ -1,6 +1,7 @@
 import type { PlaybackSource, SourceProbeMetrics } from "./types";
 import {
   isEnglishPreferredSource,
+  isHouseholdStartLanguage,
   sourceAudioLanguageRank,
 } from "./source-facts";
 import { supportsAv1, supportsHevc } from "./decode-capability";
@@ -941,12 +942,12 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
     // to the bottom — still listed, since inventory is real, but never above
     // something that plays. Same rule the auto-pick uses, so the list's top
     // row and the source that actually starts agree.
+    const deliveryOrder = compareDelivery(a, b, sourceMaxHeight(a), sourceMaxHeight(b));
+    if (deliveryOrder !== 0) return deliveryOrder;
+
     const aLang = sourceAudioLanguageRank(a);
     const bLang = sourceAudioLanguageRank(b);
     if (aLang !== bLang) return bLang - aLang;
-
-    const deliveryOrder = compareDelivery(a, b, sourceMaxHeight(a), sourceMaxHeight(b));
-    if (deliveryOrder !== 0) return deliveryOrder;
 
     const aVer = a.verified === false ? 0 : 1;
     const bVer = b.verified === false ? 0 : 1;
@@ -1277,7 +1278,7 @@ export function pickDefaultSource(
     (source) =>
       sourceDelivery(source) === "direct" &&
       sourceMaxHeight(source) >= HD_FLOOR_HEIGHT &&
-      isEnglishPreferredSource(source)
+      isHouseholdStartLanguage(source)
   );
 
   // Ranking only — never filters the pool empty.
@@ -1287,17 +1288,16 @@ export function pickDefaultSource(
     const bPoison = isPoisonStreamUrl(b.url) ? 1 : 0;
     if (aPoison !== bPoison) return aPoison - bPoison;
 
-    const aLang = sourceAudioLanguageRank(a);
-    const bLang = sourceAudioLanguageRank(b);
-    if (aLang !== bLang) return bLang - aLang;
-
-    // Auto-default only: English direct ≥1080 starts immediately.
-    // A Hindi 1080 MP4 is not a reason to sink English remux 4K or Kronos.
+    // Auto-default only: English/unlabeled direct ≥1080 starts immediately.
     if (hasEnglishDirectHd) {
       const aRemux = sourceDelivery(a) === "remux" ? 1 : 0;
       const bRemux = sourceDelivery(b) === "remux" ? 1 : 0;
       if (aRemux !== bRemux) return aRemux - bRemux;
     }
+
+    const aLang = sourceAudioLanguageRank(a);
+    const bLang = sourceAudioLanguageRank(b);
+    if (aLang !== bLang) return bLang - aLang;
 
     const aH = sourceMaxHeight(a) || 0;
     const bH = sourceMaxHeight(b) || 0;

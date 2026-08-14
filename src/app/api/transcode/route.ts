@@ -4,6 +4,7 @@ import { getAuthenticatedUserId } from "@/lib/auth";
 import { getFreshCachedStream } from "@/lib/playback/debrid/cached-stream";
 import { parseDebridPlaybackSourceId } from "@/lib/playback/debrid/debrid-source-id";
 import { lookupPlaybackSourceUrl } from "@/lib/playback/source-url-cache";
+import { redeemSourceUrlTicket } from "@/lib/playback/source-url-ticket";
 import { rewritePlaylist } from "@/lib/playback/transcode-playlist";
 
 /**
@@ -123,13 +124,19 @@ export async function GET(req: NextRequest) {
 
   // Playback already resolved this sourceId → URL. Hitting that cache avoids
   // a second full scrape + debrid resolve just to start ffmpeg.
+  const ticket = (url.searchParams.get("ticket") ?? "").trim();
+  const ticketUrl = ticket
+    ? redeemSourceUrlTicket(ticket, { sourceId, userId })
+    : null;
   const cachedSource = lookupPlaybackSourceUrl({
     ...sourceIdentity,
     sourceId,
   });
-  let source = cachedSource
-    ? { id: sourceId, url: cachedSource.url }
-    : undefined;
+  let source = ticketUrl
+    ? { id: sourceId, url: ticketUrl }
+    : cachedSource
+      ? { id: sourceId, url: cachedSource.url }
+      : undefined;
   if (!source) {
     const debridKey = parseDebridPlaybackSourceId(sourceId);
     const debridHit = debridKey ? await getFreshCachedStream(debridKey) : null;
