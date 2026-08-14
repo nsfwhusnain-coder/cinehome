@@ -18,7 +18,7 @@ const ADMIN_ONLY_KEYS = ["tmdb_api_key"]; // not exposed to non-admins
 // Secrets that must NEVER be serialized to any client, admin included. The
 // Real-Debrid token is managed via /api/debrid/status and only ever leaves the
 // server as account metadata, never as the raw token.
-const SECRET_KEYS = ["realdebrid_token", "alldebrid_token"];
+const SECRET_KEYS = ["realdebrid_token"];
 
 const FLAG_KEYS = Object.keys(FLAG_DEFAULTS);
 

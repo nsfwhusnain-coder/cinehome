@@ -48,7 +48,7 @@ export type DebridSlot =
   | "native-1080-3"
   | "native-720";
 /** "realdebrid" is the original/default tier; "torbox" is the new sibling. */
-export type DebridProvider = "realdebrid" | "torbox" | "alldebrid";
+export type DebridProvider = "realdebrid" | "torbox";
 
 /** RD/TorBox direct links are usually good well under this, but expire eventually — re-resolve past this point. */
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;

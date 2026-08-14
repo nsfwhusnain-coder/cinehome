@@ -12,7 +12,4 @@ describe("debrid cache policy identity", () => {
     expect(storedQualityForCache("torbox", "1080p")).toBe("1080p");
   });
 
-  it("does not version AllDebrid rows with the RD policy prefix", () => {
-    expect(storedQualityForCache("alldebrid", "1080p")).toBe("1080p");
-  });
 });

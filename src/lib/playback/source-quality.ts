@@ -457,6 +457,14 @@ function audioCodecDecodableHere(source: PlaybackSource): boolean {
     return true;
   }
   if (codec === "dts" || codec === "truehd" || codec === "flac") return false;
+  // AC-3 / E-AC-3 / Opus in MP4: play the file. Remuxing a 4K progressive
+  // just in case the browser dislikes the audio is why Poseidon sat on
+  // "Repackaging" while Pan (same height, direct MP4) started immediately.
+  const containerOk =
+    !source.container || isBrowserPlayableContainer(source.container);
+  if (containerOk && (codec === "ac3" || codec === "eac3" || codec === "opus")) {
+    return true;
+  }
   if (typeof document === "undefined") return false;
   try {
     const media = document.createElement("audio");
@@ -474,9 +482,6 @@ function audioCodecDecodableHere(source: PlaybackSource): boolean {
 }
 
 function audioNeedsRemux(source: PlaybackSource): boolean {
-  // The exact selected language is guaranteed only after the remux worker has
-  // inspected the real file and mapped one track. Avoid browser-default dubbing.
-  if (source.origin === "debrid" && source.multiAudio) return true;
   return !audioCodecDecodableHere(source);
 }
 

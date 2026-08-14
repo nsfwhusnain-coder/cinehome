@@ -90,8 +90,7 @@ import {
   resolveDebridDirectLink,
   RESOLVE_CONCURRENCY,
 } from "./realdebrid";
-import { isAllDebridConfigured } from "./alldebrid";
-import { resolveAllDebridSources } from "./alldebrid-roster";
+
 import {
   isTorBoxConfigured,
   checkCachedTorboxHashes,
@@ -204,16 +203,13 @@ function buildSourceId(
   episode: number,
   slotOrQuality: string
 ): string {
-  const prefix =
-    provider === "torbox" ? "torbox" : provider === "alldebrid" ? "alldebrid" : "debrid";
+  const prefix = provider === "torbox" ? "torbox" : "debrid";
   return `${prefix}-${imdbId}-${mediaType}-${season}-${episode}-${slotOrQuality}`;
 }
 
 /** Display name shown in `PlaybackSource.provider` / picker labels — distinguishes TorBox from RD in the UI while both keep `origin: "debrid"` for ranking. */
 function providerDisplayName(provider: DebridProvider): string {
-  if (provider === "torbox") return "TorBox";
-  if (provider === "alldebrid") return "AllDebrid";
-  return "Debrid";
+  return provider === "torbox" ? "TorBox" : "Debrid";
 }
 
 /** RD's exact original label format ("1080p • Debrid") is preserved unchanged; TorBox uses its own distinct format ("TorBox · 1080p"). */
@@ -246,7 +242,6 @@ export function safariHintFor(
 function buildLabel(provider: DebridProvider, quality: RdQuality, safariHint: string): string {
   const q = qualityLabel(quality);
   if (provider === "torbox") return `TorBox · ${q}${safariHint}`;
-  if (provider === "alldebrid") return `AllDebrid · ${q}${safariHint}`;
   return `${q} • Debrid${safariHint}`;
 }
 
@@ -1097,8 +1092,7 @@ export async function resolveDebridSources(
 ): Promise<PlaybackSource[]> {
   const rdConfigured = isRealDebridConfigured();
   const torboxConfigured = isTorBoxConfigured();
-  const alldebridConfigured = isAllDebridConfigured();
-  if (!rdConfigured && !torboxConfigured && !alldebridConfigured) return [];
+  if (!rdConfigured && !torboxConfigured) return [];
 
   try {
     const imdbId = await resolveImdbId(req.tmdbId, req.mediaType);
@@ -1110,14 +1104,6 @@ export async function resolveDebridSources(
 
     const sources: PlaybackSource[] = [];
     let rdCandidates: DebridCandidate[] = [];
-
-    if (alldebridConfigured) {
-      try {
-        sources.push(...(await resolveAllDebridSources(req)));
-      } catch {
-        /* AllDebrid miss never blocks RD/TorBox */
-      }
-    }
 
     if (rdConfigured) {
       if (req.forceRefresh) {

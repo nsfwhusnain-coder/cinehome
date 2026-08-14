@@ -1163,11 +1163,11 @@ describe("sourceDelivery - audio safety", () => {
     ).toBe("remux");
   });
 
-  it("remuxes debrid multi-audio so language selection is deterministic", () => {
+  it("plays a multi-audio AAC MP4 directly instead of remuxing 4K", () => {
     expect(
       sourceDelivery(
         makeSource({
-          id: "dual-audio-remux",
+          id: "dual-audio-direct",
           origin: "debrid",
           codec: "h264",
           container: "mp4",
@@ -1175,6 +1175,20 @@ describe("sourceDelivery - audio safety", () => {
           multiAudio: true,
         })
       )
-    ).toBe("remux");
+    ).toBe("direct");
+  });
+
+  it("plays E-AC-3 inside MP4 directly so 4K WEB-DL does not remux", () => {
+    expect(
+      sourceDelivery(
+        makeSource({
+          id: "eac3-direct",
+          origin: "debrid",
+          codec: "h264",
+          container: "mp4",
+          audioCodec: "eac3",
+        })
+      )
+    ).toBe("direct");
   });
 });
