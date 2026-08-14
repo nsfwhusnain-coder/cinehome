@@ -13,6 +13,7 @@ describe("classifyPlaybackUrl", () => {
   it("does not force HLS on a progressive MP4 through the home proxy", () => {
     const classified = classifyPlaybackUrl("/api/hls/abc", "mp4");
     expect(classified.useHls).toBe(false);
+    expect(classified.isHomeHlsProxy).toBe(true);
     expect(classified.isProxied).toBe(true);
   });
 });

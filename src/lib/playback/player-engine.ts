@@ -83,6 +83,8 @@ export function classifyPlaybackUrl(
   useDash: boolean;
   useHls: boolean;
   isTranscoded: boolean;
+  isHomeHlsProxy: boolean;
+  isWorkerProxy: boolean;
   isProxied: boolean;
 } {
   const isHomeHlsProxy = src.startsWith("/api/hls/");
@@ -103,6 +105,8 @@ export function classifyPlaybackUrl(
     useDash,
     useHls,
     isTranscoded,
+    isHomeHlsProxy,
+    isWorkerProxy,
     isProxied: isHomeHlsProxy || isWorkerProxy || isTranscoded,
   };
 }

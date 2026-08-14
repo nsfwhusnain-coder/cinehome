@@ -2508,10 +2508,13 @@ export function VideoPlayer({
       }
     };
 
-    const { useDash, useHls, isTranscoded, isProxied } = classifyPlaybackUrl(
-      effectiveSrc,
-      effectiveStreamType
-    );
+    const {
+      useDash,
+      useHls,
+      isTranscoded,
+      isHomeHlsProxy,
+      isWorkerProxy,
+    } = classifyPlaybackUrl(effectiveSrc, effectiveStreamType);
     playbackSession.dispatch({ type: "attach" });
 
     const sourceAttempt = sourceAttemptControllerRef.current.begin(
