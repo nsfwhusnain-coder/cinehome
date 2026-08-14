@@ -62,13 +62,18 @@ const API_HEADERS: Record<string, string> = {
 };
 
 export function parseVideasyQuality(quality: string): string {
-  const match = quality.match(/(\d{3,4})\s*p?/i);
+  const raw = (quality || "").trim();
+  const lower = raw.toLowerCase();
+  if (/\b(8k|4320)\b/.test(lower)) return "4320p";
+  if (/\b(4k|uhd|2160)\b/.test(lower)) return "2160p";
+  if (/\b(2k|1440)\b/.test(lower)) return "1440p";
+  const match = raw.match(/(\d{3,4})\s*p?/i);
   if (match?.[1]) return `${match[1]}p`;
-  return quality.trim() || "auto";
+  return raw || "auto";
 }
 
 export function videasyQualityRank(quality: string): number {
-  const n = parseInt(quality, 10);
+  const n = parseInt(parseVideasyQuality(quality), 10);
   if (!Number.isFinite(n)) return -1;
   if (n >= 2160) return 5;
   if (n >= 1080) return 4;
@@ -275,12 +280,13 @@ async function fetchVideasyMeta(
   return metaFromLookup(await lookupTmdb(tmdbId, mediaType), tmdbId);
 }
 
-function richest(a: VideasyRawSource[], b: VideasyRawSource[]): VideasyRawSource[] {
-  const aBest = Math.max(0, ...a.map((s) => qualityHeight(String(s.quality ?? ""))));
-  const bBest = Math.max(0, ...b.map((s) => qualityHeight(String(s.quality ?? ""))));
-  if (bBest > aBest) return b;
-  if (aBest > bBest) return a;
-  return a.length >= b.length ? a : b;
+function mergeServerSources(
+  current: VideasyRawSource[],
+  next: VideasyRawSource[]
+): VideasyRawSource[] {
+  if (!next.length) return current;
+  if (!current.length) return next;
+  return [...current, ...next];
 }
 
 /**
@@ -308,7 +314,7 @@ export async function resolveVideasy(
     for (const item of settled) {
       if (item.status === "fulfilled") {
         sawSuccess = true;
-        if (item.value.length) picked = richest(picked, item.value);
+        if (item.value.length) picked = mergeServerSources(picked, item.value);
         continue;
       }
       try {

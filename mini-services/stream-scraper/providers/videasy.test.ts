@@ -48,6 +48,15 @@ describe("videasy helpers", () => {
     expect(videasyQualityRank("720p")).toBeGreaterThan(videasyQualityRank("480p"));
   });
 
+  it("reads marketing 4K tokens as 2160, not height 4", () => {
+    expect(parseVideasyQuality("4K")).toBe("2160p");
+    expect(parseVideasyQuality("4k")).toBe("2160p");
+    expect(parseVideasyQuality("UHD")).toBe("2160p");
+    expect(parseVideasyQuality("2160")).toBe("2160p");
+    expect(videasyQualityRank("4K")).toBeGreaterThan(videasyQualityRank("1080p"));
+    expect(videasyQualityRank("4K")).toBe(videasyQualityRank("2160p"));
+  });
+
   it("labels the best rung Quasar and the rest Quasar {height}", () => {
     expect(videasyStreamLabel("1080p", true)).toBe("Quasar");
     expect(videasyStreamLabel("720p", false)).toBe("Quasar 720p");
@@ -137,6 +146,61 @@ describe("resolveVideasy", () => {
     expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).toEqual([
       1080, 720, 480,
     ]);
+  });
+
+  it("keeps a Yoru 4K HLS rung that Cypher only labelled as 4K", async () => {
+    const seed = "59556143.vB6Gja40kUFU91w_z_KVWX";
+    const mediaId = 346698;
+    const cypher = encryptVideasyPayload(
+      JSON.stringify({
+        sources: [{ url: "https://cdn.example/barbie-1080.mp4", quality: "1080p" }],
+      }),
+      seed,
+      mediaId
+    );
+    const yoru = encryptVideasyPayload(
+      JSON.stringify({
+        sources: [
+          { url: "https://cdn.example/barbie-4k.m3u8", quality: "4K", type: "hls" },
+          { url: "https://cdn.example/barbie-1080.m3u8", quality: "1080p", type: "hls" },
+        ],
+      }),
+      seed,
+      mediaId
+    );
+
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const href = String(input);
+      if (href.includes("/seed?")) {
+        return new Response(JSON.stringify({ seed }), { status: 200 });
+      }
+      if (href.includes("db.speedracelight.com")) {
+        return new Response(
+          JSON.stringify({
+            title: "Barbie",
+            release_date: "2023-07-21",
+            external_ids: { imdb_id: "tt1517268" },
+          }),
+          { status: 200 }
+        );
+      }
+      if (href.includes("downloader2/sources-with-title")) {
+        return new Response(cypher, { status: 200 });
+      }
+      if (href.includes("cdn/sources-with-title")) {
+        return new Response(yoru, { status: 200 });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const streams = await resolveVideasy(346698, "movie");
+    expect(streams).toHaveLength(1);
+    expect(streams[0]?.quality).toBe("2160p");
+    expect(streams[0]?.maxHeight).toBe(2160);
+    expect(streams[0]?.url).toContain("barbie-4k.m3u8");
+    expect(streams[0]?.type).toBe("hls");
+    expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).toContain(2160);
+    expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).not.toContain(4);
   });
 
   it("returns empty on a 404 seed miss instead of throwing", async () => {
