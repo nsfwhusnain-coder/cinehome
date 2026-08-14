@@ -3,14 +3,14 @@
  * Pure helpers for sortSourcesForDefault (no network, no inventing heights).
  *
  * Tier order:
- *   0. Non-poison over poison (hard gate — abuse/hostinger/php wrappers last)
+ *   0. Clean over never-auto-default (poison + trailer/sample/preview)
  *   1. Verified over soft-kept
  *   2. known height ≥ HD_FLOOR (1080)
  *   3. unknown height (≤ 0)
  *   4. known sub-HD
  */
 
-import { isPoisonStreamUrl } from "./poison-url";
+import { isNeverAutoDefaultSource } from "./poison-url";
 
 export const HD_FLOOR_HEIGHT = 1080;
 
@@ -126,7 +126,7 @@ function bitrateSustainabilityRank(source: RankableSource): -1 | 0 | 1 {
 
 /**
  * Sort sources for default streamUrl pick.
- * Poison hard-gate first, then verified soft-kept, then HD/unknown/sub-HD tiers.
+ * Never-auto-default hard-gate first, then verified soft-kept, then HD/unknown/sub-HD tiers.
  */
 export function sortSourcesForDefault<T extends RankableSource>(
   sources: T[],
@@ -147,10 +147,10 @@ export function sortSourcesForDefault<T extends RankableSource>(
   const contentClass = options.contentClass;
 
   return [...sources].sort((a, b) => {
-    // Poison / junk never outrank a clean URL — even if probe.ok or verified.
-    const aPoison = isPoisonStreamUrl(a.url) ? 1 : 0;
-    const bPoison = isPoisonStreamUrl(b.url) ? 1 : 0;
-    if (aPoison !== bPoison) return aPoison - bPoison;
+    // Poison / trailer / sample never outrank a clean URL — even if probe.ok.
+    const aBlocked = isNeverAutoDefaultSource(a.url, a.label) ? 1 : 0;
+    const bBlocked = isNeverAutoDefaultSource(b.url, b.label) ? 1 : 0;
+    if (aBlocked !== bBlocked) return aBlocked - bBlocked;
 
     // Soft-kept dead URLs never outrank verified sources as default.
     const aVer = isRankableVerified(a) ? 1 : 0;
@@ -237,7 +237,7 @@ export function sortSourcesForDefault<T extends RankableSource>(
 /**
  * First URL after sortSourcesForDefault — rank order is the default pick.
  * Soft-kept only wins when no verified source exists (sort already enforces).
- * Poison only wins as last resort when every candidate is poison.
+ * Poison / trailer / sample only win as last resort when every candidate is blocked.
  */
 export function pickDefaultStreamUrl<T extends RankableSource>(
   sources: T[],
@@ -245,8 +245,8 @@ export function pickDefaultStreamUrl<T extends RankableSource>(
 ): string | null {
   if (!sources.length) return null;
   const ranked = sortSourcesForDefault(sources, options);
-  const clean = ranked.find((s) => !isPoisonStreamUrl(s.url));
+  const clean = ranked.find((s) => !isNeverAutoDefaultSource(s.url, s.label));
   if (clean) return clean.url;
-  // All poison — still return first so UI isn't empty (manual switch only).
+  // All blocked — still return first so UI isn't empty (manual switch only).
   return ranked[0]?.url ?? null;
 }

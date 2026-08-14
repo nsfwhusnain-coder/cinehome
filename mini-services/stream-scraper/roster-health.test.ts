@@ -58,6 +58,18 @@ describe("playable roster completion", () => {
     expect(rosterHasPlayableHeight([...hd, uhd], 2160)).toBe(true);
   });
 
+  it("does not count trailer / sample URLs toward the healthy floor", () => {
+    const sources = [
+      { url: "https://cdn.example.com/hls/trailer/master.m3u8", probe: { ok: true } },
+      { url: "https://cdn.example.com/videos/sample.mp4", verified: true },
+      { url: "https://cdn.example.com/preview.m3u8", probe: { ok: true } },
+      { url: "https://cdn.example.com/feature.m3u8", probe: { ok: true } },
+    ];
+    expect(countAutoPlayableRosterSources(sources)).toBe(1);
+    expect(countMeasuredPlayableRosterSources(sources)).toBe(1);
+    expect(shouldSkipPlaywrightForHealthyRoster(sources)).toBe(false);
+  });
+
   it("skips primary Playwright once 4 measured-playable APIs exist", () => {
     const healthy = Array.from({ length: VERIFIED_MIN_SKIP_SECONDARY }, (_, index) => ({
       url: `https://cdn.example/${index}.m3u8`,

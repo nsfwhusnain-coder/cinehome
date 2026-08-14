@@ -1,6 +1,7 @@
 import type { MediaType, PlaybackResponse } from "@/lib/playback";
 import { getProvider } from "@/lib/playback";
 import { mergeDebridSources, resolveDebridSourcesSafely } from "./merge-debrid";
+import { rememberPlaybackRoster } from "./source-url-cache";
 
 /** Fresh enough that a 4K skip does not re-scrape the whole roster. */
 export const ROSTER_CACHE_TTL_MS = 90_000;
@@ -61,6 +62,10 @@ export async function resolveFullRoster(args: {
   const cacheKey = rosterCacheKey(args);
   const cached = rosterCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ROSTER_CACHE_TTL_MS) {
+    rememberPlaybackRoster(
+      { userId, mediaType: type, tmdbId, season, episode },
+      cached.value.sources
+    );
     return cached.value;
   }
 
@@ -80,6 +85,10 @@ export async function resolveFullRoster(args: {
   ]);
 
   mergeDebridSources(result, debridSources, qualityHint);
+  rememberPlaybackRoster(
+    { userId, mediaType: type, tmdbId, season, episode },
+    result.sources
+  );
   rosterCache.set(cacheKey, { at: Date.now(), value: result });
   return result;
 }

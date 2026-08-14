@@ -445,10 +445,14 @@ describe("pickDefaultSource / sortSourcesForPicker — delivery routing", () => 
   });
   const native1080 = makeSource({ id: "native-1080", label: "Aether", maxHeight: 1080 });
 
-  it("auto-defaults to a remuxable 4K source over a direct 1080p one — the remux keeps the 4K", () => {
-    // The stream copy does not re-encode, so this really is 2160p on screen.
-    // Capping it behind 1080p was the bug: the roster carried 4K all along.
-    expect(pickDefaultSource([mkv4k, native1080])?.id).toBe("mkv-4k");
+  it("auto-defaults to direct 1080 when a remuxable 4K is also present", () => {
+    // Remux 4K keeps its pixels, but packaging before first frame is worse
+    // than starting the already-playable HD file. The remux stays pickable.
+    expect(pickDefaultSource([mkv4k, native1080])?.id).toBe("native-1080");
+    expect(sortSourcesForPicker([mkv4k, native1080]).map((s) => s.id)).toEqual([
+      "mkv-4k",
+      "native-1080",
+    ]);
   });
 
   it("prefers the direct source at EQUAL height — a rewrap that buys no resolution is pure cost", () => {
@@ -477,12 +481,7 @@ describe("pickDefaultSource / sortSourcesForPicker — delivery routing", () => 
     ]);
   });
 
-  it("lets a validated debrid remux beat an equal-height embed that has no health evidence", () => {
-    // Not a contradiction of the rule above — delivery cost is only ONE signal
-    // and it deliberately sits below health evidence in the comparator. The
-    // debrid link cleared server-side media validation; `native1080` is an
-    // unprobed embed. Ranking a rewrap of a known-good link below an unproven
-    // one is how the Fight Club / Oppenheimer mis-picks happened.
+  it("does not auto-default a remux when any direct HD source exists", () => {
     const mkv1080 = makeSource({
       id: "mkv-1080",
       provider: "Debrid",
@@ -492,7 +491,23 @@ describe("pickDefaultSource / sortSourcesForPicker — delivery routing", () => 
       container: "mkv",
       maxHeight: 1080,
     });
-    expect(pickDefaultSource([mkv1080, native1080])?.id).toBe("mkv-1080");
+    expect(pickDefaultSource([mkv1080, native1080])?.id).toBe("native-1080");
+    expect(sortSourcesForPicker([mkv1080, native1080]).map((s) => s.id)).toContain(
+      "mkv-1080"
+    );
+  });
+
+  it("still prefers remux 4K over remux 1080 when every source remuxes", () => {
+    const mkv1080 = makeSource({
+      id: "mkv-1080",
+      provider: "Debrid",
+      origin: "debrid",
+      compat: "native",
+      codec: "h264",
+      container: "mkv",
+      maxHeight: 1080,
+    });
+    expect(pickDefaultSource([mkv4k, mkv1080])?.id).toBe("mkv-4k");
   });
 
   it("still auto-plays when every source needs a remux", () => {
@@ -526,10 +541,10 @@ describe("pickDefaultSource / sortSourcesForPicker — delivery routing", () => 
     expect(sorted.map((s) => s.id)).toEqual(["native-1080", "hevc-4k"]);
   });
 
-  it("orders the picker the same way the auto-pick does, so the top row is the one that plays", () => {
+  it("keeps remux 4K above direct 1080 in the picker while auto-default stays on HD", () => {
     const sorted = sortSourcesForPicker([native1080, mkv4k]);
-    expect(sorted[0]?.id).toBe("mkv-4k");
     expect(sorted.map((s) => s.id)).toEqual(["mkv-4k", "native-1080"]);
+    expect(pickDefaultSource([native1080, mkv4k])?.id).toBe("native-1080");
   });
 
   it("never auto-upgrades a running stream into a remux mid-playback", () => {

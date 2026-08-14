@@ -13,6 +13,13 @@ export const POISON_HOST_MARKERS = [
 export const POISON_PATH_MARKERS = ["vid1.php"] as const;
 
 /**
+ * Path / query / title tokens for trailers, samples, and previews.
+ * Matches the existing Playwright drop list in isValidStreamUrl.
+ * Not host blocks — a CDN named "preview*" is left alone.
+ */
+const PREVIEW_MARKERS = ["trailer", "preview", "sample"] as const;
+
+/**
  * Huge rank / score penalty so poison loses to any non-poison playable source.
  * Applied in scoreSourceEntry and as a hard gate in sortSourcesForDefault.
  */
@@ -89,9 +96,61 @@ export function isPoisonStreamUrl(url: string): boolean {
 }
 
 /**
- * Superset alias: URLs that must never win auto-default when alternatives exist.
- * Currently identical to poison; kept separate so soft demotions can expand later.
+ * True when path, query, or filename looks like a trailer / sample / preview.
+ * HLS `SAMPLE-AES` is stripped first so encrypted playlists are not flagged.
+ */
+export function isPreviewOrSampleUrl(url: string): boolean {
+  return isPreviewOrSampleUrlAtDepth(url, 0);
+}
+
+/** Title / label tokens (Official Trailer, Sample, Preview). */
+export function isPreviewOrSampleLabel(label: string | undefined): boolean {
+  if (!label || typeof label !== "string") return false;
+  return hasPreviewOrSampleMarker(label);
+}
+
+/**
+ * Superset of poison: abuse hosts plus trailer/sample/preview URLs.
+ * Must never win auto-default when a clean alternative exists.
  */
 export function isNeverAutoDefaultUrl(url: string): boolean {
-  return isPoisonStreamUrl(url);
+  return isPoisonStreamUrl(url) || isPreviewOrSampleUrl(url);
+}
+
+/** URL or title/label marks this source as last-resort only. */
+export function isNeverAutoDefaultSource(
+  url: string,
+  label?: string
+): boolean {
+  return isNeverAutoDefaultUrl(url) || isPreviewOrSampleLabel(label);
+}
+
+function hasPreviewOrSampleMarker(text: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase().replace(/sample-aes/g, "");
+  return PREVIEW_MARKERS.some((marker) => lower.includes(marker));
+}
+
+function isPreviewOrSampleUrlAtDepth(url: string, depth: number): boolean {
+  if (!url || typeof url !== "string") return false;
+  const raw = url.trim();
+  if (!raw) return false;
+
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(
+      raw.startsWith("//") ? `https:${raw}` : raw,
+      "http://cinehome.invalid"
+    );
+  } catch {
+    return hasPreviewOrSampleMarker(raw);
+  }
+
+  if (depth < 2) {
+    const upstream = decodeHlsProxyTarget(parsed);
+    if (upstream && isPreviewOrSampleUrlAtDepth(upstream, depth + 1)) return true;
+  }
+
+  // Path + query only — do not invent host blocks.
+  return hasPreviewOrSampleMarker(`${parsed.pathname}${parsed.search}${parsed.hash}`);
 }

@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import { resolveFullRoster } from "@/lib/playback/resolve-full";
+import {
+  lookupPlaybackSourceUrl,
+  rememberPlaybackRoster,
+} from "@/lib/playback/source-url-cache";
 import { rewritePlaylist } from "@/lib/playback/transcode-playlist";
 
 /**
@@ -103,21 +107,42 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Re-resolve the FULL roster the same way /api/playback does — base embed
-  // sources PLUS the debrid tier merged in. The 4K HEVC/safari debrid sources
-  // the transcoder targets are NOT in provider.resolve() alone (debrid is a
-  // separate parallel merge in the playback route), so this MUST use the shared
-  // resolveFullRoster helper or debrid source ids 404. fast:false so the full
-  // debrid roster is included.
-  const resolved = await resolveFullRoster({
+  const seasonNum =
+    season != null && season !== "" && Number.isFinite(Number(season))
+      ? Number(season)
+      : undefined;
+  const episodeNum =
+    episode != null && episode !== "" && Number.isFinite(Number(episode))
+      ? Number(episode)
+      : undefined;
+  const sourceIdentity = {
     userId,
-    type: type as "movie" | "tv",
+    mediaType: type as "movie" | "tv",
     tmdbId: id,
-    season: season ? Number(season) : undefined,
-    episode: episode ? Number(episode) : undefined,
-  });
+    season: seasonNum,
+    episode: episodeNum,
+  };
 
-  const source = resolved.sources?.find((s) => s.id === sourceId);
+  // Playback already resolved this sourceId → URL. Hitting that cache avoids
+  // a second full scrape + debrid resolve just to start ffmpeg.
+  const cachedSource = lookupPlaybackSourceUrl({
+    ...sourceIdentity,
+    sourceId,
+  });
+  let source = cachedSource
+    ? { id: sourceId, url: cachedSource.url }
+    : undefined;
+  if (!source) {
+    const resolved = await resolveFullRoster({
+      userId,
+      type: type as "movie" | "tv",
+      tmdbId: id,
+      season: seasonNum,
+      episode: episodeNum,
+    });
+    rememberPlaybackRoster(sourceIdentity, resolved.sources);
+    source = resolved.sources?.find((s) => s.id === sourceId);
+  }
   if (!source) {
     return NextResponse.json(
       { error: "Source not found (may have expired — retry playback)" },

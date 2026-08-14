@@ -11,6 +11,7 @@ import {
   parseSizeBytes,
   effectiveReleaseContainer,
   isDirectPlayDebridRelease,
+  isMoviePackRelease,
 } from "./torrentio";
 
 describe("buildKindPath season 0", () => {
@@ -536,6 +537,67 @@ describe("fetchTorrentioCandidates — MKV/HEVC kept (transcoder-link) + per-cla
     expect(native2160.length).toBeGreaterThan(0);
     expect(safari2160.length).toBeGreaterThan(0);
     expect(native1080.length).toBe(3);
+  });
+
+  it("drops movie packs and collections but keeps a normal single feature", async () => {
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        streams: [
+          {
+            title: "Movie.2024.1080p.WEB-DL.H264-GRP.mp4\n👤 40 💾 3 GB",
+            infoHash: "k".repeat(40),
+            fileIdx: 0,
+          },
+          {
+            title: "MCU Complete Collection 1080p BluRay H264\n👤 90 💾 80 GB",
+            infoHash: "c".repeat(40),
+            fileIdx: 0,
+          },
+          {
+            title: "Some Show Complete Series 1080p WEB-DL\n👤 80 💾 40 GB",
+            infoHash: "s".repeat(40),
+            fileIdx: 0,
+          },
+          {
+            title: "Movie Season 1 1080p BluRay H264\n👤 50 💾 12 GB",
+            infoHash: "p".repeat(40),
+            fileIdx: 0,
+          },
+          {
+            title: "Director Filmography 1080p H264\n👤 20 💾 30 GB",
+            infoHash: "f".repeat(40),
+            fileIdx: 0,
+          },
+        ],
+      })) as unknown as typeof fetch;
+
+    const candidates = await fetchTorrentioCandidates({
+      imdbId: "tt0000011",
+      mediaType: "movie",
+      rdToken: FAKE_TOKEN,
+    });
+
+    expect(candidates.map((candidate) => candidate.infoHash)).toEqual([
+      "k".repeat(40),
+    ]);
+  });
+});
+
+describe("isMoviePackRelease", () => {
+  it("flags season packs, complete sets, collections, and trilogies", () => {
+    expect(isMoviePackRelease("Show S01 1080p BluRay")).toBe(true);
+    expect(isMoviePackRelease("Movie Season 2 1080p")).toBe(true);
+    expect(isMoviePackRelease("Complete Series 1080p")).toBe(true);
+    expect(isMoviePackRelease("Marvel Collection 2160p")).toBe(true);
+    expect(isMoviePackRelease("X-Men Filmography 1080p")).toBe(true);
+    expect(isMoviePackRelease("Dark Knight Trilogy 1080p")).toBe(true);
+  });
+
+  it("keeps a normal single-feature release name", () => {
+    expect(isMoviePackRelease("Movie.2024.1080p.WEB-DL.H264-GRP")).toBe(false);
+    expect(isMoviePackRelease("Season of the Witch 2011 1080p WEB-DL")).toBe(
+      false
+    );
   });
 });
 

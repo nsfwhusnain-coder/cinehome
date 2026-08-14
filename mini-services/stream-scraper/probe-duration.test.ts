@@ -35,6 +35,16 @@ describe("HLS duration plausibility probe", () => {
             headers: { "Content-Type": "application/vnd.apple.mpegurl" },
           });
         }
+        if (path === "/clip15.m3u8") {
+          return new Response(mediaPlaylist(150, "/clip15.ts"), {
+            headers: { "Content-Type": "application/vnd.apple.mpegurl" },
+          });
+        }
+        if (path === "/episode20.m3u8") {
+          return new Response(mediaPlaylist(200, "/episode20.ts"), {
+            headers: { "Content-Type": "application/vnd.apple.mpegurl" },
+          });
+        }
         if (path === "/feature.m3u8") {
           return new Response(mediaPlaylist(650, "/feature.ts"), {
             headers: { "Content-Type": "application/vnd.apple.mpegurl" },
@@ -64,6 +74,36 @@ describe("HLS duration plausibility probe", () => {
       durationS: 132,
     });
     expect(isKnownTruncatedSource(url)).toBe(true);
+  });
+
+  it("rejects a 15-minute clip for an 80-minute movie", async () => {
+    const url = `http://127.0.0.1:${server.port}/clip15.m3u8`;
+    const results = await probeSourceBatch(
+      [{ url, session: SESSION }],
+      { maxSources: 1, mediaType: "movie", expectedDurationS: 80 * 60 }
+    );
+    expect(results.get(url)).toMatchObject({
+      ok: false,
+      error: "implausibly_short_duration",
+      durationS: 900,
+    });
+    expect(isKnownTruncatedSource(url)).toBe(true);
+  });
+
+  it("keeps a ~20 minute TV episode and a special-length playlist", async () => {
+    const url = `http://127.0.0.1:${server.port}/episode20.m3u8`;
+    const episode = await probeSourceBatch(
+      [{ url, session: SESSION }],
+      { maxSources: 1, mediaType: "tv", expectedDurationS: 22 * 60 }
+    );
+    expect(episode.get(url)).toMatchObject({ ok: true, durationS: 1_200 });
+    expect(isKnownTruncatedSource(url)).toBe(false);
+
+    const special = await probeSourceBatch(
+      [{ url, session: SESSION }],
+      { maxSources: 1, mediaType: "tv", expectedDurationS: 45 * 60 }
+    );
+    expect(special.get(url)).toMatchObject({ ok: true, durationS: 1_200 });
   });
 
   it("keeps a plausible alternate cut", async () => {

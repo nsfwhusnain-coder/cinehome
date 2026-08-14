@@ -35,6 +35,18 @@ describe("isGoodEarlyCapture / isHlsEarlyCapture", () => {
     expect(isGoodEarlyCapture(POISON_HLS, "HLS")).toBe(false);
   });
 
+  it("rejects trailer / sample / preview captures", () => {
+    expect(
+      isGoodEarlyCapture("https://cdn.example.com/hls/trailer/master.m3u8", "HLS")
+    ).toBe(false);
+    expect(
+      isGoodEarlyCapture("https://cdn.example.com/videos/file.mp4", "Official Trailer")
+    ).toBe(false);
+    expect(
+      isGoodEarlyCapture("https://cdn.example.com/videos/sample.mp4", "MP4")
+    ).toBe(false);
+  });
+
   it("rejects empty / non-stream paths", () => {
     expect(isGoodEarlyCapture("")).toBe(false);
     expect(isGoodEarlyCapture("https://cdn.example.com/ad.js")).toBe(false);

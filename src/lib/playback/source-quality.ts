@@ -1262,13 +1262,27 @@ export function pickDefaultSource(
   // lean saved 1080p source must not suppress a meaningfully richer 1080p
   // encode (and can never override an available Ultra target).
   const pref = (preferredProvider || DEFAULT_SOURCE_KEY || "").trim();
+  const hasDirectHd = pickPool.some(
+    (source) =>
+      sourceDelivery(source) === "direct" &&
+      sourceMaxHeight(source) >= HD_FLOOR_HEIGHT
+  );
 
   // Ranking only — never filters the pool empty.
-  // Poison gate first, then height tiers, multi-rung / probe / prio.
+  // Poison gate first, then remux-vs-direct, then height tiers / probe / prio.
   const sorted = [...pickPool].sort((a, b) => {
     const aPoison = isPoisonStreamUrl(a.url) ? 1 : 0;
     const bPoison = isPoisonStreamUrl(b.url) ? 1 : 0;
     if (aPoison !== bPoison) return aPoison - bPoison;
+
+    // Auto-default only: a working direct ≥1080 must start immediately.
+    // Remux 4K stays visible in the picker (sortSourcesForPicker) and can
+    // still be user-picked or prewarmed after first frame.
+    if (hasDirectHd) {
+      const aRemux = sourceDelivery(a) === "remux" ? 1 : 0;
+      const bRemux = sourceDelivery(b) === "remux" ? 1 : 0;
+      if (aRemux !== bRemux) return aRemux - bRemux;
+    }
 
     const aH = sourceMaxHeight(a) || 0;
     const bH = sourceMaxHeight(b) || 0;
@@ -1339,8 +1353,8 @@ export function pickDefaultSource(
     // Delivery cost, height-gated (see compareDelivery). Must sit ABOVE the
     // premium-direct rule below: without it, a 1080p MKV debrid source would
     // use that rule to beat an equal-height embed that needs no server work
-    // at all. It stays BELOW the height tiers, so a 4K remux still wins the
-    // resolution it genuinely has.
+    // at all. Remux-vs-direct at auto-default is already decided above when
+    // a direct ≥1080 exists; this only ranks remux-only rosters.
     const deliveryOrder = compareDelivery(a, b, aH, bH);
     if (deliveryOrder !== 0) return deliveryOrder;
 

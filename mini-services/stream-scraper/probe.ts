@@ -3,12 +3,10 @@
  * Runs on the scraper host (same network as HLS proxy). Fast path must skip this.
  */
 
+import { isImplausibleEmbedDuration } from "./embed-duration";
 import { isPoisonStreamUrl } from "./poison-url";
 import { safeStreamTarget, type StreamPathKind } from "./safe-url-summary";
-import {
-  assessMediaDuration,
-  hlsMediaDurationSeconds,
-} from "../../src/lib/playback/media-duration";
+import { hlsMediaDurationSeconds } from "../../src/lib/playback/media-duration";
 import type { MediaType } from "../../src/lib/playback/types";
 
 export interface ProbeSession {
@@ -624,18 +622,17 @@ function applyDurationExpectation(
 ): ProbeResult {
   if (
     !result.ok ||
-    !mediaType ||
-    !expectedDurationS ||
-    !result.durationS
+    mediaType == null ||
+    expectedDurationS == null ||
+    !Number.isFinite(expectedDurationS) ||
+    expectedDurationS <= 0 ||
+    result.durationS == null ||
+    !Number.isFinite(result.durationS) ||
+    result.durationS <= 0
   ) {
     return result;
   }
-  const assessment = assessMediaDuration(
-    result.durationS,
-    expectedDurationS,
-    mediaType
-  );
-  if (assessment.plausible) {
+  if (!isImplausibleEmbedDuration(result.durationS, expectedDurationS, mediaType)) {
     truncatedSourceCache.delete(urlCacheKey(sourceUrl));
     return result;
   }

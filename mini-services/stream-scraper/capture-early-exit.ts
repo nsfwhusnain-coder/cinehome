@@ -3,7 +3,7 @@
  * Stop burning captureWaitMs once enough non-poison streams have landed.
  */
 
-import { isPoisonStreamUrl } from "./poison-url";
+import { isNeverAutoDefaultSource } from "./poison-url";
 
 /** Minimum good HLS captures before settle-based early exit. */
 export const EARLY_EXIT_MIN_HLS = 1;
@@ -36,7 +36,7 @@ export function isHlsEarlyCapture(url: string, label?: string): boolean {
  */
 export function isGoodEarlyCapture(url: string, label?: string): boolean {
   if (!url || typeof url !== "string") return false;
-  if (isPoisonStreamUrl(url)) return false;
+  if (isNeverAutoDefaultSource(url, label)) return false;
   const lower = url.toLowerCase();
   const lbl = labelLower(label);
   if (isHlsEarlyCapture(url, label)) return true;

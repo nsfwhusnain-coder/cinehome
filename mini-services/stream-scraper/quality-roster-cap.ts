@@ -1,4 +1,4 @@
-import { isPoisonStreamUrl } from "./poison-url";
+import { isNeverAutoDefaultUrl } from "./poison-url";
 
 export interface QualityDiscoveryEntry {
   url: string;
@@ -20,7 +20,7 @@ function isQualityDiscoveryCandidate(
   if (
     entry.verified === false ||
     entry.probe?.ok === false ||
-    isPoisonStreamUrl(entry.url)
+    isNeverAutoDefaultUrl(entry.url)
   ) {
     return false;
   }

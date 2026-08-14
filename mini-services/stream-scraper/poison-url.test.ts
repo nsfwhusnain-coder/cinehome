@@ -1,6 +1,12 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
-import { isNeverAutoDefaultUrl, isPoisonStreamUrl } from "./poison-url";
+import {
+  isNeverAutoDefaultSource,
+  isNeverAutoDefaultUrl,
+  isPoisonStreamUrl,
+  isPreviewOrSampleLabel,
+  isPreviewOrSampleUrl,
+} from "./poison-url";
 
 describe("isPoisonStreamUrl", () => {
   it("flags cloudflare-terms-of-service-abuse host", () => {
@@ -54,13 +60,48 @@ describe("isPoisonStreamUrl", () => {
     ).toBe(false);
   });
 
-  it("isNeverAutoDefaultUrl mirrors poison", () => {
+  it("isNeverAutoDefaultUrl is a superset of poison", () => {
     const poison = "https://cloudflare-terms-of-service-abuse.com/stream.mp4";
     const clean = "https://moon.ironwallnet.net/hls/index.m3u8";
-    expect(isNeverAutoDefaultUrl(poison)).toBe(isPoisonStreamUrl(poison));
-    expect(isNeverAutoDefaultUrl(clean)).toBe(isPoisonStreamUrl(clean));
     expect(isNeverAutoDefaultUrl(poison)).toBe(true);
+    expect(isPoisonStreamUrl(poison)).toBe(true);
     expect(isNeverAutoDefaultUrl(clean)).toBe(false);
+    expect(isPoisonStreamUrl(clean)).toBe(false);
+  });
+
+  it("flags trailer / sample / preview path tokens without treating them as poison hosts", () => {
+    const trailer = "https://cdn.example.com/hls/trailer/master.m3u8";
+    const sample = "https://cdn.example.com/videos/official-sample.mp4";
+    const preview = "https://cdn.example.com/preview.m3u8";
+    expect(isPreviewOrSampleUrl(trailer)).toBe(true);
+    expect(isPreviewOrSampleUrl(sample)).toBe(true);
+    expect(isPreviewOrSampleUrl(preview)).toBe(true);
+    expect(isPoisonStreamUrl(trailer)).toBe(false);
+    expect(isNeverAutoDefaultUrl(trailer)).toBe(true);
+    expect(isNeverAutoDefaultUrl(sample)).toBe(true);
+    expect(isNeverAutoDefaultUrl(preview)).toBe(true);
+  });
+
+  it("does not flag HLS SAMPLE-AES, clean feature URLs, or preview hostnames", () => {
+    expect(
+      isPreviewOrSampleUrl("https://cdn.example.com/hls/SAMPLE-AES/index.m3u8")
+    ).toBe(false);
+    expect(
+      isNeverAutoDefaultUrl("https://moon.ironwallnet.net/hls/movie/abc/index.m3u8")
+    ).toBe(false);
+    expect(
+      isPreviewOrSampleUrl("https://previewcdn.example.com/hls/master.m3u8")
+    ).toBe(false);
+  });
+
+  it("flags trailer / sample labels so they cannot auto-default", () => {
+    expect(isPreviewOrSampleLabel("Official Trailer")).toBe(true);
+    expect(isPreviewOrSampleLabel("Sample")).toBe(true);
+    expect(isPreviewOrSampleLabel("Preview 1080p")).toBe(true);
+    expect(isPreviewOrSampleLabel("Luna")).toBe(false);
+    const clean = "https://moon.ironwallnet.net/hls/index.m3u8";
+    expect(isNeverAutoDefaultSource(clean, "Official Trailer")).toBe(true);
+    expect(isNeverAutoDefaultSource(clean, "Luna")).toBe(false);
   });
 
   it("detects a poison upstream hidden inside the same-origin HLS proxy", () => {

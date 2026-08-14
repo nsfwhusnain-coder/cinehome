@@ -78,7 +78,8 @@ import {
   sortSourcesForDefault as rankSortSourcesForDefault,
 } from "./default-source-rank";
 import {
-  isPoisonStreamUrl,
+  isNeverAutoDefaultSource,
+  isPreviewOrSampleUrl,
   POISON_SCORE_PENALTY,
 } from "./poison-url";
 import {
@@ -392,8 +393,8 @@ function scoreSourceEntry(
   // Progressive MP4 is fine for clips but weak for long films.
   if (isMp4) score -= 10;
   if (!isHls && !isDash && !url.includes(".mp4")) score -= 60;
-  // Poison / abuse hosts + PHP wrappers: huge penalty (rank gate is primary).
-  if (isPoisonStreamUrl(url)) score -= POISON_SCORE_PENALTY;
+  // Poison / abuse hosts + trailer/sample/preview: huge penalty (rank gate is primary).
+  if (isNeverAutoDefaultSource(url, label)) score -= POISON_SCORE_PENALTY;
 
   // Fast CDN name preference — disabled when measured probe ranks sources.
   if (nameBonus) {
@@ -512,8 +513,8 @@ function embedCaptureLabel(baseLabel: string, index: number): string {
  * Luna stays available for TTFF fast-path but loses to Solstice after enrich.
  */
 function providerPriority(provider: string, label = "", url = ""): number {
-  // Poison never wins provider-priority ties over clean URLs.
-  if (url && isPoisonStreamUrl(url)) return -10;
+  // Poison / trailer / sample never win provider-priority ties over clean URLs.
+  if (url && isNeverAutoDefaultSource(url, label)) return -10;
   const p = provider.trim().toLowerCase();
   const l = label.trim().toLowerCase();
   // #1 Solstice — most reliable through household /api/hls (single hop).
@@ -671,9 +672,13 @@ function pickDefaultStreamUrl(sources: SourceEntry[]): string | null {
 function buildMergedResult(entries: SourceEntry[], error?: string): ScrapeResult {
   // Background enrich and cache refresh can finish while duration probes run.
   // Never let either path reintroduce a preview URL that the probe just rejected.
-  const durationSafeEntries = entries.filter(
-    (entry) => !isKnownTruncatedSource(entry.url)
-  );
+  const durationSafeEntries = entries
+    .filter((entry) => !isKnownTruncatedSource(entry.url))
+    .map((entry) =>
+      isNeverAutoDefaultSource(entry.url, entry.label)
+        ? { ...entry, verified: false as const }
+        : entry
+    );
   const withHints = attachCheapQualityHints(mergeSourceEntries(durationSafeEntries));
   const sources = capRosterWithQualityReserve(
     sortSourcesForDefault(withHints),
@@ -1260,7 +1265,7 @@ async function filterVerifiedEntries(
 
 function isValidStreamUrl(url: string): boolean {
   if (!url || url.startsWith("blob:") || url.startsWith("data:")) return false;
-  if (url.includes("preview") || url.includes("trailer")) return false;
+  if (isPreviewOrSampleUrl(url)) return false;
   // CinePro/OMSS proxy URLs rarely contain .m3u8 in the outer path.
   if (url.includes("/v1/proxy") || url.toLowerCase().includes("cinepro")) return true;
   return (

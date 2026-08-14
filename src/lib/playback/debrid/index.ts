@@ -453,7 +453,11 @@ async function resolveCandidateLink(
     }
   }
   if (!candidate.infoHash || Date.now() >= deadline) return null;
-  const directUrl = await resolveDebridDirectLink(candidate.infoHash, candidate.fileIdx);
+  const directUrl = await resolveDebridDirectLink(
+    candidate.infoHash,
+    candidate.fileIdx,
+    candidate.title
+  );
   const safeUrl = sanitizeStreamUrl(directUrl, token);
   return safeUrl ? { ...candidate, directUrl: safeUrl } : null;
 }

@@ -21,6 +21,7 @@ import {
 } from "@/lib/playback/health-registry";
 import { tvQueryIndex } from "@/lib/playback/tv-index";
 import { resolvePlaybackContentClass } from "@/lib/playback/content-class";
+import { rememberPlaybackRoster } from "@/lib/playback/source-url-cache";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -174,6 +175,13 @@ export async function GET(
     resolvePlaybackContentClass(type, tmdbId),
   ]);
   const qualityHint = profilePreferences.playbackQuality;
+  const sourceCacheIdentity = {
+    userId,
+    mediaType: type as MediaType,
+    tmdbId,
+    season,
+    episode,
+  };
 
   const {
     getCachedPlayback,
@@ -203,6 +211,7 @@ export async function GET(
         type,
         qualityHint
       );
+      rememberPlaybackRoster(sourceCacheIdentity, healthAware.sources);
       return NextResponse.json({ ...healthAware, preferences: profilePreferences }, {
         headers: {
           "Cache-Control": "private, no-store",
@@ -324,6 +333,7 @@ export async function GET(
     type,
     qualityHint
   );
+  rememberPlaybackRoster(sourceCacheIdentity, healthAwareResult.sources);
   return NextResponse.json({
     ...healthAwareResult,
     preferences: profilePreferences,

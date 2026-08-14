@@ -19,8 +19,6 @@ import {
   withDetectedSourceHeight,
   withClientHealthProbe,
   speedScoreFromLatencyMs,
-  isMultiRendition,
-  isMeaningfullyRicherSource,
   isSourcePlayableHere,
   sourceDelivery,
   findDirectDebridAlternative,
@@ -29,7 +27,11 @@ import {
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
-import { pickClientStartupSource } from "@/lib/playback/client-ranking";
+import {
+  pickClientStartupSource,
+  ROSTER_HEIGHT_UPGRADE_PX,
+  shouldAdoptRosterUpgrade,
+} from "@/lib/playback/client-ranking";
 import {
   findLateFourKSource,
   wantsFourKDiscovery,
@@ -1894,28 +1896,21 @@ export function VideoPlayer({
       }
       // Cold start only: jump to multi-rung / better ranked source before first frame.
       if (best.id === activeSource.id) return;
-      const betterMulti =
-        isMultiRendition(best) && !isMultiRendition(activeSource);
       const betterHeight =
-        sourceMaxHeight(best) > sourceMaxHeight(activeSource) + 100;
+        sourceMaxHeight(best) >
+        sourceMaxHeight(activeSource) + ROSTER_HEIGHT_UPGRADE_PX;
       if (autoUpgradedRef.current && !betterHeight) return;
-      /**
-       * Transport quality, not just pixel count. `isFasterSource` already owns
-       * this comparison — including the rule that a natively-playable debrid
-       * source beats a non-debrid one, because it is direct-CDN and skips both
-       * the residential `/api/hls` double hop and the master→media→segment
-       * walk that every embed pays.
-       *
-       * Without this clause the debrid tier almost never won a cold start:
-       * a Real-Debrid 1080p is progressive MP4, so `betterMulti` is false by
-       * construction (no ladder), and against a 1080p embed `betterHeight` is
-       * false too — so the roster ranked RD first (see `isTopTierSource` /
-       * `sourceFailoverPriority` in source-quality.ts) while this gate quietly
-       * declined to adopt it, and the slower embed kept the session.
-       */
-      const betterTransport = isFasterSource(activeSource, best);
-      const richerEncode = isMeaningfullyRicherSource(activeSource, best);
-      if (!betterMulti && !betterHeight && !betterTransport && !richerEncode) return;
+      if (
+        !shouldAdoptRosterUpgrade({
+          current: activeSource,
+          candidate: best,
+          everPlayed: everPlayedRef.current,
+          fourKStartup: fourKStartupRef.current,
+          userPicked: userSelectedSourceRef.current,
+        })
+      ) {
+        return;
+      }
       // Consume same-height richness upgrades once; the guard above still
       // permits a later higher-resolution (for example 4K) source to replace it.
       autoUpgradedRef.current = true;
@@ -2428,6 +2423,13 @@ export function VideoPlayer({
       qualityTargetRef.current
     );
     if (!pick || pick.id === activeSource.id) return;
+    if (
+      sourceDelivery(pick) === "remux" &&
+      sourceDelivery(activeSource) === "direct" &&
+      fourKStartupRef.current !== "maximum"
+    ) {
+      return;
+    }
 
     const activeIsLuna =
       activeSource.label.toLowerCase() === "luna" ||

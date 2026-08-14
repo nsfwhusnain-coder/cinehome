@@ -389,4 +389,41 @@ describe("sortSourcesForDefault — poison gate", () => {
     });
     expect(pickDefaultStreamUrl([poison, clean])).toBe(clean.url);
   });
+
+  it("trailer / sample embed never auto-defaults over a clean source", () => {
+    const trailer = src({
+      id: "trailer",
+      url: "https://cdn.example.com/hls/trailer/master.m3u8",
+      maxHeight: 1080,
+      probe: { ok: true, speedScore: 99 },
+      verified: true,
+    });
+    const sample = src({
+      id: "sample",
+      url: "https://cdn.example.com/videos/sample.mp4",
+      maxHeight: 1080,
+      probe: { ok: true, speedScore: 90 },
+      verified: true,
+    });
+    const labeled = src({
+      id: "labeled",
+      url: "https://moon.ironwallnet.net/hls/clip/index.m3u8",
+      label: "Official Trailer",
+      maxHeight: 1080,
+      probe: { ok: true, speedScore: 95 },
+      verified: true,
+    });
+    const luna = src({
+      id: "luna",
+      url: "https://moon.ironwallnet.net/hls/movie/abc/index.m3u8",
+      label: "Luna",
+      maxHeight: 720,
+      probe: { ok: true, speedScore: 40 },
+      verified: true,
+    });
+    expect(pickDefaultStreamUrl([trailer, luna])).toBe(luna.url);
+    expect(pickDefaultStreamUrl([sample, luna])).toBe(luna.url);
+    expect(pickDefaultStreamUrl([labeled, luna])).toBe(luna.url);
+    expect(pickDefaultStreamUrl([trailer, sample])).toBeTruthy();
+  });
 });

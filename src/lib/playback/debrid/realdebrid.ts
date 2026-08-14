@@ -37,11 +37,77 @@ export const RESOLVE_CONCURRENCY = 5;
 
 const TERMINAL_FAILURE_STATUSES = new Set(["error", "magnet_error", "virus", "dead"]);
 const VIDEO_EXT_PATTERN = /\.(mp4|mkv|avi|mov|m4v|webm)$/i;
+const NON_FEATURE_FILE_PATTERN =
+  /\b(?:featurettes?|bonus(?:es)?|extras?|sample|soundtrack|deleted[ ._-]?scenes?)\b/i;
+const RELEASE_STOP_TOKENS = new Set([
+  "1080p",
+  "2160p",
+  "720p",
+  "480p",
+  "4k",
+  "uhd",
+  "hdr",
+  "hdr10",
+  "dv",
+  "dovi",
+  "bluray",
+  "blu",
+  "ray",
+  "web",
+  "webdl",
+  "webrip",
+  "hdtv",
+  "remux",
+  "hybrid",
+  "x264",
+  "x265",
+  "h264",
+  "h265",
+  "hevc",
+  "avc",
+  "av1",
+  "aac",
+  "dts",
+  "truehd",
+  "atmos",
+  "eac3",
+  "ac3",
+  "ddp",
+  "flac",
+  "opus",
+  "multi",
+  "dual",
+  "audio",
+  "video",
+  "sample",
+  "proof",
+  "proper",
+  "repack",
+  "internal",
+  "extended",
+  "unrated",
+  "directors",
+  "cut",
+  "the",
+  "and",
+  "of",
+  "for",
+  "mkv",
+  "mp4",
+  "avi",
+  "mov",
+  "m4v",
+  "webm",
+]);
 
-interface RdTorrentFile {
+export interface DebridTorrentFile {
   id: number;
   path: string;
   bytes: number;
+  selected?: number;
+}
+
+interface RdTorrentFile extends DebridTorrentFile {
   selected: number;
 }
 
@@ -109,14 +175,60 @@ export async function unrestrictLink(rdOrHosterLink: string): Promise<string | n
   return result?.download || null;
 }
 
-function pickLargestVideoFile(files: RdTorrentFile[] | undefined): RdTorrentFile | null {
+function tokenizeRelease(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3 && !RELEASE_STOP_TOKENS.has(token));
+}
+
+/**
+ * Pick the torrent file Torrentio meant — never "largest video" in a pack.
+ * fileIdx (0-based) wins when it lands. Otherwise match filename tokens from
+ * the release title. A multi-video torrent with no unique match is skipped.
+ */
+export function pickDebridVideoFile(
+  files: readonly DebridTorrentFile[] | undefined,
+  opts: { fileIdx?: number; releaseTitle?: string } = {}
+): DebridTorrentFile | null {
   if (!files?.length) return null;
-  const videos = files.filter((f) => VIDEO_EXT_PATTERN.test(f.path));
-  const pool = videos.length ? videos : files;
-  return pool.reduce<RdTorrentFile | null>(
-    (best, f) => (f.bytes > (best?.bytes ?? -1) ? f : best),
-    null
+
+  if (typeof opts.fileIdx === "number") {
+    const fileIdx = opts.fileIdx;
+    const matched = files.find((file) => file.id === fileIdx + 1);
+    if (matched) return matched;
+  }
+
+  const videos = files.filter((file) => VIDEO_EXT_PATTERN.test(file.path));
+  const features = videos.filter(
+    (file) => !NON_FEATURE_FILE_PATTERN.test(file.path)
   );
+  const pool = features.length ? features : videos.length ? videos : [...files];
+  if (pool.length === 1) return pool[0] ?? null;
+
+  const titleTokens = tokenizeRelease(opts.releaseTitle ?? "");
+  if (!titleTokens.length) return null;
+
+  let best: DebridTorrentFile | null = null;
+  let bestScore = 0;
+  let ties = 0;
+  for (const file of pool) {
+    const fileTokens = new Set(tokenizeRelease(file.path));
+    const score = titleTokens.reduce(
+      (count, token) => count + (fileTokens.has(token) ? 1 : 0),
+      0
+    );
+    if (score > bestScore) {
+      best = file;
+      bestScore = score;
+      ties = 1;
+    } else if (score === bestScore && score > 0) {
+      ties += 1;
+    }
+  }
+  if (!best || bestScore === 0 || ties > 1) return null;
+  return best;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -124,16 +236,16 @@ async function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Path (b): add a magnet from an infohash, select the largest video file (or
- * the file matching Torrentio's `fileIdx` when it lines up with RD's file
- * listing), then poll RD for a SHORT budget. Only resolves when the torrent
- * is already `"downloaded"` (i.e. was already cached on Real-Debrid) within
- * that budget — otherwise returns null so the caller skips this candidate
- * rather than waiting on a cold download.
+ * Path (b): add a magnet from an infohash, select the file Torrentio named
+ * (`fileIdx` or release-title tokens — never "largest in a pack"), then poll
+ * RD for a SHORT budget. Only resolves when the torrent is already
+ * `"downloaded"` within that budget — otherwise returns null so the caller
+ * skips this candidate rather than waiting on a cold download.
  */
 export async function resolveDebridDirectLink(
   infoHash: string,
-  fileIdx?: number
+  fileIdx?: number,
+  releaseTitle?: string
 ): Promise<string | null> {
   const token = getToken();
   if (!token || !infoHash) return null;
@@ -151,13 +263,12 @@ export async function resolveDebridDirectLink(
     let info = await rdFetch<RdTorrentInfo>(`/torrents/info/${added.id}`, token);
     if (!info) return null;
 
-    // Torrentio's fileIdx is 0-based; RD's file `id` is 1-based in file-list
-    // order — best-effort match, falls back to "largest video file" when the
-    // torrent's listing order doesn't line up with Torrentio's index.
-    const matchedFile =
-      typeof fileIdx === "number" ? info.files?.find((f) => f.id === fileIdx + 1) : undefined;
-    const targetFile = matchedFile ?? pickLargestVideoFile(info.files);
-    const selectBody = formBody({ files: targetFile ? String(targetFile.id) : "all" });
+    // Torrentio's fileIdx is 0-based; RD's file `id` is 1-based. A miss
+    // tries the release title. A multi-video pack with no unique match is
+    // skipped — never "largest file", which is often a different movie.
+    const targetFile = pickDebridVideoFile(info.files, { fileIdx, releaseTitle });
+    if (!targetFile) return null;
+    const selectBody = formBody({ files: String(targetFile.id) });
     await rdFetch(`/torrents/selectFiles/${added.id}`, token, {
       method: "POST",
       body: selectBody.body,

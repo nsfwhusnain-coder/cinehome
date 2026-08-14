@@ -1,5 +1,5 @@
 import { VERIFIED_MIN_SKIP_SECONDARY } from "./embed-roster";
-import { isPoisonStreamUrl } from "./poison-url";
+import { isNeverAutoDefaultUrl } from "./poison-url";
 
 export interface RosterHealthSource {
   url: string;
@@ -13,7 +13,7 @@ function isAutoPlayable(source: RosterHealthSource): boolean {
   return (
     source.verified !== false &&
     source.probe?.ok !== false &&
-    !isPoisonStreamUrl(source.url)
+    !isNeverAutoDefaultUrl(source.url)
   );
 }
 
@@ -45,7 +45,7 @@ export function countMeasuredPlayableRosterSources(
       (source.verified === true || source.probe?.ok === true) &&
       source.verified !== false &&
       source.probe?.ok !== false &&
-      !isPoisonStreamUrl(source.url)
+      !isNeverAutoDefaultUrl(source.url)
   ).length;
 }
 
