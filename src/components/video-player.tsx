@@ -2177,6 +2177,39 @@ export function VideoPlayer({
     setFailedSourceIds((prev) => [...prev, sourceId]);
   }, []);
 
+  /**
+   * Status toasts. Declared before any callback that lists them in a React
+   * dep array — a later declaration threw "Cannot access 'rt' before
+   * initialization" on every watch mount (TDZ when useCallback read deps).
+   */
+  const showFailoverNotice = useCallback((_failed: PlaybackSource, _next: PlaybackSource) => {
+    setFailoverNotice("Switching servers…");
+    if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
+    failoverNoticeTimerRef.current = setTimeout(() => {
+      failoverNoticeTimerRef.current = null;
+      setFailoverNotice(null);
+    }, FAILOVER_NOTICE_MS);
+  }, []);
+
+  const showStatusNotice = useCallback((message: string, durationMs: number) => {
+    setFailoverNotice(message);
+    if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
+    failoverNoticeTimerRef.current = setTimeout(() => {
+      failoverNoticeTimerRef.current = null;
+      setFailoverNotice(null);
+    }, durationMs);
+  }, []);
+
+  /** One-shot "Resuming from mm:ss" toast — see RESUME_NOTICE_MS. */
+  const showResumeNotice = useCallback((seconds: number) => {
+    setResumeNotice(`Resuming from ${formatClock(seconds)}`);
+    if (resumeNoticeTimerRef.current) clearTimeout(resumeNoticeTimerRef.current);
+    resumeNoticeTimerRef.current = setTimeout(() => {
+      resumeNoticeTimerRef.current = null;
+      setResumeNotice(null);
+    }, RESUME_NOTICE_MS);
+  }, []);
+
   const handleSourceChange = useCallback(
     (
       source: PlaybackSource,
@@ -2338,41 +2371,6 @@ export function VideoPlayer({
       tvSeason,
     ]
   );
-
-  /**
-   * Failover is announced, not narrated. The old copy named both ends of the
-   * hop ("'Zeus' unavailable — switched to 'Apollo'"), which turns a recovery
-   * the player handled by itself into a technical incident report. Keep a
-   * short neutral acknowledgement so an unexplained pause still has a cause,
-   * without exposing CDN identities.
-   */
-  const showFailoverNotice = useCallback((_failed: PlaybackSource, _next: PlaybackSource) => {
-    setFailoverNotice("Switching servers…");
-    if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
-    failoverNoticeTimerRef.current = setTimeout(() => {
-      failoverNoticeTimerRef.current = null;
-      setFailoverNotice(null);
-    }, FAILOVER_NOTICE_MS);
-  }, []);
-
-  const showStatusNotice = useCallback((message: string, durationMs: number) => {
-    setFailoverNotice(message);
-    if (failoverNoticeTimerRef.current) clearTimeout(failoverNoticeTimerRef.current);
-    failoverNoticeTimerRef.current = setTimeout(() => {
-      failoverNoticeTimerRef.current = null;
-      setFailoverNotice(null);
-    }, durationMs);
-  }, []);
-
-  /** One-shot "Resuming from mm:ss" toast — see RESUME_NOTICE_MS. */
-  const showResumeNotice = useCallback((seconds: number) => {
-    setResumeNotice(`Resuming from ${formatClock(seconds)}`);
-    if (resumeNoticeTimerRef.current) clearTimeout(resumeNoticeTimerRef.current);
-    resumeNoticeTimerRef.current = setTimeout(() => {
-      resumeNoticeTimerRef.current = null;
-      setResumeNotice(null);
-    }, RESUME_NOTICE_MS);
-  }, []);
 
   const recordDetectedHeight = useCallback((sourceId: string, height: number) => {
     if (!sourceId || height <= 0) return;
