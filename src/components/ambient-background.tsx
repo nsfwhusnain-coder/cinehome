@@ -47,7 +47,7 @@ export function AmbientBackground() {
         // Long enough that rails sit in the wash; soft stop into canvas
         height: "min(1400px, 160vh)",
         opacity,
-        transition: "opacity 600ms ease",
+        transition: "opacity 900ms cubic-bezier(0.16, 1, 0.3, 1)",
         background: `linear-gradient(180deg, ${tint} 0%, ${tint} 18%, ${CANVAS} 72%, ${CANVAS} 100%)`,
       }}
     />

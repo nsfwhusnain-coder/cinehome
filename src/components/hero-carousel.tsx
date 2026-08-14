@@ -298,23 +298,28 @@ export function HeroCarousel({ items }: Props) {
               alt=""
               // LCP element — never lazy, hint the browser to fetch it first.
               fetchPriority="high"
-              initial={{ opacity: 0, scale: 1 }}
-              animate={
-                reduceMotion
-                  ? { opacity: 1, scale: 1 }
-                  : { opacity: 1, scale: 1.06 }
-              }
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={
-                reduceMotion
-                  ? { opacity: { duration: 0.5 } }
-                  : {
-                      opacity: { duration: 0.85, ease: EASE_OUT_EXPO },
-                      scale: { duration: 12, ease: "easeOut" },
-                    }
-              }
-              className="absolute inset-0 h-full w-full object-cover"
-              style={{ objectPosition: "center 20%" }}
+              transition={{
+                opacity: {
+                  duration: reduceMotion ? 0.4 : 1.05,
+                  ease: EASE_OUT_EXPO,
+                },
+              }}
+              className="hero-ken absolute inset-0 h-full w-full object-cover"
+              style={{
+                objectPosition: "center 18%",
+                animationName: reduceMotion
+                  ? "none"
+                  : index % 2 === 0
+                    ? "hero-drift-a"
+                    : "hero-drift-b",
+                animationDuration: `${SLIDE_INTERVAL_MS}ms`,
+                animationTimingFunction: "linear",
+                animationFillMode: "forwards",
+                animationPlayState: paused ? "paused" : "running",
+              }}
             />
           ) : (
             <div className="absolute inset-0" style={{ backgroundColor: CANVAS }} />

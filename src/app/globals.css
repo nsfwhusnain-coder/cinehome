@@ -406,10 +406,34 @@ html[data-tv="1"] .max-w-md {
   }
 }
 
+.hero-ken {
+  will-change: transform;
+}
+
+/* Slow Ken Burns — lives the whole slide, never eases out and freezes. */
+@keyframes hero-drift-a {
+  from {
+    transform: scale(1.03) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.085) translate3d(1.6%, -1.4%, 0);
+  }
+}
+
+@keyframes hero-drift-b {
+  from {
+    transform: scale(1.03) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.08) translate3d(-1.5%, 1.1%, 0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hero-slide-fill,
-  [style*="hero-slide-fill"] {
+  [style*="hero-slide-fill"],
+  .hero-ken {
     animation: none !important;
-    transform: scaleX(1);
+    transform: none !important;
   }
 }
