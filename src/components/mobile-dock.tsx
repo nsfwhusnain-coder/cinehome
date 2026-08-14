@@ -36,7 +36,7 @@ export function MobileDock({ hubsEnabled = true }: MobileDockProps) {
   const navigate = useNavigate();
   const pathname = usePathname();
 
-  if (pathname.startsWith("/watch")) return null;
+  if (pathname.startsWith("/watch") || pathname === "/login") return null;
 
   const items = hubsEnabled
     ? DOCK_ITEMS

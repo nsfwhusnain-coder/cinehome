@@ -8,7 +8,7 @@ description: >
 # CineHome deploy skill
 
 ```bash
-cd /Users/husnainali/cinehome-sot
+cd /Users/husnainali/cinehome
 ./scripts/deploy.sh
 ```
 

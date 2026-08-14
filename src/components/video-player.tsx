@@ -25,7 +25,6 @@ import {
   sourceDelivery,
   findDirectDebridAlternative,
   HD_FLOOR_HEIGHT,
-  TRANSCODE_MAX_HEIGHT,
 } from "@/lib/playback/source-quality";
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
@@ -52,6 +51,7 @@ import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
 
 import { activeBufferProfile } from "@/lib/playback/device-profile";
 import { hevcNeedsNativePath, warmDecodeCapabilities } from "@/lib/playback/decode-capability";
+import { shouldUseNativeHlsOnTv } from "@/lib/playback/hls-engine";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
 import {
@@ -161,21 +161,23 @@ function isInteractivePlayerTarget(target: EventTarget | null): boolean {
   );
 }
 
-function preferNativeHls(video: HTMLVideoElement): boolean {
+function preferNativeHls(
+  _video: HTMLVideoElement,
+  source?: PlaybackSource | null
+): boolean {
   if (!isTvLikeDevice()) return false;
-  if (!video.canPlayType("application/vnd.apple.mpegurl")) return false;
-  // Native HLS forfeits the quality floor completely: there is no JS API to
-  // select or cap a rendition on that path, so HLS_MIN_HEIGHT,
-  // applyPreferredHlsQuality and the adaptive downshift all become dead code
-  // and the OS picks the rung unaided. Production logs show 480p as the single
-  // most common decoded height, which is what that looks like from outside.
-  //
-  // Previously every TV took this branch merely for answering canPlayType on
-  // m3u8, which every TV does. Now the floor is only surrendered when MSE
-  // genuinely cannot carry HEVC and the native path is the only route to
-  // hardware decode - measured, not inferred from the user agent, because
-  // plenty of TV browsers handle HEVC through MSE and should keep the floor.
-  return hevcNeedsNativePath();
+  // Native HLS forfeits the quality floor. Only HEVC remux on a TV whose MSE
+  // cannot carry HEVC pays that price. H.264 (Luna, Quasar, Vixsrc) must stay
+  // on hls.js — Hisense VIDAA is Chromium: mpegurl canPlayType is "" and
+  // skipping hls.js used to hard-error every HLS title.
+  return shouldUseNativeHlsOnTv({
+    isTv: true,
+    hevcNeedsNative: hevcNeedsNativePath(),
+    codec: source?.codec,
+    origin: source?.origin,
+    compat: source?.compat,
+    delivery: source ? sourceDelivery(source) : undefined,
+  });
 }
 
 function hlsWorkerSupportedHere(): boolean {
@@ -308,8 +310,8 @@ const HLS_HARD_HTTP_CODES = new Set([403, 404, 410, 502, 503, 520, 521, 522, 524
 /** If play never advances past t≈0 after load, fail over (stuck Aether/PNG ads). */
 /** Cold start: allow large pure-media level fetch after multi-variant master (R10). */
 const HLS_ZERO_PROGRESS_FAIL_MS = 22_000;
-/** Longer zero-progress window while waiting for mid-title resume seek. */
-const HLS_ZERO_PROGRESS_FAIL_RESUME_MS = 22_000;
+/** Mid-title resume: extra room for the seek + first fragment after a CDN hop. */
+const HLS_ZERO_PROGRESS_FAIL_RESUME_MS = 32_000;
 /**
  * Transcode startup (task 5): /api/transcode's own worst case is bounded by
  * the route's TRANSCODER_TIMEOUT_MS (45s fetch to the transcoder) plus a
@@ -465,7 +467,13 @@ function buildRemuxUrl(options: {
   const preferredLanguage = normalizeTrackLanguage(options.audio.preferredLanguage);
   if (originalLanguage) params.set("originalLanguage", originalLanguage);
   if (preferredLanguage) params.set("audioLanguage", preferredLanguage);
-  if (options.mediaType === "tv" && options.season && options.episode) {
+  if (
+    options.mediaType === "tv" &&
+    options.season != null &&
+    Number.isFinite(options.season) &&
+    options.episode != null &&
+    Number.isFinite(options.episode)
+  ) {
     params.set("season", String(options.season));
     params.set("episode", String(options.episode));
   }
@@ -1314,47 +1322,25 @@ export function VideoPlayer({
    */
   const delivery = activeSource ? sourceDelivery(activeSource) : "unavailable";
   const needsRemux = !!activeSource && delivery === "remux";
-  const needsTranscode = !!activeSource && delivery === "unavailable";
-  // Transcode target policy: live 4K transcoding on the shared VAAPI encoder
-  // is too slow-starting to be viable (see mini-services/transcoder header —
-  // measured ~0.9x realtime at 4K vs ~3.3x at 1080p) — always cap the
-  // requested ladder at TRANSCODE_MAX_HEIGHT so a 4K HEVC/MKV source becomes
-  // a smooth, fast-starting 1080p H.264 ABR ladder instead. Real 4K only
-  // ever happens on the native-decode path (this branch is never taken for
-  // it). Shares the same constant as source-quality.ts's badge cap so the
-  // UI's quality claim can never drift from what's actually encoded.
-  const transcodeMaxHeight =
-    needsTranscode && activeSource
-      ? Math.min(activeSource.maxHeight || TRANSCODE_MAX_HEIGHT, TRANSCODE_MAX_HEIGHT)
-      : TRANSCODE_MAX_HEIGHT;
   /**
-   * Remux deliberately does NOT pass a height cap. TRANSCODE_MAX_HEIGHT exists
-   * because re-encoding 4K on the shared VAAPI encoder is too slow to be
-   * viable; a stream copy re-encodes nothing, so capping it would throw away
-   * the source's real resolution for no saving at all. This is the path that
-   * finally delivers true 4K.
+   * Remux only. TRANSCODER_ENABLED=0 — an unavailable source must not hop
+   * to `/api/transcode` (503). Dock already blocks picking these; if one
+   * becomes active, fail closed on the raw URL rather than a dead encoder.
    */
-  const serverPath = needsRemux || needsTranscode;
+  const serverPath = needsRemux;
   const serverUrl =
     serverPath && tmdbId && activeSource
-      ? needsRemux
-        ? buildRemuxUrl({
-            source: activeSource,
-            mediaType: mediaType ?? "movie",
-            tmdbId,
-            season: tvSeason,
-            episode: tvEpisode,
-            audio: audioSelectionRef.current,
-            startAtSeconds: PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED
-              ? remuxStartAtSeconds
-              : 0,
-          })
-        : `/api/transcode?type=${mediaType ?? "movie"}&id=${tmdbId}` +
-          `&sourceId=${encodeURIComponent(activeSource.id)}` +
-          `&maxHeight=${transcodeMaxHeight}` +
-          (mediaType === "tv" && tvSeason && tvEpisode
-            ? `&season=${tvSeason}&episode=${tvEpisode}`
-            : "")
+      ? buildRemuxUrl({
+          source: activeSource,
+          mediaType: mediaType ?? "movie",
+          tmdbId,
+          season: tvSeason,
+          episode: tvEpisode,
+          audio: audioSelectionRef.current,
+          startAtSeconds: PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED
+            ? remuxStartAtSeconds
+            : 0,
+        })
       : "";
   const effectiveSrc = serverPath && serverUrl ? serverUrl : src;
   const effectiveStreamType = serverPath && serverUrl ? "hls" : streamType;
@@ -1709,8 +1695,13 @@ export function VideoPlayer({
     };
   }, []);
 
-  /** Episode/title identity — reset session flags so next title never inherits resume/source state. */
-  const mediaKey = `${mediaType ?? "movie"}:${tvId ?? title}:${tvSeason ?? ""}:${tvEpisode ?? ""}`;
+  /**
+   * Episode/title identity — reset session flags so next title never inherits
+   * resume/source state. TMDB id only: the first paint often has title
+   * "Untitled" (or a placeholder) which then flips to the real name and
+   * would wipe resume + the sticky source if `title` were in this key.
+   */
+  const mediaKey = `${mediaType ?? "movie"}:${tmdbId ?? tvId ?? "0"}:${tvSeason ?? ""}:${tvEpisode ?? ""}`;
 
   /**
    * Session reset on title/episode change. This cannot become a render-phase
@@ -2613,15 +2604,6 @@ export function VideoPlayer({
         reason,
       });
       markSourceFailed(attempt.sourceId);
-      console.info(
-        "[playback-failure]",
-        JSON.stringify({
-          sourceId: attempt.sourceId,
-          generation: attempt.generation,
-          reason,
-          at: Date.now(),
-        })
-      );
       // Fatal media/network failure → next source now. Never wait for enrich.
       if (tryNextSourceRef.current()) return true;
       // Only hold for more sources if we have literally nothing left to try
@@ -2668,14 +2650,6 @@ export function VideoPlayer({
       if (assessment.plausible) return false;
       const attempt = sourceAttemptControllerRef.current.currentToken();
       if (!attempt) return false;
-      console.info(
-        "[playback-duration-rejected]",
-        JSON.stringify({
-          sourceId: attempt.sourceId,
-          observedDurationS: Math.round(assessment.observedDurationS),
-          expectedDurationS: Math.round(assessment.expectedDurationS),
-        })
-      );
       const failedOver = failActiveSource("implausibly_short_duration", attempt);
       if (failedOver && !durationRefreshRequestedRef.current) {
         durationRefreshRequestedRef.current = true;
@@ -2700,7 +2674,8 @@ export function VideoPlayer({
   );
 
   // Fail over even while enrich is running — never wait for scrape complete.
-  // Wall duration is adaptive (R8): cold multi-source ~20s; resume / sole source ~28s.
+  // Wall duration is adaptive (R8): cold multi-source ~20s; resume / sole source ~28s;
+  // remux/transcode floors at 52s so the packer is not killed mid-job.
   // Re-keys on activeSource?.id so pre-play CDN auto-upgrade resets the timer once.
   // Intentionally NOT dependent on orderedSources — enrich arrivals must not reset the wall.
   useEffect(() => {
@@ -2712,7 +2687,10 @@ export function VideoPlayer({
       resumeAtRef.current > RESUME_SLOW_THRESHOLD_S
         ? resumeAtRef.current
         : (initialTime ?? 0);
-    const wallMs = firstFrameWallMs({ resumeAt, remainingSources });
+    const remuxOrTranscode =
+      (activeSource != null && sourceDelivery(activeSource) === "remux") ||
+      effectiveSrc.includes("/api/transcode");
+    const wallMs = firstFrameWallMs({ resumeAt, remainingSources, remuxOrTranscode });
     const timer = window.setTimeout(() => {
       if (everPlayedRef.current) return;
       if (usePlayerStore.getState().error) return;
@@ -2903,7 +2881,7 @@ export function VideoPlayer({
     const applyResumeSeekAndRearm = (v: HTMLVideoElement): void => {
       const hadResume = resumeAtRef.current > RESUME_SLOW_THRESHOLD_S;
       const applied = applyResumeSeek(v);
-      // After resume seek lands, start a fresh normal 14s zero-progress window.
+      // After resume seek lands, start a fresh cold zero-progress window.
       if (applied && hadResume) {
         armZeroProgressWatchdog(HLS_ZERO_PROGRESS_FAIL_MS);
       }
@@ -3094,7 +3072,8 @@ export function VideoPlayer({
           failActiveSource("dash_initialize_error", sourceAttempt);
         });
     } else if (useHls) {
-      if (Hls.isSupported() && !preferNativeHls(video)) {
+      const preferNative = preferNativeHls(video, activeSourceRef.current);
+      if (Hls.isSupported() && !preferNative) {
         playbackEngineRef.current = "hlsjs";
         const startPos =
           resumeAtRef.current > 1
@@ -3624,17 +3603,16 @@ export function VideoPlayer({
           }
           failActiveSource("hls_fatal_error", sourceAttempt);
         });
-      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      } else if (
+        preferNative ||
+        Boolean(video.canPlayType("application/vnd.apple.mpegurl"))
+      ) {
         playbackEngineRef.current = "native_hls";
-        // Native HLS (Safari/AVFoundation) — documented limitation (task 3):
-        // there is no JS-level API to select or floor a specific rendition
-        // here. `video.videoTracks`/`audioTracks` on Safari's native HLS
-        // represent alternate angles/audio, not ABR renditions, and
-        // AVFoundation's own ABR engine (ladder selection, ramp-up/down) runs
-        // entirely inside the OS with no hook to cap or floor it from script.
-        // In practice Safari's ABR already targets the highest sustainable
-        // rendition, so this is a floor we can request via the manifest
-        // (EXT-X-STREAM-INF ordering) but cannot enforce or verify from here.
+        // Native HLS: Safari mpegurl, or TV HEVC remux when MSE has no HEVC
+        // (VIDAA often answers "" for mpegurl — still assign src). Element
+        // `error` is already bound to failActiveSource, so a dead remux
+        // failovers to Kronos/Luna instead of a global "can't play HLS".
+        // No JS rendition floor on this path (AVFoundation / TV OS ABR).
         video.src = effectiveSrc;
         setLevelsPending(false);
         setBuffering(false);
@@ -4641,13 +4619,9 @@ export function VideoPlayer({
       prewarm: true,
       startAtSeconds: prewarmStartAt,
     });
-    void fetch(prewarmUrl, {
-      cache: "no-store",
-      credentials: "include",
-      signal: controller.signal,
-    })
-      .then((response) => {
-        if (!response.ok || controller.signal.aborted) return;
+    void prewarmRemuxPosition(prewarmUrl, { signal: controller.signal })
+      .then(() => {
+        if (controller.signal.aborted) return;
         if (
           !wantsFourKDiscovery(qualityTargetRef.current) ||
           userSelectedSourceRef.current ||
@@ -5360,6 +5334,9 @@ export function VideoPlayer({
         premiumCount={premiumSourceCount(orderedSources)}
         chosenIndex={activeSourceIndex - 1}
         bufferFill={bloomBufferFill}
+        /* Honest Ultra/fast remux line — bloom phase copy is generic
+           (Searching / Preparing / Opening). Prefer the measured status. */
+        waitHint={loadingStatus}
         /* Stable per-title seed so each film keeps its own orbital geometry
            across reopens, and episodes of a series differ slightly. */
         signatureSeed={`${mediaType}:${tmdbId}`}
@@ -5385,7 +5362,7 @@ export function VideoPlayer({
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-white/80" />
           <span>
             Switching…
-            {needsRemux ? " Repackaging for your browser." : needsTranscode ? " Preparing stream, this can take a few seconds." : ""}
+            {needsRemux ? " Repackaging for your browser." : ""}
           </span>
         </div>
       )}

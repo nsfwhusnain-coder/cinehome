@@ -43,6 +43,8 @@ const RESOLUTION_PATTERNS = [
 /** Owner's absolute base quality — a source meeting this must never lose the
  * auto-default to one that doesn't, regardless of probe/verified/format tier. */
 export const HD_FLOOR_HEIGHT = 1080;
+/** Same-tier UHD: 2160 and above count as one height class for sibling picks. */
+const UHD_TIER_HEIGHT = 2160;
 
 /** Minimum evidence before a rolling success rate changes auto-selection. */
 export const RUNTIME_HEALTH_MIN_SAMPLES = 5;
@@ -525,6 +527,9 @@ export function isSourcePlayableHere(source: PlaybackSource): boolean {
 /**
  * When the user picks a remux-only debrid row, switch to a same-height
  * progressive sibling instead of waiting on the packer.
+ *
+ * Same height only — a Hades remux 4K must not be swapped for Kronos 1080.
+ * No sibling at this tier → null so the remux pick stays (and prewarms).
  */
 export function findDirectDebridAlternative(
   source: PlaybackSource,
@@ -534,17 +539,14 @@ export function findDirectDebridAlternative(
     return null;
   }
   const height = sourceMaxHeight(source);
-  const direct = roster.filter(
-    (row) =>
-      row.origin === "debrid" &&
-      row.id !== source.id &&
-      sourceDelivery(row) === "direct"
-  );
   return (
-    direct.find((row) => sourceMaxHeight(row) >= height && height > 0) ??
-    direct.find((row) => sourceMaxHeight(row) >= HD_FLOOR_HEIGHT) ??
-    direct[0] ??
-    null
+    roster.find((row) => {
+      if (row.origin !== "debrid" || row.id === source.id) return false;
+      if (sourceDelivery(row) !== "direct") return false;
+      const rowHeight = sourceMaxHeight(row);
+      if (height >= UHD_TIER_HEIGHT && rowHeight >= UHD_TIER_HEIGHT) return true;
+      return height > 0 && rowHeight === height;
+    }) ?? null
   );
 }
 

@@ -17,12 +17,7 @@ import { toast } from "sonner";
 import { useSession } from "next-auth/react";
 import type { PlaybackResponse, PlaybackSource } from "@/lib/playback/types";
 import { sourceId } from "@/lib/playback/server-names";
-
-function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+import { tvQueryIndex } from "@/lib/playback/tv-index";
 
 /** Cancelable end-of-episode autoplay countdown (task 9). */
 const NEXT_EPISODE_COUNTDOWN_S = 10;
@@ -42,6 +37,35 @@ interface ProgressItem {
   duration: number;
   season?: number | null;
   episode?: number | null;
+  updatedAt?: string;
+}
+
+/** Best in-progress TV episode; season 0 (Specials) is a valid resume point. */
+function resumeTvEpisode(
+  progressList: ProgressItem[] | undefined,
+  tmdbId: number
+): { season: number; episode: number } | null {
+  if (!progressList?.length) return null;
+  const rows = progressList
+    .filter(
+      (p) =>
+        Number(p.tmdbId) === Number(tmdbId) &&
+        p.mediaType === "tv" &&
+        p.season != null &&
+        Number(p.season) >= 0 &&
+        p.episode != null &&
+        Number(p.episode) > 0 &&
+        p.progress > 0.02 &&
+        p.progress < 0.95
+    )
+    .sort((a, b) => {
+      const ta = a.updatedAt ? Date.parse(a.updatedAt) : 0;
+      const tb = b.updatedAt ? Date.parse(b.updatedAt) : 0;
+      return tb - ta;
+    });
+  const best = rows[0];
+  if (!best) return null;
+  return { season: Number(best.season), episode: Number(best.episode) };
 }
 
 function toPlaybackSources(playback: PlaybackResponse | undefined): PlaybackSource[] {
@@ -88,6 +112,7 @@ function playbackErrorMessage(
 interface SeasonMeta {
   season_number: number;
   episode_count: number;
+  name?: string;
 }
 
 function resolveNextEpisode(
@@ -138,11 +163,11 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
     episode: number;
   } | null>(null);
   const saveGenerationRef = useRef(0);
-  const resumeToastShown = useRef(false);
 
   // TV scrapers require season+episode. Default S1E1 when URL omits them.
-  const tvSeason = mediaType === "tv" ? (season && season > 0 ? season : 1) : undefined;
-  const tvEpisode = mediaType === "tv" ? (episode && episode > 0 ? episode : 1) : undefined;
+  // Season/episode 0 is TMDB specials — do not coerce 0 → 1.
+  const tvSeason = mediaType === "tv" ? tvQueryIndex(season) : undefined;
+  const tvEpisode = mediaType === "tv" ? tvQueryIndex(episode) : undefined;
 
   /**
    * Leave the player by popping history — do NOT push the detail URL.
@@ -211,15 +236,27 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
     enabled: mounted && !!session,
   });
 
-  // Normalize TV URLs so history/share always include S/E
+  const tvParamsInUrl =
+    mediaType !== "tv" ||
+    (season != null &&
+      Number.isFinite(season) &&
+      season >= 0 &&
+      episode != null &&
+      Number.isFinite(episode) &&
+      episode >= 0);
+
+  // Normalize TV URLs so history/share always include S/E. If the URL omitted
+  // them, resume from Continue (including Specials) instead of forcing S1E1.
   useEffect(() => {
-    if (!mounted || mediaType !== "tv") return;
-    if (season != null && season > 0 && episode != null && episode > 0) return;
-    router.replace(`/watch/tv/${id}?season=${tvSeason}&episode=${tvEpisode}`);
-  }, [mounted, mediaType, id, season, episode, tvSeason, tvEpisode, router]);
+    if (!mounted || mediaType !== "tv" || tvParamsInUrl) return;
+    if (session && progressList === undefined) return;
+    const resume = resumeTvEpisode(progressList, id);
+    const s = resume?.season ?? 1;
+    const e = resume?.episode ?? 1;
+    router.replace(`/watch/tv/${id}?season=${s}&episode=${e}`);
+  }, [mounted, mediaType, id, tvParamsInUrl, session, progressList, router]);
 
   useEffect(() => {
-    resumeToastShown.current = false;
     // Drop previous episode's playhead immediately — do not let flush/onProgress
     // write S1E1's timestamp onto S1E2 (next-episode / picker bug).
     lastProgressRef.current = null;
@@ -260,7 +297,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
     mediaType,
     season: tvSeason,
     episode: tvEpisode,
-    enabled: mounted,
+    enabled: mounted && tvParamsInUrl,
   });
 
   const playbackSources = toPlaybackSources(playback);
@@ -295,18 +332,6 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
     playback?.status === "external" ||
     playback?.status === "requestable";
 
-  useEffect(() => {
-    if (playbackSources.length > 0 && savedTime > 5 && !resumeToastShown.current) {
-      resumeToastShown.current = true;
-      // Top-center, short, non-blocking — never cover bottom player controls / gear.
-      toast.success(`Resumed from ${formatTime(savedTime)}`, {
-        position: "top-center",
-        duration: 2200,
-        className: "pointer-events-none",
-      });
-    }
-  }, [playbackSources.length, savedTime]);
-
   const persistProgress = useCallback(
     async (e: {
       position: number;
@@ -318,7 +343,15 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
       episode: number;
     }) => {
       if (!session || e.duration <= 0) return;
-      if (e.mediaType === "tv" && (e.season < 1 || e.episode < 1)) return;
+      if (
+        e.mediaType === "tv" &&
+        (!Number.isFinite(e.season) ||
+          e.season < 0 ||
+          !Number.isFinite(e.episode) ||
+          e.episode < 0)
+      ) {
+        return;
+      }
 
       // Drop stale saves from the previous episode after a switch.
       if (
@@ -589,7 +622,23 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
         <div className="flex h-full flex-col items-center justify-center gap-3 text-white/70">
           <User className="h-10 w-10 text-white" />
           <div className="text-sm font-medium">Sign in to start watching</div>
-          <Button type="button" onClick={() => navigate("/login")} size="sm">
+          <Button
+            type="button"
+            onClick={() => {
+              const watchPath =
+                mediaType === "tv" &&
+                season != null &&
+                Number.isFinite(season) &&
+                season >= 0 &&
+                episode != null &&
+                Number.isFinite(episode) &&
+                episode >= 0
+                  ? `/watch/tv/${id}?season=${season}&episode=${episode}`
+                  : `/watch/${mediaType}/${id}`;
+              navigate(`/login?callbackUrl=${encodeURIComponent(watchPath)}`);
+            }}
+            size="sm"
+          >
             Sign in
           </Button>
         </div>
@@ -664,10 +713,14 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
             tvSeasons={
               mediaType === "tv"
                 ? ((meta?.seasons as SeasonMeta[] | undefined) ?? [])
-                    .filter((s) => s.season_number > 0)
+                    .filter((s) => s.season_number >= 0)
                     .map((s) => ({
                       season_number: s.season_number,
-                      name: `Season ${s.season_number}`,
+                      name:
+                        s.name ||
+                        (s.season_number === 0
+                          ? "Specials"
+                          : `Season ${s.season_number}`),
                       episode_count: s.episode_count,
                     }))
                 : undefined

@@ -14,6 +14,11 @@ export interface PlaybackRequest {
    * before the player ever starts (Change 3 / 11).
    */
   qualityHint?: "auto" | number;
+  /**
+   * Scraper ranking class. Only `anime` is sent today — Animation + JP/ja
+   * (or an anime keyword). Changes default streamUrl, so cache keys include it.
+   */
+  contentClass?: "anime";
 }
 
 export type PlaybackStatus =
@@ -171,6 +176,7 @@ export type CandidateReadiness =
   | "resolved"
   | "transport_verified"
   | "client_decoded";
+
 
 export type IdentityEvidence =
   | "selected_file"

@@ -18,6 +18,7 @@ import { useNavigate } from "@/hooks/use-navigate";
 import { useWatchlist, type WatchlistItem } from "@/hooks/use-watchlist";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { useIsTv } from "@/hooks/use-is-tv";
 
 export interface CardMenuTarget {
   tmdbId: number;
@@ -52,6 +53,7 @@ const GLASS: React.CSSProperties = {
  * stopPropagation on pointerdown + click so the card never navigates.
  */
 export function CardOverflowMenu({ target, className, alwaysVisible }: Props) {
+  const isTv = useIsTv();
   const { data: session } = useSession();
   const { isIn, add, remove } = useWatchlist();
   const navigate = useNavigate();
@@ -260,18 +262,23 @@ export function CardOverflowMenu({ target, className, alwaysVisible }: Props) {
         )
       : null;
 
+  const tvVisible = isTv || alwaysVisible;
+
   return (
     <>
-      {/* 44px hit area, 32px visual */}
+      {/* 44px hit area (48px on TV), 32px visual. Hover-reveal on pointer; always on TV. */}
       <button
         ref={btnRef}
         type="button"
+        data-card-overflow=""
         className={cn(
-          "absolute right-1 top-1 z-30 flex h-11 w-11 items-center justify-center",
-          "opacity-0 transition-opacity duration-[180ms] ease-out",
-          "group-hover:opacity-100 group-focus-within:opacity-100",
-          "focus-visible:opacity-100 focus-visible:outline-none",
-          alwaysVisible && "opacity-100",
+          "absolute right-1 top-1 z-30 flex items-center justify-center",
+          isTv ? "h-12 w-12" : "h-11 w-11",
+          "transition-opacity duration-[180ms] ease-out",
+          tvVisible
+            ? "opacity-100"
+            : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
+          "focus-visible:outline-none",
           className
         )}
         aria-label="More actions"

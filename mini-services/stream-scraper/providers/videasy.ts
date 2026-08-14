@@ -10,6 +10,7 @@ import type { ProviderStream, TmdbLookup } from "./types";
 import { lookupTmdb } from "./tmdb-lookup";
 import { decryptVideasyPayload } from "./videasy-crypto";
 import { isPoisonStreamUrl } from "../poison-url";
+import { rethrowIfProviderOutage, throwIfHttpOutage } from "./provider-outage";
 
 const API_BASE = "https://api.speedracelight.com";
 const META_BASE = "https://db.speedracelight.com/3";
@@ -189,6 +190,7 @@ export async function fetchVideasySeed(
     `${API_BASE}/seed?mediaId=${encodeURIComponent(String(tmdbId))}`,
     signal ?? AbortSignal.timeout(TIMEOUT_MS)
   );
+  throwIfHttpOutage(res.status, "videasy");
   if (!res.ok) return null;
   try {
     const body = JSON.parse(res.text) as { seed?: string };
@@ -223,6 +225,7 @@ async function fetchServerSources(
     episode,
   });
   const res = await fetchJson(url, AbortSignal.timeout(TIMEOUT_MS));
+  throwIfHttpOutage(res.status, "videasy");
   if (!res.ok) return [];
   try {
     return parseDecrypted(res.text, seed, tmdbId);
@@ -293,17 +296,31 @@ export async function resolveVideasy(
     const seed = await fetchVideasySeed(tmdbId);
     if (!seed) return [];
     const meta = await fetchVideasyMeta(tmdbId, mediaType);
-    const batches = await Promise.all(
+    const settled = await Promise.allSettled(
       VIDEASY_SERVERS.map((server) =>
         fetchServerSources(server, seed, meta, tmdbId, mediaType, season, episode)
       )
     );
     let picked: VideasyRawSource[] = [];
-    for (const batch of batches) {
-      if (batch.length) picked = richest(picked, batch);
+    let sawSuccess = false;
+    let outage: unknown = null;
+    for (const item of settled) {
+      if (item.status === "fulfilled") {
+        sawSuccess = true;
+        if (item.value.length) picked = richest(picked, item.value);
+        continue;
+      }
+      try {
+        rethrowIfProviderOutage(item.reason, "videasy");
+      } catch (err) {
+        outage = err;
+      }
     }
-    return mapStreams(picked);
-  } catch {
+    if (picked.length) return mapStreams(picked);
+    if (!sawSuccess && outage) throw outage;
+    return [];
+  } catch (err) {
+    rethrowIfProviderOutage(err, "videasy");
     return [];
   }
 }

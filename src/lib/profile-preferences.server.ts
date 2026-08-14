@@ -5,11 +5,13 @@ import {
   AUDIO_LANGUAGE_SETTING_KEY,
   DEFAULT_PROFILE_PLAYBACK_PREFERENCES,
   FOUR_K_STARTUP_SETTING_KEY,
+  HIDE_ADULT_SETTING_KEY,
   PLAYBACK_QUALITY_SETTING_KEY,
   SUBTITLE_PREFERENCE_SETTING_KEY,
   normalizeAudioLanguage,
   parseAudioPreference,
   parseFourKStartupPreference,
+  parseHideAdultPreference,
   parsePlaybackQualityPreference,
   parseSubtitlePreference,
   type ProfilePlaybackPreferences,
@@ -114,4 +116,23 @@ export async function saveUserPlaybackPreferences(
       },
     }),
   ]);
+}
+
+export async function getHideAdultPreference(userId: string): Promise<boolean> {
+  const row = await db.userSetting.findUnique({
+    where: { userId_key: { userId, key: HIDE_ADULT_SETTING_KEY } },
+    select: { value: true },
+  });
+  return parseHideAdultPreference(row?.value);
+}
+
+export async function saveHideAdultPreference(
+  userId: string,
+  hideAdult: boolean
+): Promise<void> {
+  await db.userSetting.upsert({
+    where: { userId_key: { userId, key: HIDE_ADULT_SETTING_KEY } },
+    update: { value: hideAdult ? "on" : "off" },
+    create: { userId, key: HIDE_ADULT_SETTING_KEY, value: hideAdult ? "on" : "off" },
+  });
 }

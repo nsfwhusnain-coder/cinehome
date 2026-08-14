@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSession } from "next-auth/react";
+import { signIn, useSession } from "next-auth/react";
 import { useTheme } from "next-themes";
 import { useNavigate } from "@/hooks/use-navigate";
 import { transitionView } from "@/lib/motion";
@@ -57,7 +57,6 @@ import {
   Users,
   Trash2,
   ShieldCheck,
-  Github,
   Activity,
   RefreshCw,
   AlertTriangle,
@@ -67,6 +66,8 @@ import {
   Clock,
 } from "lucide-react";
 import { MovieCard } from "@/components/movie-card";
+import { Switch } from "@/components/ui/switch";
+import { HIDE_ADULT_QUERY_KEY } from "@/hooks/use-hide-adult";
 import {
   GlassPill,
   GlassPillSegment,
@@ -310,12 +311,36 @@ export function SettingsView() {
 
         {/* Available to every signed-in user */}
         <InstallAppSection />
+        <HouseholdPreferencesSection />
         <PlaybackPreferencesSection />
 
+        <Card className="rounded-2xl border-white/10 bg-white/[0.04] backdrop-blur-xl">
+          <CardHeader>
+            <CardTitle className="font-display text-base">About</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            <div>Absolute Cinema — personal, ad-free streaming UI.</div>
+            <div className="flex flex-wrap gap-3">
+              <a
+                href="https://www.themoviedb.org/"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-red-400 hover:underline"
+              >
+                <Film className="h-3.5 w-3.5" /> TMDB
+              </a>
+            </div>
+          </CardContent>
+        </Card>
+
         {isAdmin ? (
-          <>
-            <Separator />
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Admin</p>
+          <section className="space-y-6 border-t border-white/10 pt-8">
+            <div>
+              <h2 className="font-display text-xl font-semibold tracking-tight">Admin</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Operator tools. Household members never see this section.
+              </p>
+            </div>
 
             <Card className="rounded-2xl">
               <CardHeader>
@@ -359,44 +384,8 @@ export function SettingsView() {
             />
 
             <UserManagementSection />
-          </>
+          </section>
         ) : null}
-
-        {/* About */}
-        <Card className="rounded-2xl border-white/10 bg-white/[0.04] backdrop-blur-xl">
-          <CardHeader>
-            <CardTitle className="font-display text-base">About</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <div>Absolute Cinema — personal, ad-free streaming UI.</div>
-            <div className="flex flex-wrap gap-3">
-              <a
-                href="https://www.themoviedb.org/"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-red-400 hover:underline"
-              >
-                <Film className="h-3.5 w-3.5" /> TMDB
-              </a>
-              <a
-                href="https://www.justwatch.com/"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-red-400 hover:underline"
-              >
-                JustWatch
-              </a>
-              <a
-                href="https://github.com"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-red-400 hover:underline"
-              >
-                <Github className="h-3.5 w-3.5" /> GitHub
-              </a>
-            </div>
-          </CardContent>
-        </Card>
           </>
         )}
       </motion.div>
@@ -418,6 +407,152 @@ function StatusRow({ label, ok, okLabel, badLabel }: { label: string; ok: boolea
         </Badge>
       )}
     </div>
+  );
+}
+
+function HouseholdPreferencesSection() {
+  const { data: session } = useSession();
+  const queryClient = useQueryClient();
+  const [pinOpen, setPinOpen] = useState(false);
+  const [confirmPin, setConfirmPin] = useState("");
+  const [pinBusy, setPinBusy] = useState(false);
+
+  const hideQuery = useQuery({
+    queryKey: HIDE_ADULT_QUERY_KEY,
+    queryFn: async () => {
+      const res = await fetch("/api/preferences", { cache: "no-store" });
+      const json = (await res.json()) as { hideAdult?: boolean; error?: string };
+      if (!res.ok) throw new Error(json.error || "Could not load household settings");
+      return json.hideAdult !== false;
+    },
+    staleTime: 5 * 60_000,
+  });
+  const hideAdult = hideQuery.data ?? true;
+
+  const saveMutation = useMutation({
+    mutationFn: async (next: boolean) => {
+      const res = await fetch("/api/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hideAdult: next }),
+      });
+      const json = (await res.json()) as { hideAdult?: boolean; error?: string };
+      if (!res.ok) throw new Error(json.error || "Could not save household settings");
+      return json.hideAdult !== false;
+    },
+    onSuccess: (next) => {
+      queryClient.setQueryData(HIDE_ADULT_QUERY_KEY, next);
+      toast.success(
+        next ? "TMDB adult-flagged titles hidden" : "TMDB adult-flagged titles shown"
+      );
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Could not save");
+    },
+  });
+
+  const revealFlagged = async () => {
+    const name = session?.user?.name?.trim();
+    if (!name || !confirmPin) {
+      toast.error("Enter this profile's PIN");
+      return;
+    }
+    setPinBusy(true);
+    const res = await signIn("credentials", {
+      name,
+      pin: confirmPin,
+      redirect: false,
+    });
+    setPinBusy(false);
+    if (res?.error) {
+      toast.error("Incorrect PIN");
+      return;
+    }
+    saveMutation.mutate(false);
+    setPinOpen(false);
+    setConfirmPin("");
+  };
+
+  return (
+    <Card className="rounded-2xl">
+      <CardHeader>
+        <CardTitle className="font-display text-base">Household</CardTitle>
+        <CardDescription>
+          This is TMDB&apos;s rare adult flag, not R / TV-MA. Fight Club will still appear.
+          On by default. Turning the filter off requires this profile&apos;s PIN.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <Label htmlFor="hide-adult" className="text-sm font-medium">
+            Hide TMDB adult-flagged titles
+          </Label>
+          <Switch
+            id="hide-adult"
+            checked={hideAdult}
+            disabled={!hideQuery.isSuccess || saveMutation.isPending}
+            onCheckedChange={(checked) => {
+              if (checked) {
+                saveMutation.mutate(true);
+                return;
+              }
+              setConfirmPin("");
+              setPinOpen(true);
+            }}
+          />
+        </div>
+      </CardContent>
+
+      <AlertDialog
+        open={pinOpen}
+        onOpenChange={(open) => {
+          setPinOpen(open);
+          if (!open) setConfirmPin("");
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm with PIN</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter {session?.user?.name ? `${session.user.name}'s` : "this profile's"} PIN
+              to show TMDB adult-flagged titles. This is not a kids-mode filter.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="hide-adult-pin">PIN</Label>
+            <Input
+              id="hide-adult-pin"
+              type="password"
+              inputMode="numeric"
+              autoComplete="off"
+              autoFocus
+              value={confirmPin}
+              onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, ""))}
+              placeholder="4-10 digits"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void revealFlagged();
+                }
+              }}
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void revealFlagged();
+              }}
+              disabled={pinBusy || confirmPin.length < 4}
+            >
+              {pinBusy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+              Show flagged titles
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
   );
 }
 
@@ -504,10 +639,14 @@ function PlaybackPreferencesSection() {
     <Card className="rounded-2xl">
       <CardHeader>
         <CardTitle className="font-display text-base">Playback preferences</CardTitle>
-        <CardDescription>
-          Ultra is the default: start at 1080p immediately, then switch to 4K when a
-          real 4K source is found. Auto does the same hunt. Pick a lower cap only when
-          you want every title locked to that height.
+        <CardDescription className="space-y-1.5">
+          <span className="block">
+            Auto starts at 1080p and climbs to 4K if the line and a 4K source exist.
+          </span>
+          <span className="block">
+            Ultra prefers 4K sources in the roster. It still fast-starts HD while remux
+            4K prepares, unless you pick Maximum below.
+          </span>
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -518,8 +657,12 @@ function PlaybackPreferencesSection() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="auto">Auto — 1080p now, 4K when available</SelectItem>
-              <SelectItem value="2160">Ultra — 4K when available</SelectItem>
+              <SelectItem value="auto">
+                Auto — start 1080p, climb to 4K if the line and a 4K source exist
+              </SelectItem>
+              <SelectItem value="2160">
+                Ultra — prefer 4K in the roster (HD first unless Maximum)
+              </SelectItem>
               <SelectItem value="1080">High — 1080p</SelectItem>
               <SelectItem value="720">Balanced — 720p</SelectItem>
               <SelectItem value="480">Data saver — 480p</SelectItem>
@@ -591,6 +734,11 @@ function PlaybackPreferencesSection() {
             Native 4K always starts immediately. Only 4K files that need server repackaging
             use this choice.
           </p>
+          {quality === "2160" && fourKStartup === "fast" ? (
+            <p className="text-sm text-foreground">
+              Starts at 1080p, then switches to 4K when ready. Choose Maximum to wait for 4K.
+            </p>
+          ) : null}
         </div>
         <Button
           type="button"

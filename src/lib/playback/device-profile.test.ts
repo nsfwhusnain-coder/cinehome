@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { bufferProfileFor, deviceClassFromUserAgent } from "./device-profile";
+import {
+  bufferProfileFor,
+  deviceClassFromUserAgent,
+  uaPlatformToken,
+} from "./device-profile";
 
 const LG_C5 =
   "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -36,6 +40,31 @@ describe("deviceClassFromUserAgent", () => {
     // Unknown UAs must keep the behaviour that shipped before this existed.
     expect(deviceClassFromUserAgent("")).toBe("desktop");
     expect(deviceClassFromUserAgent("something/1.0")).toBe("desktop");
+  });
+});
+
+const HISENSE_VIDAA =
+  "Mozilla/5.0 (Linux; U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.146 " +
+  "Safari/537.36 VIDAA/6.0";
+const HISENSE_PANEL =
+  "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/91.0.4472.114 Safari/537.36 Hisense";
+const HISENSE_PHONE =
+  "Mozilla/5.0 (Linux; Android 12; Hisense H50) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36";
+
+describe("uaPlatformToken", () => {
+  it("labels VIDAA / Hisense panels instead of chrome", () => {
+    expect(uaPlatformToken(HISENSE_VIDAA)).toBe("vidaa");
+    expect(uaPlatformToken(HISENSE_PANEL)).toBe("hisense");
+  });
+
+  it("does not label a Hisense phone as a panel", () => {
+    expect(uaPlatformToken(HISENSE_PHONE)).toBe("chrome");
+  });
+
+  it("still labels desktop Chrome as chrome", () => {
+    expect(uaPlatformToken(DESKTOP_CHROME)).toBe("chrome");
   });
 });
 

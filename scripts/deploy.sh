@@ -37,15 +37,20 @@ echo "host=${DEPLOY_HOST} port=${DEPLOY_SSH_PORT} path=${DEPLOY_PATH}"
 
 if [[ "${SKIP_RSYNC}" != "1" ]]; then
   echo
-  echo "=== rsync tree (excludes secrets, node_modules, .next, db) ==="
+  echo "=== rsync tree (excludes secrets, node_modules, .next, db, remux cache, QA cookies) ==="
   # Preserve server .env and db/; never push local secrets by default.
   # Include .env.example before the catch-all .env.* exclude (rsync first-match).
+  # transcode-cache/ is the bind-mounted remux 4K cache (Docker-owned).
+  # .browser-qa/ holds Playwright storage state. --delete must not wipe either.
   rsync -az --delete \
     --exclude '.git/' \
     --exclude 'node_modules/' \
     --exclude 'mini-services/stream-scraper/node_modules/' \
     --exclude '.next/' \
     --exclude 'db/' \
+    --exclude 'transcode-cache/' \
+    --exclude '.browser-qa/' \
+    --exclude '.runtime-cache/' \
     --exclude '.env' \
     --include '.env.example' \
     --exclude '.env.*' \

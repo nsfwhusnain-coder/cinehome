@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { tmdbImageUrl, posterSrcSet } from "@/lib/tmdb";
 import { cn } from "@/lib/utils";
-import { Film } from "lucide-react";
+import { Film, Info, Play } from "lucide-react";
 import { CardOverflowMenu } from "@/components/card-overflow-menu";
 import {
   preresolvePlayback,
@@ -23,6 +23,7 @@ export interface MovieCardData {
   first_air_date?: string | null;
   vote_average?: number;
   media_type?: string;
+  adult?: boolean;
 }
 
 interface Props {
@@ -53,7 +54,10 @@ export function MovieCard({
     movie.vote_average && movie.vote_average > 0
       ? Math.round(movie.vote_average * 10) / 10
       : null;
-  const href = `/${mediaType}/${movie.id}`;
+  const detailHref = `/${mediaType}/${movie.id}`;
+  const playHref =
+    mediaType === "tv" ? `/watch/tv/${movie.id}` : `/watch/movie/${movie.id}`;
+  const href = isPoster ? playHref : detailHref;
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const posterImg = isPoster ? posterSrcSet(movie.poster_path) : null;
@@ -111,7 +115,7 @@ export function MovieCard({
         <Link
           href={href}
           className="absolute inset-0 z-0 block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0f]"
-          aria-label={`Open details for ${title}`}
+          aria-label={isPoster ? `Play ${title}` : `Open details for ${title}`}
         >
           {imgUrl ? (
              
@@ -138,6 +142,36 @@ export function MovieCard({
           )}
         </Link>
 
+        {isPoster ? (
+          <div className="pointer-events-none absolute inset-0 z-[5]" aria-hidden>
+            <div className="absolute inset-0 bg-black/0 transition-colors duration-[180ms] group-hover:bg-black/35 group-focus-within:bg-black/35" />
+            <div className="absolute inset-0 m-auto flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-black opacity-0 transition-opacity duration-[180ms] group-hover:opacity-100 group-focus-within:opacity-100">
+              <Play className="h-4 w-4 translate-x-0.5 fill-current" />
+            </div>
+          </div>
+        ) : null}
+
+        {isPoster ? (
+          <Link
+            href={detailHref}
+            tabIndex={-1}
+            className="absolute left-1 top-1 z-30 flex h-11 w-11 items-center justify-center opacity-0 transition-opacity duration-[180ms] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+            aria-label={`Details for ${title}`}
+          >
+            <span
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-white/40 text-white"
+              style={{
+                background: "rgba(255,255,255,0.16)",
+                WebkitBackdropFilter: "blur(12px) saturate(170%) brightness(1.2)",
+                backdropFilter: "blur(12px) saturate(170%) brightness(1.2)",
+                boxShadow: "inset 0 1px 1px rgba(255,255,255,0.5)",
+              }}
+            >
+              <Info className="h-3.5 w-3.5" aria-hidden />
+            </span>
+          </Link>
+        ) : null}
+
         {/* Sibling over link — not inside the <a>. Hidden when parent owns top-right actions. */}
         {!hideOverflowMenu ? (
           <CardOverflowMenu
@@ -152,15 +186,11 @@ export function MovieCard({
         ) : null}
       </div>
 
-      {/* The title link below points at the same href as the artwork link above.
-          For anyone not using a pointer it is a duplicate: it doubled the tab
-          stops on a catalogue page (measured 1184 focusable elements on /movies)
-          and made every card announce itself twice. On a television that is two
-          D-pad presses per title before you have moved anywhere. It stays
-          clickable for mouse users, out of the tab order and the a11y tree. */}
+      {/* Title goes to detail so the poster Play path stays exclusive.
+          Out of the tab order — one stop per card on TV. */}
       {!hideMeta ? (
         <Link
-          href={href}
+          href={detailHref}
           tabIndex={-1}
           aria-hidden="true"
           className="mt-2 block"

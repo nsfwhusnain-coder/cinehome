@@ -1,4 +1,5 @@
 import type { ProviderStream } from "./types";
+import { rethrowIfProviderOutage, throwIfHttpOutage } from "./provider-outage";
 
 const BASE_URL = "https://vixsrc.to";
 const VIXSRC_HEADERS = {
@@ -43,6 +44,7 @@ export async function resolveVixsrc(
 
   try {
     const apiRes = await fetch(apiUrl, { headers: VIXSRC_HEADERS, signal: AbortSignal.timeout(10000) });
+    throwIfHttpOutage(apiRes.status, "vixsrc");
     if (!apiRes.ok) return [];
     const apiData = (await apiRes.json()) as { src?: string };
     if (!apiData.src) return [];
@@ -51,6 +53,7 @@ export async function resolveVixsrc(
       headers: { ...VIXSRC_HEADERS, Accept: "text/html,application/xhtml+xml,*/*" },
       signal: AbortSignal.timeout(10000),
     });
+    throwIfHttpOutage(embedRes.status, "vixsrc");
     if (!embedRes.ok) return [];
     const html = await embedRes.text();
 
@@ -64,6 +67,7 @@ export async function resolveVixsrc(
       headers: { ...VIXSRC_HEADERS, Referer: apiUrl },
       signal: AbortSignal.timeout(10000),
     });
+    throwIfHttpOutage(playlistRes.status, "vixsrc");
     if (!playlistRes.ok) return [];
     const playlistContent = await playlistRes.text();
 
@@ -82,7 +86,8 @@ export async function resolveVixsrc(
         userAgent: VIXSRC_HEADERS["User-Agent"],
       },
     ];
-  } catch {
+  } catch (err) {
+    rethrowIfProviderOutage(err, "vixsrc");
     return [];
   }
 }

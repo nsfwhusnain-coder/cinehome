@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+  buildKindPath,
   extractInfoHashFromResolveUrl,
   fetchTorrentioCandidates,
   isBrowserPlayableContainer,
@@ -11,6 +12,31 @@ import {
   effectiveReleaseContainer,
   isDirectPlayDebridRelease,
 } from "./torrentio";
+
+describe("buildKindPath season 0", () => {
+  it("keeps TMDB specials as :0:1.json instead of mapping to S1", () => {
+    const path = buildKindPath({
+      imdbId: "tt0944947",
+      mediaType: "tv",
+      season: 0,
+      episode: 1,
+    });
+    expect(path).toContain(":0:1.json");
+    expect(path).not.toContain(":1:1.json");
+  });
+
+  it("still defaults a missing season/episode to 1", () => {
+    expect(
+      buildKindPath({ imdbId: "tt0944947", mediaType: "tv" })
+    ).toBe("stream/series/tt0944947:1:1.json");
+  });
+
+  it("does not put season on movie paths", () => {
+    expect(
+      buildKindPath({ imdbId: "tt0137523", mediaType: "movie", season: 0, episode: 1 })
+    ).toBe("stream/movie/tt0137523.json");
+  });
+});
 
 describe("extractInfoHashFromResolveUrl", () => {
   it("recovers the stable hash without returning the credential segment", () => {

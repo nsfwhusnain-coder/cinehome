@@ -8,6 +8,7 @@
 
 import type { ProviderStream } from "./types";
 import { isPoisonStreamUrl } from "../poison-url";
+import { rethrowIfProviderOutage, throwIfHttpOutage } from "./provider-outage";
 
 const BASE = "https://cinemaos.tech";
 /** NEXT_PUBLIC_API_HASH_SECRET from cinemaos.tech client bundle (may rotate). */
@@ -290,6 +291,7 @@ async function fetchCinemaosv2(
       Origin: REFERER_ORIGIN,
     },
   });
+  throwIfHttpOutage(res.status, "cinemaos");
   if (!res.ok) {
     return { ok: false, status: res.status, body: null };
   }
@@ -393,7 +395,8 @@ export async function resolveCinemaos(
       });
     }
     return out;
-  } catch {
+  } catch (err) {
+    rethrowIfProviderOutage(err, "cinemaos");
     return [];
   }
 }

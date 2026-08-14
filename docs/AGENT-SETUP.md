@@ -5,11 +5,12 @@ Configured so Grok can develop, deploy, and **see** the live site.
 ## Paths
 | Item | Path |
 |------|------|
-| Local SoT | `/Users/husnainali/cinehome-sot` |
+| Local SoT | `/Users/husnainali/cinehome` |
+| Canonical remote | GitHub `nsfwhusnain-coder/cinehome` (`cinehome-sot` is STALE — do not edit or deploy from it) |
 | Server | `hussyserver:/home/hussy/cinehome` |
 | Live | http://100.89.184.84:4445 |
 | Secrets | `~/.grok/secrets/cinehome.env` (mode 600, never commit) |
-| Screenshots | `cinehome-sot/.browser-qa/` |
+| Screenshots | `cinehome/.browser-qa/` |
 
 ## Skills (slash / auto)
 - `/cinehome-dev` — full workflow
@@ -23,12 +24,12 @@ Configured so Grok can develop, deploy, and **see** the live site.
 - `cinehome-ui`
 - `cinehome-qa`
 
-Spawn with `cwd=/Users/husnainali/cinehome-sot` and non-overlapping file scopes.
+Spawn with `cwd=/Users/husnainali/cinehome` and non-overlapping file scopes.
 
 ## Browser QA
 ```bash
 source ~/.grok/secrets/cinehome.env
-cd /Users/husnainali/cinehome-sot
+cd /Users/husnainali/cinehome
 bun scripts/browser/qa.ts flow smoke
 HEADED=1 bun scripts/browser/qa.ts flow home   # you watch Chromium
 ```
@@ -46,6 +47,6 @@ Agent reads PNGs under `.browser-qa/` via the Read tool.
 
 ## Recommended session start
 ```bash
-cd /Users/husnainali/cinehome-sot
+cd /Users/husnainali/cinehome
 # start grok from this directory so AGENTS.md + project skills load
 ```

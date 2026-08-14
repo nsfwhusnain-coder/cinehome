@@ -13,7 +13,7 @@ You cannot “see” the site without screenshots. After any UI change or when t
 ## 1. Load secrets
 ```bash
 set -a && source ~/.grok/secrets/cinehome.env && set +a
-cd /Users/husnainali/cinehome-sot
+cd /Users/husnainali/cinehome
 ```
 
 ## 2. Run QA commands
@@ -30,7 +30,7 @@ MOBILE=1 bun scripts/browser/qa.ts screenshot / home-mobile
 ```
 
 ## 3. See the pixels
-- Screenshots: `/Users/husnainali/cinehome-sot/.browser-qa/*.png`
+- Screenshots: `/Users/husnainali/cinehome/.browser-qa/*.png`
 - Meta JSON: `.browser-qa/last-run.json`
 - Use the **Read** tool on PNG paths — the harness returns a visual description.
 - Report layout issues, contrast, empty states, error chrome, nav, player loading.

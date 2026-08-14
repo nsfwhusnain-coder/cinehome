@@ -10,7 +10,7 @@ description: >
 # CineHome development skill
 
 ## Always
-1. **Cwd SoT**: `/Users/husnainali/cinehome-sot` — not Godot, not meatflicks.
+1. **Cwd SoT**: `/Users/husnainali/cinehome` — GitHub `nsfwhusnain-coder/cinehome` is canonical. `cinehome-sot` is stale. Not Godot, not meatflicks.
 2. Read `AGENTS.md` + `CINEHOME.md` if unclear.
 3. **Ignore Godot rules** from home Claude.md.
 
@@ -21,7 +21,7 @@ source ~/.grok/secrets/cinehome.env
 ```
 
 ## Parallel subagents (preferred)
-Spawn with **non-overlapping file scopes** + `cwd=/Users/husnainali/cinehome-sot`:
+Spawn with **non-overlapping file scopes** + `cwd=/Users/husnainali/cinehome`:
 
 | Agent type | Scope |
 |------------|--------|

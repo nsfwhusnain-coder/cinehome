@@ -5,7 +5,7 @@
 ## Identity
 - Product: household Netflix-style streamer (TMDB browse → multi-provider resolve → hls.js player)
 - Brand in UI: Absolute Cinema · Code name: CineHome
-- **Local SoT**: `/Users/husnainali/cinehome-sot` (this git repo)
+- **Local SoT**: `/Users/husnainali/cinehome` (this git repo). Canonical remote: GitHub `nsfwhusnain-coder/cinehome`. `cinehome-sot` is STALE — do not edit or deploy from it.
 - **Server path**: `/home/hussy/cinehome` on `hussyserver` (`100.89.184.84:58222`, user `hussy`)
 - **Live URL**: `http://100.89.184.84:4445` (Docker `cinehome`, host 4445 → app 3000)
 - **Scraper**: container-internal only on `:3030` — never publish
@@ -28,7 +28,7 @@
 | Docs | `CINEHOME.md`, `docs/CINEHOME-OVERHAUL-DESIGN.md` |
 
 ## Agent workflow (this project)
-1. Work in **this repo** (`cinehome-sot`). Never invent a second tree without rsync intent.
+1. Work in **this repo** (`/Users/husnainali/cinehome`). Never invent a second tree without rsync intent. Do not edit or deploy from `cinehome-sot`.
 2. Prefer **specialized subagents** with non-overlapping file scopes:
    - `cinehome-player` — player / dock / resume
    - `cinehome-scraper` — stream-scraper only

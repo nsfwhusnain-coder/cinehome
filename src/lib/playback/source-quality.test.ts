@@ -1155,6 +1155,26 @@ describe("findDirectDebridAlternative", () => {
     });
     expect(findDirectDebridAlternative(remux, [remux, direct])?.id).toBe("kronos-mp4");
   });
+
+  it("does not swap remux 4K for a Kronos 1080 direct sibling", () => {
+    const remux = makeSource({
+      id: "hades-mkv",
+      origin: "debrid",
+      type: "mp4",
+      codec: "h264",
+      container: "mkv",
+      maxHeight: 2160,
+    });
+    const kronosHd = makeSource({
+      id: "kronos-mp4",
+      origin: "debrid",
+      type: "mp4",
+      codec: "h264",
+      container: "mp4",
+      maxHeight: 1080,
+    });
+    expect(findDirectDebridAlternative(remux, [remux, kronosHd])).toBeNull();
+  });
 });
 
 describe("sourceDelivery - never pack HLS/DASH", () => {

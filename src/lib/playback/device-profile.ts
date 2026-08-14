@@ -126,7 +126,11 @@ export interface PlatformSummary {
 }
 
 /** Coarse platform token — never the raw UA, which is long and identifying. */
-function uaPlatformToken(userAgent: string): string {
+export function uaPlatformToken(userAgent: string): string {
+  // VIDAA / Hisense panels also say Chrome/76 — match the panel first so
+  // player_feedback is not recorded as a laptop Chrome session.
+  if (/vidaa/i.test(userAgent)) return "vidaa";
+  if (/hisense/i.test(userAgent) && !/mobile/i.test(userAgent)) return "hisense";
   const match = userAgent.match(
     /(web[o0]s|tizen|hbbtv|netcast|android\s?tv|crkey|smart-?tv)/i
   );

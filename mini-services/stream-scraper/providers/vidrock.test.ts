@@ -125,4 +125,13 @@ describe("resolveVidrock", () => {
       })) as unknown as typeof fetch;
     await expect(resolveVidrock(1, "movie")).resolves.toEqual([]);
   });
+
+  it("throws on HTTP 500", async () => {
+    const { ProviderOutageError } = await import("./provider-outage");
+    globalThis.fetch = (async () =>
+      new Response("broken", { status: 500 })) as typeof fetch;
+    await expect(resolveVidrock(1, "movie")).rejects.toBeInstanceOf(
+      ProviderOutageError
+    );
+  });
 });

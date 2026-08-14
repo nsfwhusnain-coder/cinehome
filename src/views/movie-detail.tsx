@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
-import { tmdbImageUrl, pickTitleLogoUrl, backdropSrcSet, type TmdbImages, type TmdbWatchProviderRegion } from "@/lib/tmdb";
+import { pickTitleLogoUrl, backdropSrcSet, type TmdbImages } from "@/lib/tmdb";
 import { transitionContent } from "@/lib/motion";
 import { useNavigate } from "@/hooks/use-navigate";
 import { useAmbientColor } from "@/hooks/use-ambient-color";
@@ -114,7 +114,6 @@ export function DetailView({ mediaType, id, initialData }: Props) {
   const year = date ? new Date(date).getFullYear() : null;
   const backdropResponsive = backdropSrcSet(data.backdrop_path);
   const backdrop = backdropResponsive?.src ?? null;
-  const watchProviders = data["watch/providers"]?.results?.US as TmdbWatchProviderRegion | undefined;
   const logoUrl = pickTitleLogoUrl(images);
   const cast = data.credits?.cast?.slice(0, 12) || [];
   const directorCredit = data.credits?.crew?.find((c: { job: string }) => c.job === "Director");
@@ -149,7 +148,6 @@ export function DetailView({ mediaType, id, initialData }: Props) {
       reviews={reviews}
       date={date}
       certification={certification}
-      watchProviders={watchProviders}
     />
   );
 }
@@ -185,10 +183,13 @@ function formatRuntime(minutes: number | undefined | null): string | null {
 
 /** First episode of the first real season — never last_episode_to_air (that jumped to the finale). */
 function defaultTvEpisode(data: Record<string, any>): { season: number; episode: number } {
-  const firstSeason = (data.seasons as { season_number: number }[] | undefined)?.find(
-    (s) => s.season_number > 0
-  );
-  return { season: firstSeason?.season_number ?? 1, episode: 1 };
+  const seasons = data.seasons as { season_number: number }[] | undefined;
+  const firstRegular = seasons?.find((s) => s.season_number > 0);
+  const firstAny = seasons?.find((s) => s.season_number >= 0);
+  return {
+    season: firstRegular?.season_number ?? firstAny?.season_number ?? 1,
+    episode: 1,
+  };
 }
 
 interface ProgressRow {
@@ -215,7 +216,7 @@ function resumeTvEpisode(
         Number(p.tmdbId) === Number(tmdbId) &&
         p.mediaType === "tv" &&
         p.season != null &&
-        Number(p.season) > 0 &&
+        Number(p.season) >= 0 &&
         p.episode != null &&
         Number(p.episode) > 0 &&
         p.progress > 0.02 &&
@@ -250,7 +251,6 @@ function DetailContent({
   reviews,
   date,
   certification,
-  watchProviders,
 }: {
   mediaType: "movie" | "tv";
   id: number;
@@ -270,7 +270,6 @@ function DetailContent({
   reviews: any[];
   date?: string;
   certification: string | null;
-  watchProviders?: TmdbWatchProviderRegion;
 }) {
   const navigate = useNavigate();
   const { data: session } = useSession();
@@ -279,6 +278,14 @@ function DetailContent({
   const [selectedEpisode, setSelectedEpisode] = useState<number>(tvDefault?.episode ?? 1);
   /** Avoid overwriting a manual season/episode pick with progress after user changes picker. */
   const [userPickedEpisode, setUserPickedEpisode] = useState(false);
+  const [logoReady, setLogoReady] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
+  const showLogo = Boolean(logoUrl) && logoReady && !logoFailed;
+
+  useEffect(() => {
+    setLogoReady(false);
+    setLogoFailed(false);
+  }, [logoUrl]);
 
   const { data: progressList } = useQuery({
     queryKey: ["progress"],
@@ -365,18 +372,34 @@ function DetailContent({
                 heading at all. The logo is the right visual treatment; it just
                 cannot also be the document structure. Heading always present,
                 hidden when the artwork carries it. */}
-            {logoUrl ? (
-              <>
-                <h1 className="sr-only">{title}</h1>
-                <img
-                  src={logoUrl}
-                  alt={title}
-                  className="max-h-24 w-auto max-w-full object-contain drop-shadow sm:max-h-36"
-                />
-              </>
-            ) : (
-              <h1 className="font-display text-3xl font-bold drop-shadow sm:text-5xl">{title}</h1>
-            )}
+            <h1
+              className={
+                showLogo
+                  ? "sr-only"
+                  : "font-display text-3xl font-bold drop-shadow sm:text-5xl"
+              }
+            >
+              {title}
+            </h1>
+            {logoUrl && !logoFailed ? (
+              <img
+                src={logoUrl}
+                alt=""
+                aria-hidden
+                className={
+                  showLogo
+                    ? "max-h-24 w-auto max-w-full object-contain drop-shadow sm:max-h-36"
+                    : "hidden"
+                }
+                ref={(el) => {
+                  if (el?.complete && el.naturalWidth > 0) {
+                    queueMicrotask(() => setLogoReady(true));
+                  }
+                }}
+                onLoad={() => setLogoReady(true)}
+                onError={() => setLogoFailed(true)}
+              />
+            ) : null}
 
             {/* Year · Runtime · [Cert] · ★ rating — no status/tagline */}
             <div className="flex flex-wrap items-center gap-2.5 text-sm text-white/70">
@@ -396,8 +419,6 @@ function DetailContent({
             </div>
 
             <GenrePills genres={genres} mediaType={mediaType} />
-
-            <AvailableOnRow providers={watchProviders} />
 
             {creditPerson && (
               <p className="flex items-center gap-1.5 text-xs text-white/55">
@@ -577,35 +598,6 @@ function DetailContent({
 }
 
 const OVERVIEW_TRUNCATE_LENGTH = 320;
-const AVAILABLE_ON_LIMIT = 6;
-
-/** Compact "Available on" row — flatrate first, else rent/buy. Renders nothing without data. */
-function AvailableOnRow({ providers }: { providers?: TmdbWatchProviderRegion }) {
-  const list = providers?.flatrate ?? providers?.rent ?? providers?.buy ?? [];
-  if (!list.length) return null;
-  const sorted = [...list]
-    .sort((a, b) => a.display_priority - b.display_priority)
-    .slice(0, AVAILABLE_ON_LIMIT);
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-xs text-white/55">Available on</span>
-      {sorted.map((p) => {
-        const logo = tmdbImageUrl(p.logo_path, "w92");
-        return logo ? (
-          <img
-            key={p.provider_id}
-            src={logo}
-            alt={p.provider_name}
-            title={p.provider_name}
-            loading="lazy"
-            className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15"
-          />
-        ) : null;
-      })}
-    </div>
-  );
-}
 
 function InfoCardRow({
   icon,

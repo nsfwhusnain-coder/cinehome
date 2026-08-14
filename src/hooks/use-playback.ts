@@ -29,6 +29,9 @@ import {
   preferredQualityDiscoveryPending,
   shouldWaitForMaximumFourK,
 } from "@/lib/playback/quality-discovery";
+import { tvQueryIndex } from "@/lib/playback/tv-index";
+
+export { tvQueryIndex } from "@/lib/playback/tv-index";
 
 interface Args {
   tmdbId: number;
@@ -73,8 +76,8 @@ async function fetchPlayback(
   const params = new URLSearchParams();
   if (mediaType === "tv") {
     // Always send S/E — scrapers reject TV without them (default S1E1).
-    params.set("season", String(season && season > 0 ? season : 1));
-    params.set("episode", String(episode && episode > 0 ? episode : 1));
+    params.set("season", String(tvQueryIndex(season)));
+    params.set("episode", String(tvQueryIndex(episode)));
   }
   if (fast) params.set("fast", "1");
   if (recoveryRefresh) params.set("refresh", "1");

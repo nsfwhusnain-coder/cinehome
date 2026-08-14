@@ -3,6 +3,8 @@ export const AUDIO_LANGUAGE_SETTING_KEY = "audio_language";
 export const AUDIO_PREFERENCE_SETTING_KEY = "audio_preference";
 export const SUBTITLE_PREFERENCE_SETTING_KEY = "subtitle_preference";
 export const FOUR_K_STARTUP_SETTING_KEY = "four_k_startup";
+/** Household catalog filter. UserSetting KV: on | off. Default on. */
+export const HIDE_ADULT_SETTING_KEY = "hide_adult";
 
 export const PLAYBACK_QUALITY_HEIGHTS = [2160, 1080, 720, 480, 360] as const;
 export type PlaybackQualityHeight = (typeof PLAYBACK_QUALITY_HEIGHTS)[number];
@@ -70,6 +72,14 @@ export function parseFourKStartupPreference(
   value: unknown
 ): FourKStartupPreference | null {
   return value === "fast" || value === "maximum" ? value : null;
+}
+
+/** Default ON. Only an explicit off/0/false turns the household filter off. */
+export function parseHideAdultPreference(value: unknown): boolean {
+  if (value === "off" || value === "0" || value === false || value === "false") {
+    return false;
+  }
+  return true;
 }
 
 /** Cache identity for source discovery; non-4K startup policy cannot change it. */

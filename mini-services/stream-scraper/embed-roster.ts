@@ -39,8 +39,10 @@ export const PRIMARY_MAX = 1;
 /** Max hosts in the secondary Playwright wave. */
 export const SECONDARY_MAX = 3;
 /**
- * Skip the secondary wave once this many MEASURED-playable, non-poison sources
- * exist (API enrich + primary embeds combined).
+ * Skip BOTH Playwright waves once this many MEASURED-playable, non-poison
+ * sources exist after the API wave (primary Vidking included — it is often
+ * ~17s and burns the only browser). Secondary still uses the same floor
+ * when primary did run.
  *
  * Raised 2 -> 4 on 2026-07-30. At 2, the wave had effectively stopped running:
  * a ground-truth audit of what actually plays through `/api/hls` found movies

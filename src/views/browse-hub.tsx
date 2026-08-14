@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { HeroCarousel } from "@/components/hero-carousel";
-import { MovieRow } from "@/components/movie-row";
+import { MovieRow, RAIL_PAD_LEFT } from "@/components/movie-row";
 import { MovieCard } from "@/components/movie-card";
 import { useMounted } from "@/hooks/use-mounted";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +19,8 @@ import {
 } from "@/lib/tmdb-client";
 import type { HubRow } from "@/lib/browse-categories";
 import { LazyRail } from "@/components/lazy-rail";
+import { withoutAdultTitles } from "@/lib/tmdb";
+import { useHideAdult } from "@/hooks/use-hide-adult";
 
 const LIST_PAGES = 3;
 
@@ -42,6 +44,7 @@ async function fetchHubRowItems(row: HubRow, mediaType: MediaKind): Promise<Tmdb
 
 export function BrowseHub({ mediaType, title, heroFrom, rows }: BrowseHubProps) {
   const mounted = useMounted();
+  const hideAdult = useHideAdult();
 
   const heroPath =
     mediaType === "movie"
@@ -76,11 +79,11 @@ export function BrowseHub({ mediaType, title, heroFrom, rows }: BrowseHubProps) 
     return rowsQuery.data.map(({ row, items }) => ({
       id: row.id,
       title: row.title,
-      items: takeUnique(items, mediaType, seen),
+      items: withoutAdultTitles(takeUnique(items, mediaType, seen), hideAdult),
     }));
-  }, [rowsQuery.data, mediaType]);
+  }, [rowsQuery.data, mediaType, hideAdult]);
 
-  const featured = (heroQuery.data?.results || []).slice(0, 5).map((m) => ({
+  const featured = withoutAdultTitles(heroQuery.data?.results || [], hideAdult).slice(0, 5).map((m) => ({
     ...m,
     overview: m.overview ?? "",
     media_type: mediaType,
@@ -108,17 +111,14 @@ export function BrowseHub({ mediaType, title, heroFrom, rows }: BrowseHubProps) 
         </div>
       ) : (
         <>
-          {/* Same reason as home: with a hero present the visible h1 below is
-              skipped, leaving the page headingless. */}
-          {featured.length > 0 ? <h1 className="sr-only">{title}</h1> : null}
           {featured.length > 0 ? <HeroCarousel items={featured} /> : null}
 
           <div className={`${featured.length ? "-mt-10" : "pt-20"} relative z-10 space-y-10`}>
-            {!featured.length ? (
-              <div className="px-4 sm:px-6 lg:px-8">
-                <h1 className="font-display text-2xl font-bold sm:text-3xl">{title}</h1>
-              </div>
-            ) : null}
+            <div className="pr-4 sm:pr-6" style={{ paddingLeft: RAIL_PAD_LEFT }}>
+              <h1 className="font-display text-2xl font-bold tracking-tight text-white drop-shadow sm:text-3xl">
+                {title}
+              </h1>
+            </div>
 
             {rowsLoading ? (
               <>
@@ -141,7 +141,7 @@ export function BrowseHub({ mediaType, title, heroFrom, rows }: BrowseHubProps) 
                      The first two rails render eagerly so the fold is never
                      empty; the rest mount as they approach the viewport. */
                   rowIndex < 2 ? (
-                    <MovieRow key={row.id} title={row.title}>
+                    <MovieRow key={row.id} title={row.title} viewAllHref={`/browse/${row.id}`}>
                       {row.items.map((m) => (
                         <MovieCard
                           key={m.id}
@@ -152,7 +152,7 @@ export function BrowseHub({ mediaType, title, heroFrom, rows }: BrowseHubProps) 
                     </MovieRow>
                   ) : (
                     <LazyRail key={row.id} minHeight={360}>
-                      <MovieRow title={row.title}>
+                      <MovieRow title={row.title} viewAllHref={`/browse/${row.id}`}>
                         {row.items.map((m) => (
                           <MovieCard
                             key={m.id}

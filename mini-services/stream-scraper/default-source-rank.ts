@@ -62,6 +62,29 @@ export function effectiveMaxHeight(
   return inferHeight(`${entry.url} ${entry.label ?? ""} ${entry.quality ?? ""}`);
 }
 
+export const ANIME_CONTENT_CLASS = "anime";
+
+export function isAnimeContentClass(value: string | undefined): boolean {
+  return value === ANIME_CONTENT_CLASS;
+}
+
+/**
+ * Anime HTTP hits are measured on Vidrock + NoTorrent. Boost only those two
+ * so Luna/CinemaOS still win on a higher height tier / probe.ok.
+ */
+export function animeProviderBoost(
+  provider: string,
+  label: string,
+  contentClass?: string
+): number {
+  if (!isAnimeContentClass(contentClass)) return 0;
+  const p = provider.trim().toLowerCase();
+  const l = label.trim().toLowerCase();
+  if (p.includes("vidrock") || l === "rock" || l.startsWith("rock ")) return 2;
+  if (p === "notorrent" || l.startsWith("pulse")) return 2;
+  return 0;
+}
+
 export interface SortSourcesOptions {
   /** Preferred height from qualityHint (0 = use HD floor as soft target only). */
   qualityHintHeight?: number;
@@ -72,6 +95,11 @@ export interface SortSourcesOptions {
   codecOnlyScore?: (entry: RankableSource) => number;
   providerPriority?: (provider: string, label: string, url: string) => number;
   entryScore?: (entry: RankableSource) => number;
+  /**
+   * When `anime`, prefer Vidrock / NoTorrent at otherwise-equal rank.
+   * Request-scoped ranking; include this in the result cache key.
+   */
+  contentClass?: string;
 }
 
 const noopInfer: HeightInfer = () => 0;
@@ -116,6 +144,7 @@ export function sortSourcesForDefault<T extends RankableSource>(
     options.providerPriority ??
     ((_p: string, _l: string, _u: string) => 0);
   const eScore = options.entryScore ?? (() => 0);
+  const contentClass = options.contentClass;
 
   return [...sources].sort((a, b) => {
     // Poison / junk never outrank a clean URL — even if probe.ok or verified.
@@ -188,6 +217,10 @@ export function sortSourcesForDefault<T extends RankableSource>(
     const aHevc = isHevc(a.url) ? 1 : 0;
     const bHevc = isHevc(b.url) ? 1 : 0;
     if (aHevc !== bHevc) return aHevc - bHevc;
+
+    const aAnime = animeProviderBoost(a.provider ?? "", a.label ?? "", contentClass);
+    const bAnime = animeProviderBoost(b.provider ?? "", b.label ?? "", contentClass);
+    if (aAnime !== bAnime) return bAnime - aAnime;
 
     if (anyProbe) {
       return codecScore(b) - codecScore(a);

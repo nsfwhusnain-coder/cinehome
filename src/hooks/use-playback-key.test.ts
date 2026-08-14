@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   playbackPollRefetchCount,
   playbackQueryKey,
+  tvQueryIndex,
 } from "./use-playback";
 
 describe("playback query discovery identity", () => {
@@ -27,5 +28,15 @@ describe("playback query discovery identity", () => {
     expect(playbackPollRefetchCount(6, 0)).toBe(5);
     expect(playbackPollRefetchCount(12, 12)).toBe(0);
     expect(playbackPollRefetchCount(13, 12)).toBe(1);
+  });
+});
+
+describe("tvQueryIndex (season 0 specials)", () => {
+  it("keeps season/episode 0 instead of coercing to 1", () => {
+    expect(tvQueryIndex(0)).toBe(0);
+    expect(tvQueryIndex(2)).toBe(2);
+    expect(tvQueryIndex(undefined)).toBe(1);
+    expect(tvQueryIndex(Number.NaN)).toBe(1);
+    expect(tvQueryIndex(-1)).toBe(1);
   });
 });

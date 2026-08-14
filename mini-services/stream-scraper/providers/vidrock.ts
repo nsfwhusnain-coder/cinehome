@@ -9,6 +9,7 @@
 import { createDecipheriv } from "node:crypto";
 import type { ProviderStream, QualityRung } from "./types";
 import { isPoisonStreamUrl } from "../poison-url";
+import { rethrowIfProviderOutage, throwIfHttpOutage } from "./provider-outage";
 
 const API_BASE = "https://vidrock.net/api";
 const REFERER = "https://vidrock.net/";
@@ -217,6 +218,7 @@ export async function resolveVidrock(
       : `movie/${tmdbId}`;
   try {
     const res = await fetchJson(`${API_BASE}/${path}`, TIMEOUT_MS);
+    throwIfHttpOutage(res.status, "vidrock");
     if (!res.ok) return [];
     const data = JSON.parse(res.text) as Record<string, VidrockSlot>;
     if (!data || typeof data !== "object") return [];
@@ -248,7 +250,8 @@ export async function resolveVidrock(
       out.push({ ...stream, label });
     }
     return out;
-  } catch {
+  } catch (err) {
+    rethrowIfProviderOutage(err, "vidrock");
     return [];
   }
 }

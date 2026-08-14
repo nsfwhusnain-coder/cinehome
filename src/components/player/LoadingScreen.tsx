@@ -33,6 +33,8 @@ export interface LoadingScreenProps {
   chosenIndex?: number;
   bufferFill?: number;
   signatureSeed?: string;
+  /** When the player already knows Ultra/fast remux is packing, show this line. */
+  waitHint?: string | null;
 }
 
 /**
@@ -47,6 +49,7 @@ export function LoadingScreen({
   status,
   sourceCount = 0,
   bufferFill = 0,
+  waitHint,
 }: LoadingScreenProps) {
   const [hue, setHue] = useState<number>(FALLBACK_HUE);
   const [mounted, setMounted] = useState(visible);
@@ -94,8 +97,9 @@ export function LoadingScreen({
   }, [visible, mounted]);
 
   const phase = bloomPhase(status ?? null, sourceCount);
-  const phaseCopy = bloomPhaseCopy(phase);
+  const phaseCopy = waitHint?.trim() || bloomPhaseCopy(phase);
   const rosterCopy = bloomRosterCopy(sourceCount);
+  const displayTitle = title.trim() || "Loading";
   const rawFill = bloomMeterProgress(phase, sourceCount, bufferFill);
   const fill = Math.max(fillFloorRef.current, rawFill);
   fillFloorRef.current = fill;
@@ -134,7 +138,7 @@ export function LoadingScreen({
       }
       role="status"
       aria-live="polite"
-      aria-label={`Loading ${title}`}
+      aria-label={`Loading ${displayTitle}`}
     >
       {washSrc ? (
         // eslint-disable-next-line @next/next/no-img-element
@@ -159,7 +163,7 @@ export function LoadingScreen({
 
       <div className="bloom-copy">
         <p className="bloom-wordmark">Absolute Cinema</p>
-        <p className="bloom-title">{title}</p>
+        <p className="bloom-title">{displayTitle}</p>
         <div className="bloom-meter" aria-hidden>
           <span className="bloom-meter-fill" />
         </div>

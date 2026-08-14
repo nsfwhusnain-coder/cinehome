@@ -8,7 +8,9 @@ import { SearchResultsSkeleton } from "@/components/skeletons";
 import { EmptyBrowse, BrowseError } from "@/components/empty-states";
 import { Button } from "@/components/ui/button";
 import { useMounted } from "@/hooks/use-mounted";
+import { useHideAdult } from "@/hooks/use-hide-adult";
 import { resolveCategory, type MediaKind } from "@/lib/browse-categories";
+import { withoutAdultTitles } from "@/lib/tmdb";
 import { transitionView } from "@/lib/motion";
 
 async function tmdbFetch(path: string) {
@@ -45,6 +47,7 @@ export function BrowseCategoryView({
   paged,
 }: BrowseCategoryViewProps) {
   const mounted = useMounted();
+  const hideAdult = useHideAdult();
   const [pagesLoaded, setPagesLoaded] = useState(1);
 
   // Path builder lives in the client module graph via import, not as a prop.
@@ -86,8 +89,8 @@ export function BrowseCategoryView({
         out.push(item);
       }
     }
-    return out;
-  }, [first.data, extra]);
+    return withoutAdultTitles(out, hideAdult);
+  }, [first.data, extra, hideAdult]);
 
   const totalPages = first.data?.total_pages ?? 1;
   const canLoadMore =

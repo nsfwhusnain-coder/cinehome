@@ -12,6 +12,7 @@ import { COMMON_GENRES, COMMON_TV_GENRES } from "@/lib/tmdb";
 import { useWatchlist, type WatchlistItem } from "@/hooks/use-watchlist";
 import { useSession } from "next-auth/react";
 import { useAmbientColor } from "@/hooks/use-ambient-color";
+import { useIsTv } from "@/hooks/use-is-tv";
 
 const CANVAS = "#0a0a0f";
 
@@ -74,7 +75,7 @@ function resumeTvEpisode(
         Number(p.tmdbId) === Number(tmdbId) &&
         p.mediaType === "tv" &&
         p.season != null &&
-        Number(p.season) > 0 &&
+        Number(p.season) >= 0 &&
         p.episode != null &&
         Number(p.episode) > 0 &&
         p.progress > 0.02 &&
@@ -103,26 +104,49 @@ function HeroTitle({ item, mediaType }: { item: FeaturedItem; mediaType: string 
 
   const logoUrl = pickTitleLogoUrl(data, "w500");
   const title = item.title || item.name || "";
+  const [logoReady, setLogoReady] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
 
-  if (logoUrl) {
-    return (
-       
-      <img
-        src={logoUrl}
-        alt={title}
-        className="h-auto w-auto object-contain drop-shadow-lg"
-        style={{ maxWidth: "min(560px, 42vw)" }}
-      />
-    );
-  }
+  useEffect(() => {
+    setLogoReady(false);
+    setLogoFailed(false);
+  }, [logoUrl, item.id]);
+
+  const showLogo = Boolean(logoUrl) && logoReady && !logoFailed;
 
   return (
-    <h1
-      className="font-display text-[40px] font-extrabold leading-[1.05] tracking-tight text-white drop-shadow-lg md:text-[64px]"
-      style={{ fontWeight: 800 }}
-    >
-      {title}
-    </h1>
+    <>
+      <h1
+        className={
+          showLogo
+            ? "sr-only"
+            : "font-display text-[40px] font-extrabold leading-[1.05] tracking-tight text-white drop-shadow-lg md:text-[64px]"
+        }
+        style={showLogo ? undefined : { fontWeight: 800 }}
+      >
+        {title}
+      </h1>
+      {logoUrl && !logoFailed ? (
+        <img
+          src={logoUrl}
+          alt=""
+          aria-hidden
+          className={
+            showLogo
+              ? "h-auto w-auto object-contain drop-shadow-lg"
+              : "hidden"
+          }
+          style={{ maxWidth: "min(560px, 42vw)" }}
+          ref={(el) => {
+            if (el?.complete && el.naturalWidth > 0) {
+              queueMicrotask(() => setLogoReady(true));
+            }
+          }}
+          onLoad={() => setLogoReady(true)}
+          onError={() => setLogoFailed(true)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -182,6 +206,8 @@ export function HeroCarousel({ items }: Props) {
   const { data: session } = useSession();
   const { isIn, add, remove } = useWatchlist();
   const reduceMotion = useReducedMotion();
+  const isTv = useIsTv();
+  const staticHero = Boolean(reduceMotion) || isTv;
   const { data: progressList } = useQuery({
     queryKey: ["progress"],
     queryFn: async () => {
@@ -303,14 +329,14 @@ export function HeroCarousel({ items }: Props) {
               exit={{ opacity: 0 }}
               transition={{
                 opacity: {
-                  duration: reduceMotion ? 0.4 : 1.05,
+                  duration: staticHero ? 0.4 : 1.05,
                   ease: EASE_OUT_EXPO,
                 },
               }}
               className="hero-ken absolute inset-0 h-full w-full object-cover"
               style={{
                 objectPosition: "center 18%",
-                animationName: reduceMotion
+                animationName: staticHero
                   ? "none"
                   : index % 2 === 0
                     ? "hero-drift-a"
@@ -333,6 +359,7 @@ export function HeroCarousel({ items }: Props) {
 
       {/* Content — layout box only (not masked); pb keeps Play clear of first rail */}
       <div
+        data-tv-safe
         className="absolute inset-x-0 bottom-0 z-[2] pl-14 pr-6"
         style={{ paddingBottom: CONTENT_PAD_BOTTOM_PX }}
       >
@@ -406,6 +433,7 @@ export function HeroCarousel({ items }: Props) {
             <div className="mt-7 flex flex-wrap items-center gap-3">
               <button
                 type="button"
+                data-tv-first-focus
                 onClick={() => {
                   if (mediaType === "tv") {
                     const resume = resumeTvEpisode(progressList, current.id);
@@ -445,6 +473,7 @@ export function HeroCarousel({ items }: Props) {
       {/* Dots — horizontal, lower-right of banner (LordFlix); stay in layout box */}
       {items.length > 1 ? (
         <div
+          data-tv-safe
           className="absolute z-[2] flex items-center gap-1.5"
           style={{ right: 40, bottom: DOTS_BOTTOM_PX }}
         >

@@ -8,7 +8,9 @@ import {
   parseSubtitlePreference,
 } from "@/lib/profile-preferences";
 import {
+  getHideAdultPreference,
   getUserPlaybackPreferences,
+  saveHideAdultPreference,
   saveUserPlaybackPreferences,
 } from "@/lib/profile-preferences.server";
 
@@ -17,9 +19,14 @@ export async function GET() {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  return NextResponse.json(await getUserPlaybackPreferences(userId), {
-    headers: { "Cache-Control": "private, no-store" },
-  });
+  const [preferences, hideAdult] = await Promise.all([
+    getUserPlaybackPreferences(userId),
+    getHideAdultPreference(userId),
+  ]);
+  return NextResponse.json(
+    { ...preferences, hideAdult },
+    { headers: { "Cache-Control": "private, no-store" } }
+  );
 }
 
 export async function PATCH(req: NextRequest) {
@@ -34,11 +41,20 @@ export async function PATCH(req: NextRequest) {
     audioPreference?: unknown;
     subtitlePreference?: unknown;
     fourKStartup?: unknown;
+    hideAdult?: unknown;
   };
   try {
     body = (await req.json()) as typeof body;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (typeof body.hideAdult === "boolean" && body.playbackQuality === undefined) {
+    await saveHideAdultPreference(userId, body.hideAdult);
+    return NextResponse.json(
+      { hideAdult: body.hideAdult },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
   }
 
   const playbackQuality = parsePlaybackQualityPreference(body.playbackQuality);
@@ -70,7 +86,15 @@ export async function PATCH(req: NextRequest) {
     fourKStartup,
   };
   await saveUserPlaybackPreferences(userId, preferences);
-  return NextResponse.json(preferences, {
-    headers: { "Cache-Control": "private, no-store" },
-  });
+  if (typeof body.hideAdult === "boolean") {
+    await saveHideAdultPreference(userId, body.hideAdult);
+  }
+  const hideAdult =
+    typeof body.hideAdult === "boolean"
+      ? body.hideAdult
+      : await getHideAdultPreference(userId);
+  return NextResponse.json(
+    { ...preferences, hideAdult },
+    { headers: { "Cache-Control": "private, no-store" } }
+  );
 }

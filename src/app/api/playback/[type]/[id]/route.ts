@@ -19,6 +19,8 @@ import {
   providerHealthRegistry,
   sourcesWithProviderHealth,
 } from "@/lib/playback/health-registry";
+import { tvQueryIndex } from "@/lib/playback/tv-index";
+import { resolvePlaybackContentClass } from "@/lib/playback/content-class";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -107,11 +109,12 @@ export async function GET(
   const episodeParam = url.searchParams.get("episode");
 
   // TV requires S/E for scrapers. Default S1E1 when omitted (card Play, deep links).
-  let season = seasonParam ? Number(seasonParam) : undefined;
-  let episode = episodeParam ? Number(episodeParam) : undefined;
+  // Season/episode 0 is TMDB specials — do not coerce 0 → 1.
+  let season = seasonParam != null && seasonParam !== "" ? Number(seasonParam) : undefined;
+  let episode = episodeParam != null && episodeParam !== "" ? Number(episodeParam) : undefined;
   if (type === "tv") {
-    if (!Number.isFinite(season) || (season as number) < 1) season = 1;
-    if (!Number.isFinite(episode) || (episode as number) < 1) episode = 1;
+    season = tvQueryIndex(Number.isFinite(season as number) ? season : undefined);
+    episode = tvQueryIndex(Number.isFinite(episode as number) ? episode : undefined);
   }
   const wantFast =
     url.searchParams.get("fast") === "1" || url.searchParams.get("prefetch") === "1";
@@ -166,7 +169,10 @@ export async function GET(
   }
   // The profile is authoritative on every device. Client hints are deliberately
   // ignored so a stale browser cache cannot override a newly selected default.
-  const profilePreferences = await getUserPlaybackPreferences(userId);
+  const [profilePreferences, contentClass] = await Promise.all([
+    getUserPlaybackPreferences(userId),
+    resolvePlaybackContentClass(type, tmdbId),
+  ]);
   const qualityHint = profilePreferences.playbackQuality;
 
   const {
@@ -184,7 +190,8 @@ export async function GET(
     episode,
     fast,
     userId,
-    qualityHint
+    qualityHint,
+    contentClass
   );
 
   if (!noCache) {
@@ -250,6 +257,7 @@ export async function GET(
     fast,
     noCache,
     qualityHint,
+    contentClass,
   });
 
   let result: PlaybackResponse;

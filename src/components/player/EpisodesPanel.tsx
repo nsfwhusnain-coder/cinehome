@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { Check, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { EpisodeStill } from "@/components/episode-still";
+import { seasonDisplayName } from "@/components/season-picker";
 
 export interface SeasonOption {
   season_number: number;
@@ -37,7 +38,7 @@ export function EpisodesPanel({
   const validSeasons = useMemo(
     () =>
       seasons
-        .filter((s) => s.season_number > 0)
+        .filter((s) => s.season_number >= 0)
         .sort((a, b) => a.season_number - b.season_number),
     [seasons]
   );
@@ -75,7 +76,7 @@ export function EpisodesPanel({
         }[];
       }>;
     },
-    enabled: open && panelSeason > 0,
+    enabled: open && panelSeason >= 0,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -182,7 +183,7 @@ export function EpisodesPanel({
                         : "bg-white/10 text-white/80 hover:bg-white/15"
                     )}
                   >
-                    {s.name || `Season ${s.season_number}`}
+                    {seasonDisplayName(s.season_number, s.name)}
                   </button>
                 );
               })}

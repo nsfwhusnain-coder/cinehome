@@ -1,6 +1,6 @@
 "use client";
 
-import { Bookmark, Clock, Search, Film, AlertCircle, LayoutGrid } from "lucide-react";
+import { Bookmark, Clock, Search, Film, AlertCircle, LayoutGrid, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "@/hooks/use-navigate";
 
@@ -84,6 +84,29 @@ export function EmptyBrowse({ label }: { label: string }) {
       <Button type="button" onClick={() => navigate("/")} className="rounded-full px-6">
         Back to Home
       </Button>
+    </div>
+  );
+}
+
+export function PersonError({ onRetry }: { onRetry?: () => void }) {
+  const navigate = useNavigate();
+  return (
+    <div className="py-16 text-center">
+      <User className="mx-auto mb-3 h-12 w-12 text-muted-foreground" />
+      <h1 className="mb-1 font-display text-lg font-semibold">Couldn&apos;t load this person</h1>
+      <p className="mb-4 text-sm text-muted-foreground">
+        They may have been removed, or the catalog is briefly unavailable.
+      </p>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {onRetry ? (
+          <Button type="button" onClick={onRetry} size="sm" variant="secondary" className="rounded-full">
+            Try again
+          </Button>
+        ) : null}
+        <Button type="button" onClick={() => navigate("/")} className="rounded-full px-6">
+          Back to Home
+        </Button>
+      </div>
     </div>
   );
 }

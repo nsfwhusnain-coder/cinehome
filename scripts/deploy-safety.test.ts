@@ -23,3 +23,12 @@ describe("deploy rollback ordering", () => {
     expect(deploy).toContain("exit 1");
   });
 });
+
+describe("deploy rsync --delete excludes", () => {
+  test("does not wipe remux cache, QA cookies, or runtime cache", () => {
+    expect(deploy).toContain("--exclude 'transcode-cache/'");
+    expect(deploy).toContain("--exclude '.browser-qa/'");
+    expect(deploy).toContain("--exclude '.runtime-cache/'");
+    expect(deploy).toContain("rsync -az --delete");
+  });
+});

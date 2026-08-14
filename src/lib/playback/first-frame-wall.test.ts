@@ -2,6 +2,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   FIRST_FRAME_WALL_COLD_MS,
+  FIRST_FRAME_WALL_REMUX_MS,
   FIRST_FRAME_WALL_RESUME_MS,
   FIRST_FRAME_WALL_RESUME_THRESHOLD_S,
   firstFrameWallMs,
@@ -52,5 +53,32 @@ describe("firstFrameWallMs (R8 dead-CDN wall)", () => {
     expect(firstFrameWallMs({ resumeAt: 0, remainingSources: -1 })).toBe(
       FIRST_FRAME_WALL_RESUME_MS
     );
+  });
+
+  it("remux/transcode floors at the packer window", () => {
+    expect(
+      firstFrameWallMs({
+        resumeAt: 0,
+        remainingSources: 2,
+        remuxOrTranscode: true,
+      })
+    ).toBe(FIRST_FRAME_WALL_REMUX_MS);
+    expect(
+      firstFrameWallMs({
+        resumeAt: 120,
+        remainingSources: 0,
+        remuxOrTranscode: true,
+      })
+    ).toBe(FIRST_FRAME_WALL_REMUX_MS);
+  });
+
+  it("cold multi-source stays 20s when remux flag is off", () => {
+    expect(
+      firstFrameWallMs({
+        resumeAt: 0,
+        remainingSources: 2,
+        remuxOrTranscode: false,
+      })
+    ).toBe(FIRST_FRAME_WALL_COLD_MS);
   });
 });

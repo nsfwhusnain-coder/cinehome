@@ -38,6 +38,7 @@
 import { tmdb } from "@/lib/tmdb";
 import type { MediaType } from "../types";
 import { isCaptureRelease, releaseQualityScore } from "../release-scorer";
+import { tvQueryIndex } from "../tv-index";
 
 const TORRENTIO_BASE = (process.env.TORRENTIO_BASE || "https://torrentio.strem.fun").replace(
   /\/+$/,
@@ -564,9 +565,14 @@ export interface FetchTorrentioNoDebridParams {
 }
 
 /** `stream/movie/<imdb>.json` or `stream/series/<imdb>:<s>:<e>.json` — the resource path, identical for the configured and un-configured endpoints. */
-function buildKindPath(params: { imdbId: string; mediaType: MediaType; season?: number; episode?: number }): string {
-  const season = params.season && params.season > 0 ? params.season : 1;
-  const episode = params.episode && params.episode > 0 ? params.episode : 1;
+export function buildKindPath(params: {
+  imdbId: string;
+  mediaType: MediaType;
+  season?: number;
+  episode?: number;
+}): string {
+  const season = tvQueryIndex(params.season);
+  const episode = tvQueryIndex(params.episode);
   return params.mediaType === "tv"
     ? `stream/series/${params.imdbId}:${season}:${episode}.json`
     : `stream/movie/${params.imdbId}.json`;

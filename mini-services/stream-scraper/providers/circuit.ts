@@ -319,3 +319,8 @@ export function forceOpenCircuit(id: ProviderId): void {
   c.openedAt = Date.now();
   c.halfOpenInFlight = false;
 }
+
+/** Test helper: wipe samples / open state for one provider. */
+export function resetCircuit(id: ProviderId): void {
+  circuits.delete(id);
+}

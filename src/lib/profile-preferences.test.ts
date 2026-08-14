@@ -4,6 +4,7 @@ import {
   normalizeAudioLanguage,
   parseAudioPreference,
   parseFourKStartupPreference,
+  parseHideAdultPreference,
   parsePlaybackQualityPreference,
   parseSubtitlePreference,
   playbackDiscoveryPreferenceKey,
@@ -36,6 +37,13 @@ describe("profile playback preferences", () => {
     expect(parseAudioPreference("commentary")).toBeNull();
     expect(parseSubtitlePreference("all")).toBeNull();
     expect(parseFourKStartupPreference("slow")).toBeNull();
+  });
+
+  test("hides adult titles unless explicitly turned off", () => {
+    expect(parseHideAdultPreference(undefined)).toBe(true);
+    expect(parseHideAdultPreference("on")).toBe(true);
+    expect(parseHideAdultPreference("off")).toBe(false);
+    expect(parseHideAdultPreference("0")).toBe(false);
   });
 
   test("partitions 4K discovery by quality and Maximum startup policy", () => {

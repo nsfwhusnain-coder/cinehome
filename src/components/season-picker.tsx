@@ -20,8 +20,18 @@ interface Props {
   onChange: (season: number) => void;
 }
 
+/** TMDB season 0 is Specials — never hide it from the picker. */
+export function seasonDisplayName(seasonNumber: number, name?: string): string {
+  const trimmed = name?.trim() ?? "";
+  if (seasonNumber === 0) {
+    if (trimmed && !/^season\s*0$/i.test(trimmed)) return trimmed;
+    return "Specials";
+  }
+  return trimmed || `Season ${seasonNumber}`;
+}
+
 export function SeasonPicker({ seasons, value, onChange }: Props) {
-  const valid = seasons.filter((s) => s.season_number > 0);
+  const valid = seasons.filter((s) => s.season_number >= 0);
 
   return (
     <Select value={String(value)} onValueChange={(v) => onChange(Number(v))}>
@@ -34,7 +44,7 @@ export function SeasonPicker({ seasons, value, onChange }: Props) {
       <SelectContent>
         {valid.map((s) => (
           <SelectItem key={s.id} value={String(s.season_number)}>
-            {s.name || `Season ${s.season_number}`}
+            {seasonDisplayName(s.season_number, s.name)}
           </SelectItem>
         ))}
       </SelectContent>

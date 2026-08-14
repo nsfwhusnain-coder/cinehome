@@ -80,6 +80,10 @@ export function setCachedPlayback(key: string, value: unknown, ttlMs = PLAYBACK_
   playbackStore.set(key, { value, until: Date.now() + ttlMs });
 }
 
+function contentClassSuffix(contentClass?: string): string {
+  return contentClass === "anime" ? ":anime" : "";
+}
+
 /**
  * Playback responses embed per-user HLS session IDs in proxy URLs.
  * Cache key MUST include userId or user B gets user A's sessions → HTTP 403 Forbidden
@@ -95,9 +99,10 @@ export function playbackCacheKey(
   episode: number | undefined,
   fast: boolean | undefined,
   userId: string,
-  qualityPreference: "auto" | number = "auto"
+  qualityPreference: "auto" | number = "auto",
+  contentClass?: string
 ): string {
-  return `pb:${userId}:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}:q${qualityPreference}`;
+  return `pb:${userId}:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}:q${qualityPreference}${contentClassSuffix(contentClass)}`;
 }
 
 /**
@@ -116,13 +121,14 @@ export function rawScrapeCacheKey(
   season: number | undefined,
   episode: number | undefined,
   fast: boolean | undefined,
-  qualityPreference: "auto" | number = "auto"
+  qualityPreference: "auto" | number = "auto",
+  contentClass?: string
 ): string {
   const qualityBucket =
     typeof qualityPreference === "number" && qualityPreference >= 1080
       ? Math.min(Math.round(qualityPreference), 4320)
       : 1080;
-  return `raw:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}:q${qualityBucket}`;
+  return `raw:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}:${fast ? "f" : "full"}:q${qualityBucket}${contentClassSuffix(contentClass)}`;
 }
 
 export function getCachedRawScrape<T>(key: string): T | null {

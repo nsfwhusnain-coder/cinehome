@@ -135,11 +135,17 @@ export function TvSpatialNavigation() {
    */
   useEffect(() => {
     if (!isTvLikeDevice()) return;
+    // Login owns focus via the name/PIN fields. Do not steal it.
+    if (pathname === "/login") return;
     const handle = window.requestAnimationFrame(() => {
       const active = document.activeElement;
       if (active && active !== document.body) return;
       const main = document.querySelector("main") ?? document;
-      const first = focusableElements(main)[0];
+      const preferred = main.querySelector<HTMLElement>("[data-tv-first-focus]");
+      const first =
+        preferred && !preferred.closest("[aria-hidden='true']")
+          ? preferred
+          : focusableElements(main)[0];
       first?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(handle);

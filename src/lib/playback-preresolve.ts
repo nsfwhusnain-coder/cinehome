@@ -4,6 +4,7 @@
  */
 
 import { getPlaybackDiscoveryPreferenceKey } from "@/lib/player-preferences";
+import { tvQueryIndex } from "@/lib/playback/tv-index";
 
 type Job = {
   url: string;
@@ -142,8 +143,8 @@ export function buildPlaybackUrl(
 ): string {
   const params = new URLSearchParams();
   if (mediaType === "tv") {
-    params.set("season", String(season && season > 0 ? season : 1));
-    params.set("episode", String(episode && episode > 0 ? episode : 1));
+    params.set("season", String(tvQueryIndex(season)));
+    params.set("episode", String(tvQueryIndex(episode)));
   }
   if (fast) params.set("fast", "1");
   params.set("prefetch", "1");

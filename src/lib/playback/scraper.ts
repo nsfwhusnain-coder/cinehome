@@ -210,11 +210,18 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
       mediaType: req.mediaType,
     });
     if (req.mediaType === "tv") {
-      params.set("season", String(req.season && req.season > 0 ? req.season : 1));
-      params.set("episode", String(req.episode && req.episode > 0 ? req.episode : 1));
+      params.set(
+        "season",
+        String(req.season != null && Number.isFinite(req.season) ? req.season : 1)
+      );
+      params.set(
+        "episode",
+        String(req.episode != null && Number.isFinite(req.episode) ? req.episode : 1)
+      );
     }
     if (req.fast) params.set("fast", "1");
     if (req.noCache) params.set("nocache", "1");
+    if (req.contentClass === "anime") params.set("contentClass", "anime");
     // Preferred quality → scraper ranking (never blocks TTFF; ranking only).
     // Auto hunts 4K; an explicit 1080 profile stays at 1080. Ranking only.
     params.set(
@@ -239,7 +246,8 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
       req.season,
       req.episode,
       req.fast,
-      req.qualityHint
+      req.qualityHint,
+      req.contentClass
     );
 
     try {

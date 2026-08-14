@@ -20,6 +20,7 @@ import {
 } from "@/components/search-bar";
 import { EmptySearch } from "@/components/empty-states";
 import { useNavigate } from "@/hooks/use-navigate";
+import { useHideAdult } from "@/hooks/use-hide-adult";
 
 const staggerContainer = {
   hidden: {},
@@ -41,6 +42,7 @@ interface Props {
 export function SearchView({ initialQuery, initialGenre, initialType }: Props) {
   const mounted = useMounted();
   const navigate = useNavigate();
+  const hideAdult = useHideAdult();
   const isEmpty = !initialQuery && !initialGenre;
   const [recents, setRecents] = useState<string[]>([]);
 
@@ -99,15 +101,19 @@ export function SearchView({ initialQuery, initialGenre, initialType }: Props) {
   const loading = initialGenre ? genreLoading : isLoading;
   const fetching = initialGenre ? genreFetching : isFetching;
   const failed = initialGenre ? genreError : isError;
-  const allResults = initialGenre
-    ? (genreData?.results || []).map((r: Record<string, unknown>) => ({
-        ...r,
-        media_type: "movie",
-      }))
-    : (data?.results || []).filter(
-        (r: { media_type?: string }) =>
-          r.media_type === "movie" || r.media_type === "tv" || r.media_type === "person"
-      );
+  const allResults = (
+    initialGenre
+      ? (genreData?.results || []).map((r: Record<string, unknown>) => ({
+          ...r,
+          media_type: "movie",
+        }))
+      : (data?.results || []).filter(
+          (r: { media_type?: string }) =>
+            r.media_type === "movie" || r.media_type === "tv" || r.media_type === "person"
+        )
+  ).filter((r: { media_type?: string; adult?: boolean }) =>
+    r.media_type === "person" ? true : !hideAdult || r.adult !== true
+  );
 
   const counts = useMemo(() => {
     const c = { movie: 0, tv: 0, person: 0 };
@@ -141,7 +147,9 @@ export function SearchView({ initialQuery, initialGenre, initialType }: Props) {
   const showStale = fetching && results.length > 0;
 
   if (isEmpty) {
-    const trendingItems = (trending.data?.results || []).slice(0, 8);
+    const trendingItems = (trending.data?.results || [])
+      .filter((r: { adult?: boolean }) => !hideAdult || r.adult !== true)
+      .slice(0, 8);
     return (
       <div className="min-h-screen px-4 pb-12 sm:px-6 lg:px-8">
         <motion.div

@@ -247,16 +247,66 @@ async function resolveToMediaPlaylist(
   return { error: "nested master depth exceeded", ttfbMs };
 }
 
-function looksLikeHlsUrl(url: string): boolean {
+/**
+ * URL-only HLS hint. CinePro `/v1/proxy` wraps BOTH masters and progressive
+ * MP4s (Fshare/Share) — never treat the proxy path as HLS by name.
+ * Real HLS is `.m3u8` / mpegurl, or a sniffed `#EXTM3U` / mpegurl Content-Type.
+ */
+export function looksLikeHlsUrl(url: string): boolean {
   const lower = url.toLowerCase();
+  return lower.includes(".m3u8") || lower.includes("mpegurl");
+}
+
+function contentTypeLooksHls(contentType: string | undefined): boolean {
+  const ct = (contentType ?? "").toLowerCase();
+  return ct.includes("mpegurl") || ct.includes("application/vnd.apple.mpegurl");
+}
+
+function contentTypeLooksDash(contentType: string | undefined): boolean {
+  return (contentType ?? "").toLowerCase().includes("dash+xml");
+}
+
+function contentTypeLooksProgressive(contentType: string | undefined): boolean {
+  const ct = (contentType ?? "").toLowerCase();
   return (
-    lower.includes(".m3u8") ||
-    lower.includes("/playlist/") ||
-    lower.includes("/hls/") ||
-    lower.includes("/v1/proxy") ||
-    lower.includes("cinepro") ||
-    lower.includes("mpegurl")
+    ct.startsWith("video/mp4") ||
+    ct.startsWith("video/webm") ||
+    ct.startsWith("video/quicktime") ||
+    ct.includes("octet-stream")
   );
+}
+
+function bodyLooksHls(body: string | undefined): boolean {
+  return Boolean(body && body.includes("#EXTM3U"));
+}
+
+function bodyLooksDash(body: string | undefined): boolean {
+  return Boolean(body && body.includes("<MPD"));
+}
+
+function bodyLooksProgressive(body: string | undefined): boolean {
+  if (!body) return false;
+  return body.includes("ftyp") || body.includes("moof") || body.includes("mdat");
+}
+
+/**
+ * Classify a probe target from URL + optional Content-Type / body sniff.
+ * `/v1/proxy` of an MP4 is progressive; only actual HLS signals select HLS.
+ */
+export function classifyProbeKind(
+  url: string,
+  contentType?: string,
+  body?: string
+): "hls" | "dash" | "progressive" {
+  if (bodyLooksHls(body) || contentTypeLooksHls(contentType)) return "hls";
+  if (bodyLooksDash(body) || contentTypeLooksDash(contentType)) return "dash";
+  if (bodyLooksProgressive(body) || contentTypeLooksProgressive(contentType)) {
+    return "progressive";
+  }
+  const lower = url.toLowerCase();
+  if (lower.includes(".mpd")) return "dash";
+  if (looksLikeHlsUrl(url)) return "hls";
+  return "progressive";
 }
 
 /** Reject "segments" that are still playlists / ads / images (false-positive scores). */
@@ -385,6 +435,7 @@ interface TimedBody {
   bytes: number;
   bytesPerSec: number;
   text?: string;
+  contentType?: string;
   error?: string;
 }
 
@@ -409,6 +460,7 @@ async function timedFetch(
       redirect: "follow",
     });
     const tHeaders = performance.now();
+    const contentType = res.headers.get("content-type") ?? "";
 
     if (options.asText) {
       const text = await res.text();
@@ -423,6 +475,7 @@ async function timedFetch(
         bytes,
         bytesPerSec: (bytes / thruputMs) * 1000,
         text,
+        contentType,
       };
     }
 
@@ -439,6 +492,7 @@ async function timedFetch(
         ttfbMs,
         bytes,
         bytesPerSec: (bytes / thruputMs) * 1000,
+        contentType,
       };
     }
 
@@ -466,6 +520,7 @@ async function timedFetch(
       ttfbMs,
       bytes: Math.min(bytes, PROBE_BYTE_CAP),
       bytesPerSec: (Math.min(bytes, PROBE_BYTE_CAP) / thruputMs) * 1000,
+      contentType,
     };
   } catch (e) {
     const ttfbMs = performance.now() - t0;
@@ -608,25 +663,25 @@ async function probeOne(entry: ProbeableEntry): Promise<ProbeResult> {
   }
 
   const headers = buildHeaders(entry, entry.url);
-  const lower = entry.url.toLowerCase();
 
   try {
-    // Always treat CinePro proxy URLs / playlist-like paths as HLS — never as progressive MP4.
-    // Progressive path falsely scores 100 on master m3u8 body (Horizon "works" ghost sources).
+    // Strong URL hint only (.m3u8 / mpegurl). CinePro /v1/proxy is sniffed —
+    // assuming HLS made Fshare MP4s fail with "playlist http 200".
     if (looksLikeHlsUrl(entry.url)) {
       const result = await probeHls(entry);
       cacheProbeResult(key, result);
       return result;
     }
 
-    // Sniff unknown URLs: if body is m3u8, use HLS path.
+    // Sniff Content-Type / body: HLS if #EXTM3U or mpegurl, else progressive.
     const sniff = await timedFetch(entry.url, headers, { asText: true, range: true });
-    if (sniff.ok && sniff.text?.includes("#EXTM3U")) {
+    const kind = classifyProbeKind(entry.url, sniff.contentType, sniff.text);
+    if (kind === "hls") {
       const result = await probeHls(entry);
       cacheProbeResult(key, result);
       return result;
     }
-    if (lower.includes(".mpd") || sniff.text?.includes("<MPD")) {
+    if (kind === "dash") {
       const mpd = sniff.text?.includes("<MPD")
         ? sniff
         : await timedFetch(entry.url, headers, { asText: true });

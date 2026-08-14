@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
 import {
+  animeProviderBoost,
   HD_FLOOR_HEIGHT,
   heightTierForRank,
   pickDefaultStreamUrl,
@@ -240,6 +241,58 @@ describe("sortSourcesForDefault — equal-resolution bitrate", () => {
         "unknown",
       ]);
     }
+  });
+});
+
+describe("sortSourcesForDefault — anime ranking boost", () => {
+  it("prefers Vidrock and NoTorrent over Luna at equal height when contentClass=anime", () => {
+    const luna = src({
+      id: "luna",
+      provider: "Vixsrc",
+      label: "Luna",
+      maxHeight: 1080,
+    });
+    const rock = src({
+      id: "rock",
+      provider: "Vidrock",
+      label: "Rock",
+      maxHeight: 1080,
+    });
+    const pulse = src({
+      id: "pulse",
+      provider: "NoTorrent",
+      label: "Pulse",
+      maxHeight: 1080,
+    });
+    expect(animeProviderBoost("Vidrock", "Rock", "anime")).toBeGreaterThan(0);
+    expect(animeProviderBoost("NoTorrent", "Pulse", "anime")).toBeGreaterThan(0);
+    expect(animeProviderBoost("Vixsrc", "Luna", "anime")).toBe(0);
+
+    const ranked = sortSourcesForDefault([luna, rock, pulse], {
+      contentClass: "anime",
+    });
+    expect(ranked.map((entry) => entry.id)).toEqual(["rock", "pulse", "luna"]);
+
+    const defaultRanked = sortSourcesForDefault([luna, rock, pulse]);
+    expect(defaultRanked[0]?.id).toBe("luna");
+  });
+
+  it("does not let a 720 Rock beat 1080 Luna even on anime", () => {
+    const luna = src({
+      id: "luna",
+      provider: "Vixsrc",
+      label: "Luna",
+      maxHeight: 1080,
+    });
+    const rock = src({
+      id: "rock",
+      provider: "Vidrock",
+      label: "Rock",
+      maxHeight: 720,
+    });
+    expect(
+      sortSourcesForDefault([rock, luna], { contentClass: "anime" })[0]?.id
+    ).toBe("luna");
   });
 });
 

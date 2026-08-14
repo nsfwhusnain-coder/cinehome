@@ -103,9 +103,10 @@ import {
   countMeasuredPlayableRosterSources,
   partialForPlayableRoster,
   rosterHasPlayableHeight,
+  shouldSkipPlaywrightForHealthyRoster,
 } from "./roster-health";
 import { appendNewSourceIdentities } from "./progressive-merge";
-import { resultCacheKey } from "./result-cache-key";
+import { parseContentClassParam, resultCacheKey } from "./result-cache-key";
 import { capRosterWithQualityReserve } from "./quality-roster-cap";
 import { mergeDistinctStreamEntries } from "./source-entry-merge";
 import {
@@ -521,7 +522,8 @@ function providerPriority(provider: string, label = "", url = ""): number {
   if (p.startsWith("cinepro") || p.includes("cinepro/")) {
     if (url.includes(".php")) return 4;
     if (l === "luna" || p.includes("vixsrc")) return 7;
-    if (url.includes(".m3u8") || url.includes("/v1/proxy") || url.includes("playlist")) return 10;
+    // Probe sniffs HLS vs progressive; /v1/proxy wraps both (Fshare MP4 ≠ HLS).
+    if (url.includes(".m3u8") || url.includes("playlist")) return 10;
     return 8;
   }
   // Pulse PHP redirectors are often hotlink-403 — never rank above real m3u8.
@@ -592,9 +594,14 @@ function effectiveMaxHeight(entry: SourceEntry): number {
  * ever failed to propagate would degrade to today's behavior rather than break.
  */
 const qualityHintStore = new AsyncLocalStorage<number>();
+const contentClassStore = new AsyncLocalStorage<string | undefined>();
 
 function currentQualityHintHeight(): number {
   return qualityHintStore.getStore() ?? 0;
+}
+
+function currentContentClass(): string | undefined {
+  return contentClassStore.getStore();
 }
 
 /** Options shared by sort + pick so streamUrl matches ranked[0]. */
@@ -610,6 +617,7 @@ function defaultRankOptions() {
     providerPriority,
     entryScore: (e: { url: string; label?: string; quality?: string; provider?: string }) =>
       scoreSourceEntry(e.url, e.label ?? "", e.quality ?? "auto", e.provider ?? ""),
+    contentClass: currentContentClass(),
   };
 }
 
@@ -2185,7 +2193,8 @@ async function resolveCineproEntries(
 
 /**
  * CinemaOS /api/cinemaosv2 — progressive MP4 (MovieBox via worker proxies).
- * Empty = circuit failure (API should return streams when up).
+ * Empty array = title miss (success). Timeouts / thrown errors still fail
+ * the circuit — five title-misses must not open it for every other title.
  */
 async function resolveCinemaosEntries(
   tmdbId: number,
@@ -2204,7 +2213,7 @@ async function resolveCinemaosEntries(
       if (r == null) throw new Error("cinemaos_timeout");
       return r;
     },
-    { isSuccess: (r) => Array.isArray(r) && r.length > 0 }
+    { isSuccess: (r) => r != null }
   );
   if (!streams?.length) return [];
   logAt("info", `[cinemaos] ${streams.length} stream(s) for ${tmdbId}`);
@@ -2250,6 +2259,7 @@ async function resolveVideasyEntries(
 
 /**
  * Vidrock — AES-GCM English HLS + Astra MP4 ladder. Empty = title miss.
+ * Always raced (never skipped) — measured anime coverage on TMDB TV ids.
  */
 async function resolveVidrockEntries(
   tmdbId: number,
@@ -2739,10 +2749,24 @@ async function enrichMissingSources(
     return result;
   }
 
+  // Skip BOTH PW waves when the API roster is already healthy.
+  // Vidking PW is often ~17s (over budget) and burns the only browser
+  // (pool size 1). Threshold = VERIFIED_MIN_SKIP_SECONDARY (4) measured-
+  // playable non-poison sources — Witcher S1E1: Luna+Quasar+Rock×3 in 921ms.
+  // Vidrock stays on the API race; it is never skipped here.
+  const prePwEvidence = mergeSourceEntries(healthEvidence);
+  if (shouldSkipPlaywrightForHealthyRoster(prePwEvidence)) {
+    const goodCount = countMeasuredPlayableRosterSources(prePwEvidence);
+    logAt(
+      "info",
+      `[scrape] PW primary skipped (autoPlayable=${goodCount} ≥ ${VERIFIED_MIN_SKIP_SECONDARY})`
+    );
+    return result;
+  }
+
   // Playwright embed fan-out — only from scheduleBackgroundEnrich.
-  // Phase 3 Option B: primary wave always; secondary only if fewer than two
-  // sources remain auto-playable after measured probes. Provider labels alone
-  // are not health evidence: CinemaOS can return a large HTTP-428 roster.
+  // Secondary only if fewer than VERIFIED_MIN_SKIP_SECONDARY measured-playable
+  // sources remain after primary. Provider labels alone are not health evidence.
   // Both waves share one PW_WAIT_MS hard wall so enrich settles ~20s for PW.
   if (countUniqueSources(result) < MAX_SOURCES) {
     const pwWallStarted = Date.now();
@@ -3003,7 +3027,8 @@ async function scrapeStream(
     season,
     episode,
     currentQualityHintHeight(),
-    Boolean(options.fast)
+    Boolean(options.fast),
+    currentContentClass()
   );
   const cached = getCached(key);
   const underCap = cached != null && cached.sources.length < MAX_SOURCES;
@@ -3350,6 +3375,11 @@ const server = createServer(async (req, res) => {
     const qhNum = qhRaw ? Number(qhRaw) : NaN;
     const qualityHintHeight =
       Number.isFinite(qhNum) && qhNum >= 1080 ? Math.min(qhNum, 4320) : 2160;
+    const contentClass = parseContentClassParam(
+      url.searchParams.get("contentClass"),
+      url.searchParams.get("anime"),
+      mediaType
+    );
 
     if (!tmdbId) {
       res.statusCode = 400;
@@ -3359,16 +3389,18 @@ const server = createServer(async (req, res) => {
 
     // Scoped to this request's async context — see `qualityHintStore`. No
     // reset needed (and no reset RACE): the value dies with the context.
-    await qualityHintStore.run(qualityHintHeight, async () => {
-      try {
-        const result = await scrapeStream(tmdbId, mediaType, season, episode, { fast, noCache });
-        res.end(JSON.stringify(result));
-      } catch (e: unknown) {
-        res.statusCode = 500;
-        const message = e instanceof Error ? e.message : String(e);
-        res.end(JSON.stringify({ streamUrl: null, sources: [], error: message }));
-      }
-    });
+    await qualityHintStore.run(qualityHintHeight, () =>
+      contentClassStore.run(contentClass, async () => {
+        try {
+          const result = await scrapeStream(tmdbId, mediaType, season, episode, { fast, noCache });
+          res.end(JSON.stringify(result));
+        } catch (e: unknown) {
+          res.statusCode = 500;
+          const message = e instanceof Error ? e.message : String(e);
+          res.end(JSON.stringify({ streamUrl: null, sources: [], error: message }));
+        }
+      })
+    );
     return;
   }
 

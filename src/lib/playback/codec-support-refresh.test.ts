@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+  hevcNeedsNativePath,
   resetDecodeCapabilityCache,
   supportsHevc,
   warmDecodeCapabilities,
@@ -83,6 +84,45 @@ describe("living-room HEVC trust", () => {
       documentElement: { getAttribute: (name: string) => (name === "data-tv" ? "1" : null) },
     };
     expect(supportsHevc()).toBe(true);
+  });
+});
+
+const HISENSE_VIDAA =
+  "Mozilla/5.0 (Linux; U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.146 " +
+  "Safari/537.36 VIDAA/6.0";
+const DESKTOP_CHROME =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/126.0.0.0 Safari/537.36";
+
+describe("hevcNeedsNativePath living-room MSE gap", () => {
+  it("takes the native path on Hisense when MSE rejects every HEVC probe", () => {
+    installFakeBrowser(false);
+    (globalThis as Mutable).navigator = { userAgent: HISENSE_VIDAA };
+    (globalThis as Mutable).document = {
+      createElement: () => ({ canPlayType: () => "" }),
+      documentElement: { getAttribute: () => null },
+    };
+    expect(hevcNeedsNativePath()).toBe(true);
+  });
+
+  it("does not take the native path on desktop Chrome with no MSE and no element HEVC", () => {
+    installFakeBrowser(false);
+    (globalThis as Mutable).navigator = { userAgent: DESKTOP_CHROME };
+    (globalThis as Mutable).document = {
+      createElement: () => ({ canPlayType: () => "" }),
+      documentElement: { getAttribute: () => null },
+    };
+    expect(hevcNeedsNativePath()).toBe(false);
+  });
+
+  it("takes the native path when data-tv=1 and MSE rejects HEVC", () => {
+    installFakeBrowser(false);
+    (globalThis as Mutable).navigator = { userAgent: DESKTOP_CHROME };
+    (globalThis as Mutable).document = {
+      createElement: () => ({ canPlayType: () => "" }),
+      documentElement: { getAttribute: (name: string) => (name === "data-tv" ? "1" : null) },
+    };
+    expect(hevcNeedsNativePath()).toBe(true);
   });
 });
 

@@ -1,6 +1,7 @@
 import { lookupTmdb } from "./tmdb-lookup";
 import { isPoisonStreamUrl } from "../poison-url";
 import type { ProviderStream } from "./types";
+import { rethrowIfProviderOutage, throwIfHttpOutage } from "./provider-outage";
 
 /**
  * Cap on streams kept per title. The addon can return 15+; every one costs a
@@ -38,9 +39,10 @@ export async function resolveNotorrent(
   tmdbId: number,
   mediaType: "movie" | "tv",
   season?: number,
-  episode?: number
+  episode?: number,
+  lookup: typeof lookupTmdb = lookupTmdb
 ): Promise<ProviderStream[]> {
-  const info = await lookupTmdb(tmdbId, mediaType);
+  const info = await lookup(tmdbId, mediaType);
   if (!info?.imdbId) return [];
 
   const apiUrl =
@@ -53,6 +55,7 @@ export async function resolveNotorrent(
       headers: { "User-Agent": UA, Accept: "application/json" },
       signal: AbortSignal.timeout(20000),
     });
+    throwIfHttpOutage(res.status, "notorrent");
     if (!res.ok) return [];
 
     const data = (await res.json()) as {
@@ -140,7 +143,8 @@ export async function resolveNotorrent(
       `[notorrent] ${labelled.length} stream(s) for ${tmdbId} (from ${out.length} eligible)`
     );
     return labelled;
-  } catch {
+  } catch (err) {
+    rethrowIfProviderOutage(err, "notorrent");
     return [];
   }
 }

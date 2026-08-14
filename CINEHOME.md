@@ -24,7 +24,8 @@
 - Historic markers: the pre-ownership running state is commit `11847dd`, tagged
   `production-baseline-20260725`.
 - Stale mirrors that must NOT be deployed from: `C:\Users\husna\projects\cinehome-main`,
-  `cinehome-authoritative`, and the `cinehome-*` copies under `/home/hussy/`.
+  `cinehome-authoritative`, `/Users/husnainali/cinehome-sot` (stale un-remoted
+  Mac mirror), and the `cinehome-*` copies under `/home/hussy/`.
   Clone fresh from GitHub instead.
 - **Canonical App Router**: `src/app` only. There is no root `app/` router.
 - **Nothing in `db/` is source.** The whole directory is gitignored — it holds
@@ -39,19 +40,26 @@
 - `mini-services/stream-scraper` on port **3030 inside the container only** (never publish 3030)
 - HLS proxy: local `/api/hls/[sessionId]` by default (residential uplink — works with embed CDNs)
 - Optional Cloudflare Worker only when **`WORKER_PROXY_ENABLED=1`** (many CDNs 403 CF IPs — verify before enabling)
-- **CinePro OMSS** (optional): disabled unless a time-bounded evaluation or
-  explicit `PROVIDER_CINEPRO=1` enables it
+- **CinePro OMSS**: `circuit.ts` enables CinePro whenever `CINEPRO_URL` is set
+  unless `PROVIDER_CINEPRO=0`. Compose injects
+  `CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}`, so live is on unless
+  the kill switch is set. Observed 2026-08-14: enabled, often
+  `cinepro_timeout_8000`.
 - Watch page: **CineHome** (custom hls.js) + **Embed** mode (iframe servers like Cineby)
 - Host publish: **4445 → 3000** (`docker-compose.yml`)
 - **Sign-in required** for playback
 
 ### Optional CinePro evaluation
 
-CinePro is fail-closed by default because a dead instance otherwise adds
-repeated five-second 500 responses and a wasteful 20-title boot warmer. Run
-`bun scripts/cinepro-eval.ts` first; only enable a short evaluation window when
-that passes. Promote to `PROVIDER_CINEPRO=1` only after the `/health` circuit
-shows a useful sustained hit rate.
+`circuit.ts` enables CinePro whenever `CINEPRO_URL` is set unless
+`PROVIDER_CINEPRO=0`. Compose injects that URL (default
+`http://cinepro-core:3000`), so production is on without an explicit
+`PROVIDER_CINEPRO=1`. Kill with `PROVIDER_CINEPRO=0` — do not flip the live
+env from a laptop deploy. Live (2026-08-14): cinepro is enabled and often
+surfaces `cinepro_timeout_8000` (8s fast budget). A dead instance still adds
+repeated 500s and a wasteful 20-title boot warmer. Run
+`bun scripts/cinepro-eval.ts` to measure hit rate; `CINEPRO_EVAL_UNTIL` can
+enable the arm even without a URL.
 
 ```bash
 # .env

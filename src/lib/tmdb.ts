@@ -120,6 +120,9 @@ export interface TmdbMovie {
   budget?: number;
   revenue?: number;
   original_language?: string;
+  origin_country?: string[];
+  production_countries?: { iso_3166_1: string; name?: string }[];
+  adult?: boolean;
 }
 
 export interface TmdbTv {
@@ -139,6 +142,9 @@ export interface TmdbTv {
   seasons?: TmdbSeason[];
   created_by?: { id: number; name: string; profile_path: string | null }[];
   original_language?: string;
+  origin_country?: string[];
+  production_countries?: { iso_3166_1: string; name?: string }[];
+  adult?: boolean;
 }
 
 export interface TmdbSeason {
@@ -231,6 +237,58 @@ export interface TmdbImages {
   logos: TmdbImage[];
 }
 
+export interface TmdbPerson {
+  id: number;
+  name: string;
+  biography: string;
+  birthday: string | null;
+  deathday: string | null;
+  place_of_birth: string | null;
+  profile_path: string | null;
+  known_for_department: string;
+  also_known_as?: string[];
+  popularity?: number;
+  gender?: number;
+  adult?: boolean;
+}
+
+export interface TmdbPersonCredit {
+  id: number;
+  title?: string;
+  name?: string;
+  poster_path: string | null;
+  backdrop_path?: string | null;
+  release_date?: string | null;
+  first_air_date?: string | null;
+  vote_average?: number;
+  popularity?: number;
+  media_type?: string;
+  character?: string;
+  job?: string;
+  department?: string;
+  adult?: boolean;
+}
+
+export interface TmdbPersonCredits {
+  id: number;
+  cast: TmdbPersonCredit[];
+  crew: TmdbPersonCredit[];
+}
+
+export interface TmdbAnimeSignalsRaw {
+  genre_ids?: number[];
+  genres?: { id: number; name: string }[];
+  original_language?: string;
+  origin_country?: string[];
+  production_countries?: { iso_3166_1: string; name?: string }[];
+  keywords?: {
+    keywords?: { id: number; name: string }[];
+    results?: { id: number; name: string }[];
+  };
+}
+
+export { withoutAdultTitles } from "./tmdb-filters";
+
 // ---------- Endpoints ----------
 export const tmdb = {
   trending: (window: "day" | "week" = "week") =>
@@ -299,6 +357,15 @@ export const tmdb = {
         "credits,videos,recommendations,similar,reviews,watch/providers,content_ratings",
     }),
 
+  /**
+   * Light details + keywords only. Used by playback to decide contentClass=anime
+   * without paying for the full movieDetails/tvDetails append set.
+   */
+  animeSignals: (type: "movie" | "tv", id: number) =>
+    tmdbFetch<TmdbAnimeSignalsRaw>(`/${type}/${id}`, {
+      append_to_response: "keywords",
+    }),
+
   watchProviders: (id: number, type: "movie" | "tv") =>
     tmdbFetch<{ results: Record<string, TmdbWatchProviderRegion> }>(`/${type}/${id}/watch/providers`),
 
@@ -325,6 +392,7 @@ export const tmdb = {
       with_genres: genreId,
       page,
       sort_by: "popularity.desc",
+      include_adult: false,
     }),
 
   /** Discover titles available on a streaming provider (e.g. Netflix = 8). */
@@ -339,7 +407,13 @@ export const tmdb = {
       watch_region: region,
       page,
       sort_by: "popularity.desc",
+      include_adult: false,
     }),
+
+  personDetails: (id: number) => tmdbFetch<TmdbPerson>(`/person/${id}`),
+
+  personCredits: (id: number) =>
+    tmdbFetch<TmdbPersonCredits>(`/person/${id}/combined_credits`),
 };
 
 /** TMDB watch provider id for Netflix (US catalog). */

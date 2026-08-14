@@ -139,8 +139,16 @@ describe("resolveVideasy", () => {
     ]);
   });
 
-  it("returns empty on seed miss instead of throwing", async () => {
-    globalThis.fetch = (async () => new Response("nope", { status: 503 })) as typeof fetch;
+  it("returns empty on a 404 seed miss instead of throwing", async () => {
+    globalThis.fetch = (async () => new Response("nope", { status: 404 })) as typeof fetch;
     await expect(resolveVideasy(61838, "tv", 1, 1)).resolves.toEqual([]);
+  });
+
+  it("throws on seed HTTP 503 (real outage)", async () => {
+    const { ProviderOutageError } = await import("./provider-outage");
+    globalThis.fetch = (async () => new Response("nope", { status: 503 })) as typeof fetch;
+    await expect(resolveVideasy(61838, "tv", 1, 1)).rejects.toBeInstanceOf(
+      ProviderOutageError
+    );
   });
 });

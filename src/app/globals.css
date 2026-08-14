@@ -536,3 +536,22 @@ html[data-tv="1"] .max-w-md {
     transform: none !important;
   }
 }
+
+/* Living-room SoCs should not run Ken Burns. Same kill as reduced-motion. */
+html[data-tv="1"] .hero-ken {
+  animation: none !important;
+  transform: none !important;
+  will-change: auto;
+}
+
+/* Overflow menus stay in the spatial graph and stay visible on TV. */
+html[data-tv="1"] [data-card-overflow] {
+  opacity: 1 !important;
+  width: 3rem;
+  height: 3rem;
+}
+
+/* Living-room catalog: keep legal, drop social lockups. */
+html[data-tv="1"] .footer-social {
+  display: none;
+}

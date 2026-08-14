@@ -99,6 +99,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ path: stri
       if (a === "discover" && (b === "movie" || b === "tv") && c) {
         return tmdb.discoverByGenre(b, Number(c), Number(params.page) || 1);
       }
+      if (a === "person" && b && !isNaN(Number(b)) && c === "combined_credits") {
+        return tmdb.personCredits(Number(b));
+      }
+      if (a === "person" && b && !isNaN(Number(b))) {
+        return tmdb.personDetails(Number(b));
+      }
       throw Object.assign(new Error(`Unknown TMDB route: ${route}`), { status: 404 });
     });
 

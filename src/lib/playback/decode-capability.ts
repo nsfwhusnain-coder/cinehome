@@ -143,19 +143,27 @@ export function av1Support(): DecodeSupport {
   return cachedProbe(av1Cache, AV1_PROBE_TYPES);
 }
 
-export function supportsHevc(): boolean {
-  // 4K living-room SoCs decode HEVC in hardware. Hisense VIDAA / Chrome 76
-  // still answers canPlayType("") for every hvc1 string, which hid every 4K
-  // release on the 85-inch set. Trust the panel, not the broken probe.
+/**
+ * Living-room panels whose codec probes lie. Hisense VIDAA / Chrome 76
+ * answers "" for every hvc1 string even though the SoC decodes HEVC in
+ * hardware. Inventory (`supportsHevc`) and the engine path
+ * (`hevcNeedsNativePath`) must agree, or remuxed 4K HEVC is handed to
+ * hls.js+MSE and blacks out.
+ */
+function isLivingRoomHevcTrust(): boolean {
   if (typeof navigator !== "undefined" && isTvUserAgent(navigator.userAgent || "")) {
     return true;
   }
-  if (
+  return (
     typeof document !== "undefined" &&
     document.documentElement?.getAttribute("data-tv") === "1"
-  ) {
-    return true;
-  }
+  );
+}
+
+export function supportsHevc(): boolean {
+  // Trust the panel, not the broken probe — otherwise every 4K HEVC release
+  // vanishes from the 85-inch roster.
+  if (isLivingRoomHevcTrust()) return true;
   return hevcSupport().supported;
 }
 
@@ -238,21 +246,23 @@ export async function warmDecodeCapabilities(): Promise<void> {
 
 /**
  * True when HEVC is reachable ONLY through the plain <video> element and not
- * through MSE.
+ * through MSE — or when this is a living-room TV whose canPlayType probe is
+ * empty but the panel decodes HEVC in hardware.
  *
  * This is the one case where giving up hls.js is worth it. Native HLS has no
  * JS-level API to select or floor a rendition — AVFoundation and the equivalent
  * TV pipelines run ABR inside the OS with no hook — so choosing it forfeits
  * HLS_MIN_HEIGHT, applyPreferredHlsQuality and the adaptive floor entirely. That
- * price is only worth paying when MSE genuinely cannot decode the codec and the
- * native path is the only one that can.
+ * price is only worth paying when MSE genuinely cannot decode the codec.
  *
- * Deliberately measured rather than assumed from the user agent: some TV
- * browsers carry HEVC through MSE perfectly well, and those should keep the
- * quality floor.
+ * Non-TV stays measured: `!mseAccepts && elementAccepts`. TV + no MSE HEVC
+ * returns true even when every canPlayType string is "" — inventory already
+ * trusts those panels, and the engine must follow.
  */
 export function hevcNeedsNativePath(): boolean {
-  return !mseAccepts(HEVC_PROBE_TYPES) && elementAccepts(HEVC_PROBE_TYPES);
+  if (mseAccepts(HEVC_PROBE_TYPES)) return false;
+  if (elementAccepts(HEVC_PROBE_TYPES)) return true;
+  return isLivingRoomHevcTrust();
 }
 
 /** Test seam — capability is cached for the session in normal use. */

@@ -1,10 +1,12 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
+import { VERIFIED_MIN_SKIP_SECONDARY } from "./embed-roster";
 import {
   countAutoPlayableRosterSources,
   countMeasuredPlayableRosterSources,
   partialForPlayableRoster,
   rosterHasPlayableHeight,
+  shouldSkipPlaywrightForHealthyRoster,
 } from "./roster-health";
 
 describe("playable roster completion", () => {
@@ -54,5 +56,14 @@ describe("playable roster completion", () => {
 
     expect(rosterHasPlayableHeight(hd, 2160)).toBe(false);
     expect(rosterHasPlayableHeight([...hd, uhd], 2160)).toBe(true);
+  });
+
+  it("skips primary Playwright once 4 measured-playable APIs exist", () => {
+    const healthy = Array.from({ length: VERIFIED_MIN_SKIP_SECONDARY }, (_, index) => ({
+      url: `https://cdn.example/${index}.m3u8`,
+      probe: { ok: true as const },
+    }));
+    expect(shouldSkipPlaywrightForHealthyRoster(healthy)).toBe(true);
+    expect(shouldSkipPlaywrightForHealthyRoster(healthy.slice(0, 3))).toBe(false);
   });
 });

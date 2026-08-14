@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { HeroCarousel } from "@/components/hero-carousel";
 import { MovieRow } from "@/components/movie-row";
 import { MovieCard } from "@/components/movie-card";
 import { CardOverflowMenu } from "@/components/card-overflow-menu";
-import { NETFLIX_PROVIDER_ID, tmdbImageUrl } from "@/lib/tmdb";
+import { NETFLIX_PROVIDER_ID, tmdbImageUrl, withoutAdultTitles } from "@/lib/tmdb";
+import { useHideAdult } from "@/hooks/use-hide-adult";
 import {
   fetchTmdbPages,
   fetchTrendingMerged,
@@ -16,7 +18,6 @@ import {
   type MediaKind,
   type TmdbListItem,
 } from "@/lib/tmdb-client";
-import { useNavigate } from "@/hooks/use-navigate";
 import { useMounted } from "@/hooks/use-mounted";
 import { HeroSkeleton, MovieRowSkeleton } from "@/components/skeletons";
 import { LazyRail } from "@/components/lazy-rail";
@@ -132,23 +133,12 @@ function isTotalCatalogFailure(catalog: HomeCatalog | undefined): boolean {
   return Object.values(catalog).every((list) => list.length === 0);
 }
 
-function NetflixTitle({ kind }: { kind: "movie" | "tv" }) {
-  return (
-    <span className="inline-flex items-center gap-2">
-      <span
-        className="inline-flex h-5 items-center rounded bg-[#E50914] px-1.5 text-[10px] font-black tracking-tight text-white"
-        aria-hidden
-      >
-        N
-      </span>
-      {kind === "movie" ? "Movies on Netflix" : "TV Series on Netflix"}
-    </span>
-  );
-}
+
 
 export function HomeView() {
   const mounted = useMounted();
   const { data: session } = useSession();
+  const hideAdult = useHideAdult();
 
   const continueQuery = useQuery({
     queryKey: ["progress"],
@@ -201,17 +191,17 @@ export function HomeView() {
       : [];
 
     return {
-      becauseYouWatched,
-      trendingMovies: takeUnique(catalog.data.trendingMovies, "movie", seen),
-      trendingSeries: takeUnique(catalog.data.trendingSeries, "tv", seen),
-      netflixMovies: takeUnique(catalog.data.netflixMovies, "movie", seen),
-      netflixSeries: takeUnique(catalog.data.netflixSeries, "tv", seen),
-      topRatedMovies: takeUnique(catalog.data.topRatedMovies, "movie", seen),
-      topRatedSeries: takeUnique(catalog.data.topRatedSeries, "tv", seen),
+      becauseYouWatched: withoutAdultTitles(becauseYouWatched, hideAdult),
+      trendingMovies: withoutAdultTitles(takeUnique(catalog.data.trendingMovies, "movie", seen), hideAdult),
+      trendingSeries: withoutAdultTitles(takeUnique(catalog.data.trendingSeries, "tv", seen), hideAdult),
+      netflixMovies: withoutAdultTitles(takeUnique(catalog.data.netflixMovies, "movie", seen), hideAdult),
+      netflixSeries: withoutAdultTitles(takeUnique(catalog.data.netflixSeries, "tv", seen), hideAdult),
+      topRatedMovies: withoutAdultTitles(takeUnique(catalog.data.topRatedMovies, "movie", seen), hideAdult),
+      topRatedSeries: withoutAdultTitles(takeUnique(catalog.data.topRatedSeries, "tv", seen), hideAdult),
     };
-  }, [catalog.data, continueQuery.data, recSeed, recSeedMediaType, becauseYouWatchedQuery.data]);
+  }, [catalog.data, continueQuery.data, recSeed, recSeedMediaType, becauseYouWatchedQuery.data, hideAdult]);
 
-  const featured = (catalog.data?.trendingMovies ?? []).slice(0, 5).map((m) => ({
+  const featured = withoutAdultTitles(catalog.data?.trendingMovies ?? [], hideAdult).slice(0, 5).map((m) => ({
     ...m,
     overview: m.overview ?? "",
     media_type: "movie" as const,
@@ -356,7 +346,6 @@ export function HomeView() {
               <LazyRail minHeight={360}>
                 <MovieRow
                   title="Movies on Netflix"
-                  titleNode={<NetflixTitle kind="movie" />}
                   viewAllHref="/browse/netflix-movies"
                 >
                   {rows.netflixMovies.slice(0, RAIL_CARD_LIMIT).map((m) => (
@@ -370,7 +359,6 @@ export function HomeView() {
               <LazyRail minHeight={360}>
                 <MovieRow
                   title="TV Series on Netflix"
-                  titleNode={<NetflixTitle kind="tv" />}
                   viewAllHref="/browse/netflix-tv"
                 >
                   {rows.netflixSeries.slice(0, RAIL_CARD_LIMIT).map((m) => (
@@ -415,22 +403,16 @@ export function HomeView() {
 }
 
 function ContinueCard({ item }: { item: ProgressItem }) {
-  const navigate = useNavigate();
   const pct = Math.min(100, Math.max(0, Math.round((item.progress || 0) * 100)));
   const img = tmdbImageUrl(item.backdrop || item.poster, "w780");
   const left = formatTimeLeft(item.position, item.duration, item.progress);
   const line2 = formatEpMeta(item, left);
   const title = item.title ?? "Untitled";
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const openWatch = () => {
-    // Navigate immediately — player shell shows while sources attach
-    if (item.mediaType === "tv" && item.season != null && item.episode != null) {
-      navigate(`/watch/tv/${item.tmdbId}?season=${item.season}&episode=${item.episode}`);
-      return;
-    }
-    navigate(`/watch/${item.mediaType}/${item.tmdbId}`);
-  };
+  const href =
+    item.mediaType === "tv" && item.season != null && item.episode != null
+      ? `/watch/tv/${item.tmdbId}?season=${item.season}&episode=${item.episode}`
+      : `/watch/${item.mediaType}/${item.tmdbId}`;
 
   const kickPreresolve = () => {
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
@@ -462,42 +444,37 @@ function ContinueCard({ item }: { item: ProgressItem }) {
     >
       <div
         className={cn(
-          "relative aspect-video origin-center cursor-pointer overflow-hidden rounded-xl bg-[#14141a]",
+          "relative aspect-video origin-center overflow-hidden rounded-xl bg-[#14141a]",
           "transition-transform duration-[180ms] ease-out will-change-transform",
           "group-hover:scale-105 group-hover:shadow-[0_12px_32px_rgba(0,0,0,0.5)]",
           "group-focus-within:scale-105 group-focus-within:shadow-[0_12px_32px_rgba(0,0,0,0.5)]"
         )}
-        onClick={openWatch}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            openWatch();
-          }
-        }}
-        role="button"
-        tabIndex={0}
-        aria-label={`Continue ${title}`}
       >
-        {img ? (
-           
-          <img
-            src={img}
-            alt=""
-            className="h-full w-full object-cover"
-            loading="lazy"
-            width={320}
-            height={180}
-          />
-        ) : (
-          <div className="h-full w-full bg-[#1a1a22]" />
-        )}
-
-        <div
-          className="absolute inset-x-0 bottom-0 z-[5]"
-          style={{ height: 3, background: "rgba(255,255,255,0.25)" }}
+        <Link
+          href={href}
+          className="absolute inset-0 z-0 block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0f]"
+          aria-label={`Continue ${title}`}
         >
-          <div className="h-full bg-white" style={{ width: `${pct}%` }} />
-        </div>
+          {img ? (
+            <img
+              src={img}
+              alt=""
+              className="h-full w-full object-cover"
+              loading="lazy"
+              width={320}
+              height={180}
+            />
+          ) : (
+            <div className="h-full w-full bg-[#1a1a22]" />
+          )}
+
+          <div
+            className="absolute inset-x-0 bottom-0 z-[5]"
+            style={{ height: 3, background: "rgba(255,255,255,0.25)" }}
+          >
+            <div className="h-full bg-white" style={{ width: `${pct}%` }} />
+          </div>
+        </Link>
 
         <CardOverflowMenu
           target={{
@@ -515,7 +492,7 @@ function ContinueCard({ item }: { item: ProgressItem }) {
         />
       </div>
 
-      <button type="button" className="mt-2 w-full cursor-pointer text-left" onClick={openWatch}>
+      <Link href={href} tabIndex={-1} aria-hidden="true" className="mt-2 block">
         <div className="truncate text-white" style={{ fontSize: 15, fontWeight: 600 }}>
           {title}
         </div>
@@ -524,7 +501,7 @@ function ContinueCard({ item }: { item: ProgressItem }) {
             {line2}
           </div>
         ) : null}
-      </button>
+      </Link>
     </div>
   );
 }

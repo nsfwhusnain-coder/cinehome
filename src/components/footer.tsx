@@ -10,7 +10,7 @@ export function Footer() {
           href="https://discord.gg"
           target="_blank"
           rel="noreferrer"
-          className="text-white/50 transition-colors hover:text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background rounded"
+          className="footer-social text-white/50 transition-colors hover:text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background rounded"
           aria-label="Discord"
         >
           <DiscordIcon className="h-[22px] w-[22px]" />

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { signOut, useSession } from "next-auth/react";
 import { useMemo, useRef } from "react";
 import { collapseContinueItems } from "@/lib/continue-watching";
+import { safeCallbackPath } from "@/views/login";
 
 export interface ProgressItem {
   tmdbId: number;
@@ -29,7 +30,14 @@ async function progressRequest<T>(url: string, init?: RequestInit): Promise<T> {
   const message = body.error || "Failed to update progress";
 
   if (res.status === 401) {
-    await signOut({ callbackUrl: "/login?error=SessionExpired" });
+    const currentPath =
+      typeof window !== "undefined"
+        ? `${window.location.pathname}${window.location.search}`
+        : "/";
+    const safe = safeCallbackPath(currentPath);
+    await signOut({
+      callbackUrl: `/login?error=SessionExpired&callbackUrl=${encodeURIComponent(safe)}`,
+    });
     throw new Error("Session expired — please sign in again");
   }
 
