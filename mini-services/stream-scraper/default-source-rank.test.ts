@@ -27,18 +27,18 @@ function src(
 }
 
 describe("heightTierForRank", () => {
-  it("maps ≥1080 → 2, unknown ≤0 → 1, known sub-HD → 0", () => {
-    expect(heightTierForRank(2160)).toBe(2);
-    expect(heightTierForRank(HD_FLOOR_HEIGHT)).toBe(2);
+  it("maps ≥1080 → 3, ≥720 → 2, unknown ≤0 → 1, known sub-720 → 0", () => {
+    expect(heightTierForRank(2160)).toBe(3);
+    expect(heightTierForRank(HD_FLOOR_HEIGHT)).toBe(3);
+    expect(heightTierForRank(720)).toBe(2);
     expect(heightTierForRank(0)).toBe(1);
     expect(heightTierForRank(-1)).toBe(1);
-    expect(heightTierForRank(720)).toBe(0);
     expect(heightTierForRank(480)).toBe(0);
   });
 });
 
 describe("sortSourcesForDefault — R9 height tiers", () => {
-  it("1: known 720 loses to unknown maxH=0 (neither ≥1080)", () => {
+  it("1: known 720 beats unknown maxH=0 (do not autoplay mystery 480p)", () => {
     const luna720 = src({
       id: "luna",
       maxHeight: 720,
@@ -46,8 +46,8 @@ describe("sortSourcesForDefault — R9 height tiers", () => {
     });
     const pulseUnknown = src({ id: "pulse", maxHeight: 0 });
     const ranked = sortSourcesForDefault([luna720, pulseUnknown]);
-    expect(ranked[0]?.url).toBe(pulseUnknown.url);
-    expect(pickDefaultStreamUrl([luna720, pulseUnknown])).toBe(pulseUnknown.url);
+    expect(ranked[0]?.url).toBe(luna720.url);
+    expect(pickDefaultStreamUrl([luna720, pulseUnknown])).toBe(luna720.url);
   });
 
   it("2: known 1080 beats unknown maxH=0", () => {
@@ -109,8 +109,7 @@ describe("sortSourcesForDefault — R9 height tiers", () => {
     expect(ranked2[0]?.url).toBe(verifiedSub.url);
   });
 
-  it("probe.ok 720 does not override unknown via pickDefaultStreamUrl", () => {
-    // Regression: old pick re-scanned for probe.ok after sort, undoing R9 tiers.
+  it("probe.ok 720 still wins over unknown via pickDefaultStreamUrl", () => {
     const fast720 = src({
       id: "luna",
       maxHeight: 720,
@@ -122,7 +121,7 @@ describe("sortSourcesForDefault — R9 height tiers", () => {
       maxHeight: 0,
       verified: true,
     });
-    expect(pickDefaultStreamUrl([fast720, unknown])).toBe(unknown.url);
+    expect(pickDefaultStreamUrl([fast720, unknown])).toBe(fast720.url);
   });
 
   it("multi-rung ladder beats single-rung at equal height", () => {

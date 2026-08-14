@@ -1227,8 +1227,9 @@ export function pickDefaultSource(
     const aRankH = aOffersTarget ? explicitTarget! : aH;
     const bRankH = bOffersTarget ? explicitTarget! : bH;
     const heightTier = (h: number): number => {
-      if (h >= HD_FLOOR_HEIGHT) return 2;
-      if (h <= 0) return 1; // unknown — not treated as sub-HD
+      if (h >= HD_FLOOR_HEIGHT) return 3;
+      if (h >= 720) return 2;
+      if (h <= 0) return 1; // unknown — still above confirmed 480/360
       return 0;
     };
     const aTier = heightTier(aRankH);

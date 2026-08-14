@@ -32,10 +32,14 @@ export type HeightInfer = (text: string) => number;
 
 /**
  * Client-aligned height tier for ranking.
- * known ≥1080 → unknown (≤0) → known sub-HD.
+ * known ≥1080 → known ≥720 → unknown (≤0) → known sub-720.
+ * Unknown used to outrank 720, which made unmeasured 480p MP4s beat Luna.
  */
+export const WATCHABLE_HEIGHT = 720;
+
 export function heightTierForRank(height: number): number {
-  if (height >= HD_FLOOR_HEIGHT) return 2;
+  if (height >= HD_FLOOR_HEIGHT) return 3;
+  if (height >= WATCHABLE_HEIGHT) return 2;
   if (height <= 0) return 1;
   return 0;
 }

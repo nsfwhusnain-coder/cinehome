@@ -107,6 +107,25 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
     ]);
   });
 
+  it("picks a known 720p source over an unmeasured mystery file", () => {
+    const luna = makeSource({
+      id: "luna",
+      label: "Luna",
+      provider: "Vixsrc",
+      maxHeight: 720,
+      type: "hls",
+    });
+    const mystery = makeSource({
+      id: "phoenix",
+      label: "Phoenix",
+      provider: "VidLink",
+      maxHeight: 0,
+      quality: "auto",
+      type: "mp4",
+    });
+    expect(pickDefaultSource([mystery, luna])?.id).toBe("luna");
+  });
+
   it("picks the 1080p source over a 720p one", () => {
     const sourceLuna = makeSource({ id: "luna", label: "Luna", provider: "Vixsrc", maxHeight: 720 });
     const sourceAether = makeSource({ id: "aether", label: "Aether", provider: "CinePro", maxHeight: 1080 });
@@ -257,9 +276,7 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
     expect(sourceRosterMeetsHdFloor([sub, hdLadder])).toBe(true);
   });
 
-  it("unknown-height sources stay in pool and can be picked when no known HD exists", () => {
-    // Regression: HD preference must rank, not filter — unknown maxHeight
-    // used to be treated as sub-HD / dropped from auto-play.
+  it("unknown-height sources stay in pool and can be picked when no known 720 exists", () => {
     const unknown = makeSource({
       id: "unknown",
       label: "Phoenix",
@@ -267,15 +284,13 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
       maxHeight: 0,
       verified: true,
     });
-    const slow720 = makeSource({
-      id: "slow720",
-      label: "Luna",
-      provider: "Vixsrc",
-      maxHeight: 720,
-      probe: { ok: true, ttfbMs: 40, bytesPerSec: 5_000_000, speedScore: 90 },
+    const only480 = makeSource({
+      id: "low",
+      label: "Nova",
+      provider: "embed.su",
+      maxHeight: 480,
     });
-    const picked = pickDefaultSource([slow720, unknown]);
-    // Unknown tiers above known sub-HD so playback can start.
+    const picked = pickDefaultSource([only480, unknown]);
     expect(picked?.id).toBe("unknown");
   });
 

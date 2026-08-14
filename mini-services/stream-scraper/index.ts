@@ -2765,13 +2765,16 @@ function scheduleBackgroundEnrich(
   const enrichWork = Promise.resolve().then(async (): Promise<ScrapeResult | null> => {
     const seed = mergeSourceEntries(cachedSourcesForTargets(registration.targets()));
     seedCount = seed.length;
+    const needsHdRescue = !rosterHasPlayableHeight(seed, 1080);
     const enriched = await enrichMissingSources(
       seed,
       tmdbId,
       mediaType,
       season,
       episode,
-      { forceDeadHostProbe: options.forceDeadHostProbe }
+      {
+        forceDeadHostProbe: options.forceDeadHostProbe || needsHdRescue,
+      }
     );
     // Provider arms may settle while the browser wave runs, so merge every
     // joined pass's latest cache after enrichment instead of reusing the seed.
