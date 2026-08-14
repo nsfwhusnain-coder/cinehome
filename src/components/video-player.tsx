@@ -3054,7 +3054,7 @@ export function VideoPlayer({
                 video,
                 onAutoplayBlocked,
                 onMutedAutoplayFallback,
-                !audiblePlaybackEstablishedRef.current
+                !isTvLikeDevice() && !audiblePlaybackEstablishedRef.current
               );
             }
           });
@@ -3274,7 +3274,7 @@ export function VideoPlayer({
               video,
               onAutoplayBlocked,
               onMutedAutoplayFallback,
-              !audiblePlaybackEstablishedRef.current
+              !isTvLikeDevice() && !audiblePlaybackEstablishedRef.current
             );
           }
         });
@@ -3674,7 +3674,7 @@ export function VideoPlayer({
             video,
             onAutoplayBlocked,
             onMutedAutoplayFallback,
-            !audiblePlaybackEstablishedRef.current
+            !isTvLikeDevice() && !audiblePlaybackEstablishedRef.current
           );
         }
       } else {
@@ -3745,7 +3745,7 @@ export function VideoPlayer({
           video,
           onAutoplayBlocked,
           onMutedAutoplayFallback,
-          !audiblePlaybackEstablishedRef.current
+          !isTvLikeDevice() && !audiblePlaybackEstablishedRef.current
         );
       }
     }
@@ -4851,15 +4851,17 @@ export function VideoPlayer({
     const saved = getSavedPlaybackSpeed();
     if (v && saved !== 1) v.playbackRate = saved;
     setSpeed(saved);
-    // Persisted volume/mute (task 10a): the store only ever mirrored the video
-    // element's own volumechange events, so persisting to the store alone did
-    // nothing user-visible — apply it once to the native element on mount.
+    // Volume level persists. Mute does not — a TV autoplay fallback used to
+    // write muted=1 and every later title started silent.
     if (v) {
       const state = usePlayerStore.getState();
-      v.volume = state.volume;
-      v.muted = state.isMuted;
+      const volume = state.volume > 0 ? state.volume : 1;
+      v.volume = volume;
+      v.muted = false;
+      if (state.volume <= 0) setVolume(volume);
+      if (state.isMuted) setIsMuted(false);
     }
-  }, [setSpeed]);
+  }, [setSpeed, setIsMuted, setVolume]);
 
   const handleSubtitleChange = useCallback(
     (trackId: number | null) => {

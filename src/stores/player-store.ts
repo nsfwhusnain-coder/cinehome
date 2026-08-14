@@ -3,7 +3,6 @@ import { create } from "zustand";
 export const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 
 const VOLUME_KEY = "cinehome:player-volume";
-const MUTED_KEY = "cinehome:player-muted";
 
 function readStoredVolume(): number {
   if (typeof window === "undefined") return 1;
@@ -12,19 +11,9 @@ function readStoredVolume(): number {
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 1;
 }
 
-function readStoredMuted(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(MUTED_KEY) === "1";
-}
-
 function writeStoredVolume(v: number): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(VOLUME_KEY, String(v));
-}
-
-function writeStoredMuted(v: boolean): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(MUTED_KEY, v ? "1" : "0");
 }
 
 export interface QualityLevel {
@@ -117,7 +106,7 @@ const initialState = {
   durationProvisional: false,
   buffering: true,
   volume: readStoredVolume(),
-  isMuted: readStoredMuted(),
+  isMuted: false,
   isFullscreen: false,
   isPip: false,
   showControls: true,
@@ -150,7 +139,6 @@ export const usePlayerStore = create<PlayerState>((set) => ({
     set({ volume: v });
   },
   setIsMuted: (v) => {
-    writeStoredMuted(v);
     set({ isMuted: v });
   },
   setIsFullscreen: (v) => set({ isFullscreen: v }),
