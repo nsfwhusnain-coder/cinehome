@@ -18,6 +18,7 @@
  * exposes only account metadata (username, expiry, points, type).
  */
 import { db } from "@/lib/db";
+import { clearRosterCache } from "@/lib/playback/resolve-full";
 
 /** AppSetting key under which the owner's Real-Debrid token is persisted.
  *  SECRET — GET /api/settings must never serialize this key (see that route). */
@@ -171,10 +172,12 @@ export async function saveRealDebridToken(token: string): Promise<void> {
     create: { key: REALDEBRID_TOKEN_KEY, value: token },
   });
   process.env.REAL_DEBRID_API_TOKEN = token;
+  clearRosterCache();
 }
 
 /** Remove the DB override; the effective token reverts to the boot-time `.env` value (if any). */
 export async function clearRealDebridToken(): Promise<void> {
   await db.appSetting.deleteMany({ where: { key: REALDEBRID_TOKEN_KEY } });
   process.env.REAL_DEBRID_API_TOKEN = ENV_TOKEN_AT_BOOT;
+  clearRosterCache();
 }

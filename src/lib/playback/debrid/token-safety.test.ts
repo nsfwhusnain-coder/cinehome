@@ -31,6 +31,15 @@ describe("sanitizeStreamUrl — choke point (pure, no network)", () => {
     expect(sanitizeStreamUrl(LEAKY_URL, null)).toBeNull();
   });
 
+  it("drops AllDebrid Torrentio resolve-proxy URLs the same way", () => {
+    expect(
+      sanitizeStreamUrl(
+        "https://torrentio.strem.fun/resolve/alldebrid/SECRET/abcdef0123456789abcdef0123456789abcdef01/null/0/movie.mp4",
+        null
+      )
+    ).toBeNull();
+  });
+
   it("(b) drops a percent-encoded occurrence of the token too", () => {
     const encoded = encodeURIComponent("token/with/slashes");
     const url = `https://example.com/d/${encoded}/whatever.mp4`;

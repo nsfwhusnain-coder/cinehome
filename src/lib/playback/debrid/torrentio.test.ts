@@ -20,6 +20,15 @@ describe("extractInfoHashFromResolveUrl", () => {
     ).toBe(hash);
   });
 
+  it("recovers the hash from an AllDebrid resolve path", () => {
+    const hash = "b".repeat(40);
+    expect(
+      extractInfoHashFromResolveUrl(
+        `https://torrentio.strem.fun/resolve/alldebrid/SECRET/${hash}/null/0/movie.mp4`
+      )
+    ).toBe(hash);
+  });
+
   it("does not guess from unrelated or malformed URLs", () => {
     expect(extractInfoHashFromResolveUrl("https://example.com/not-a-resolve/aabb")).toBeUndefined();
     expect(extractInfoHashFromResolveUrl("not a url")).toBeUndefined();

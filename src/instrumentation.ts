@@ -11,8 +11,11 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   try {
     const { syncRealDebridTokenToEnv } = await import("@/lib/debrid-credentials");
+    const { syncAllDebridTokenToEnv } = await import("@/lib/alldebrid-credentials");
     const source = await syncRealDebridTokenToEnv();
+    const adSource = await syncAllDebridTokenToEnv();
     console.log(`[debrid] boot: Real-Debrid token source = ${source}`);
+    console.log(`[debrid] boot: AllDebrid key source = ${adSource}`);
   } catch (err) {
     console.error(
       "[debrid] boot: token sync failed:",

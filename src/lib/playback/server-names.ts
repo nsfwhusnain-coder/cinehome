@@ -29,11 +29,16 @@ function isGenericLabel(label: string): boolean {
 }
 
 function isDebridProvider(lowerProvider: string): boolean {
-  return lowerProvider === "debrid" || lowerProvider === "torbox" || lowerProvider === "premium";
+  return (
+    lowerProvider === "debrid" ||
+    lowerProvider === "torbox" ||
+    lowerProvider === "alldebrid" ||
+    lowerProvider === "premium"
+  );
 }
 
 function isDebridLabel(rawLabel: string): boolean {
-  return /\bdebrid\b|\btorbox\b/i.test(rawLabel);
+  return /\bdebrid\b|\btorbox\b|\balldebrid\b/i.test(rawLabel);
 }
 
 /** Raw scraper `provider` string → canonical embed token (same bucketing as

@@ -21,7 +21,7 @@
  */
 
 /** Torrentio's own resolve-proxy shape — always unsafe to hand to a client as-is. */
-const RESOLVE_PROXY_PATTERN = /\/resolve\/realdebrid\//i;
+const RESOLVE_PROXY_PATTERN = /\/resolve\/(?:realdebrid|alldebrid)\//i;
 const RESOLVE_TIMEOUT_MS = 8_000;
 
 /**

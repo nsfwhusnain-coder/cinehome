@@ -506,8 +506,10 @@ export interface FetchTorrentioParams {
   mediaType: MediaType;
   season?: number;
   episode?: number;
-  /** Real-Debrid token baked into the Torrentio config path segment (2a). */
+  /** Debrid API key baked into the Torrentio config path segment. */
   rdToken: string;
+  /** Torrentio debrid service segment. Defaults to Real-Debrid. */
+  service?: "realdebrid" | "alldebrid";
 }
 
 export interface FetchTorrentioNoDebridParams {
@@ -557,7 +559,7 @@ function parseTorrentioStreams(
     // Configured responses contain instant `[RD+]` rows and non-cached
     // `[RD download]` rows. The latter still require a torrent transfer and
     // their resolve links can be placeholders, so they are never ready.
-    if (configuredDebrid && /^\[RD download\]/i.test(s.name?.trim() ?? "")) {
+    if (configuredDebrid && /^\[(?:RD|AD) download\]/i.test(s.name?.trim() ?? "")) {
       continue;
     }
     const text = `${s.title ?? ""} ${s.name ?? ""} ${s.behaviorHints?.filename ?? ""}`;
@@ -594,7 +596,9 @@ export function extractInfoHashFromResolveUrl(url: string | undefined): string |
   if (!url) return undefined;
   try {
     const pathname = new URL(url).pathname;
-    const match = pathname.match(/\/resolve\/realdebrid\/[^/]+\/([a-f0-9]{40})(?:\/|$)/i);
+    const match = pathname.match(
+      /\/resolve\/(?:realdebrid|alldebrid)\/[^/]+\/([a-f0-9]{40})(?:\/|$)/i
+    );
     return match?.[1]?.toLowerCase();
   } catch {
     return undefined;
@@ -606,7 +610,8 @@ export async function fetchTorrentioCandidates(
   params: FetchTorrentioParams
 ): Promise<DebridCandidate[]> {
   try {
-    const configSegment = `realdebrid=${encodeURIComponent(params.rdToken)}`;
+    const service = params.service === "alldebrid" ? "alldebrid" : "realdebrid";
+    const configSegment = `${service}=${encodeURIComponent(params.rdToken)}`;
     const kindPath = buildKindPath(params);
     const url = `${TORRENTIO_BASE}/${configSegment}/${kindPath}`;
     const data = await fetchTorrentioJson(url);

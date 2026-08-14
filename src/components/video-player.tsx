@@ -47,6 +47,7 @@ import {
   toLogicalTime,
   toMediaTime,
 } from "@/lib/playback/remux-timeline";
+import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
 
 import { activeBufferProfile } from "@/lib/playback/device-profile";
 import { hevcNeedsNativePath, warmDecodeCapabilities } from "@/lib/playback/decode-capability";
@@ -508,6 +509,22 @@ function attemptAutoplay(
 }
 
 /** mm:ss (h:mm:ss past an hour) — used only for the "Resuming from …" toast. */
+/** Hold the last decoded frame as a poster so a source switch does not flash black. */
+function freezeLastVideoFrame(video: HTMLVideoElement): void {
+  if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    video.poster = canvas.toDataURL("image/jpeg", 0.72);
+  } catch {
+    /* Cross-origin frames cannot be snapshotted — leave the last compositor frame. */
+  }
+}
+
 function formatClock(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
   const h = Math.floor(total / 3600);
@@ -2258,9 +2275,66 @@ export function VideoPlayer({
     (source: PlaybackSource) => {
       if (!isSourcePlayableHere(source)) return;
       userSelectedSourceRef.current = true;
-      handleSourceChange(source, { userPick: true });
+      const resolved =
+        orderedSourcesRef.current.find((row) => row.id === source.id) ?? source;
+      const playing = everPlayedRef.current;
+      const video = videoRef.current;
+      const playhead = logicalPlayhead(video?.currentTime ?? 0);
+      if (
+        playing &&
+        tmdbId &&
+        sourceDelivery(resolved) === "remux" &&
+        PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED
+      ) {
+        const startAtSeconds = normalizeRemuxStart(
+          playhead > RESUME_CAPTURE_MIN_S ? playhead : resumeAtRef.current,
+          fallbackDurationSRef.current
+        );
+        if (video) freezeLastVideoFrame(video);
+        setIsSwitchingServer(true);
+        setBuffering(true);
+        showStatusNotice("Opening that server…", REMUX_SEEK_NOTICE_MS);
+        remuxSeekAbortRef.current?.abort();
+        const controller = new AbortController();
+        remuxSeekAbortRef.current = controller;
+        const prewarmUrl = buildRemuxUrl({
+          source: resolved,
+          mediaType: mediaType ?? "movie",
+          tmdbId,
+          season: tvSeason,
+          episode: tvEpisode,
+          audio: audioSelectionRef.current,
+          prewarm: true,
+          startAtSeconds,
+        });
+        void prewarmRemuxPosition(prewarmUrl, { signal: controller.signal })
+          .then(() => {
+            if (controller.signal.aborted) return;
+            handleSourceChange(resolved, {
+              userPick: true,
+              remuxStartAtSeconds: startAtSeconds,
+            });
+          })
+          .catch(() => {
+            if (controller.signal.aborted) return;
+            setIsSwitchingServer(false);
+            setBuffering(false);
+            showStatusNotice("Couldn’t open that server", 2_500);
+          });
+        return;
+      }
+      handleSourceChange(resolved, { userPick: true });
     },
-    [handleSourceChange]
+    [
+      handleSourceChange,
+      logicalPlayhead,
+      mediaType,
+      setBuffering,
+      showStatusNotice,
+      tmdbId,
+      tvEpisode,
+      tvSeason,
+    ]
   );
 
   /**
@@ -2684,6 +2758,10 @@ export function VideoPlayer({
       resumeAtRef.current < RESUME_CAPTURE_MIN_S
     ) {
       resumeAtRef.current = initialTime;
+    }
+
+    if (everPlayedRef.current) {
+      freezeLastVideoFrame(video);
     }
 
     if (hlsRef.current) {
