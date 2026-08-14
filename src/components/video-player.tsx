@@ -47,7 +47,7 @@ import {
   toLogicalTime,
   toMediaTime,
 } from "@/lib/playback/remux-timeline";
-import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
+
 import { activeBufferProfile } from "@/lib/playback/device-profile";
 import { hevcNeedsNativePath, warmDecodeCapabilities } from "@/lib/playback/decode-capability";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
@@ -125,7 +125,6 @@ const SWIPE_HINT_VISIBLE_MS = 2200;
 const SWIPE_HINT_FADE_MS = 500;
 const REMUX_SEEK_DEBOUNCE_MS = 160;
 const REMUX_SEEK_NOTICE_MS = 12_000;
-const REMUX_SEEK_TIMEOUT_MS = 70_000;
 const ALL_SOURCES_FAILED_MSG =
   "No playable server for this title right now. Retry full for a fresh resolve.";
 
@@ -1383,23 +1382,15 @@ export function VideoPlayer({
    * and the settings dock, which are where it belongs.
    */
   const huntingName = "";
-  // CRITICAL: overlay is gated on firstPlayable (hasStream), NOT scrape complete.
-  const needsSourceHunt =
-    sourcesLoading || (!hasStream && !sourcesError && !orderedSources.length);
   /**
-   * One continuous full-bleed overlay for the whole pre-first-frame journey —
-   * "finding sources" → "connecting to <server>" → "buffering" — instead of
-   * the old design where the big poster/title card vanished the instant a
-   * source was picked, replaced by the bare video element + a small top pill.
-   * That swap was exactly the kind of layout jump/flicker a real streaming
-   * service never shows; keeping ONE treatment up (only the status text
-   * changes) until `everPlayed` removes the jump entirely.
+   * One continuous full-bleed overlay for the whole pre-first-frame journey.
+   * Stay up until `everPlayed` — a picked source with buffering=false (manifest
+   * parsed, no frame yet) used to drop the card and flash a black video.
    */
   const showHunting =
     !error &&
     !sourcesError &&
-    !everPlayed &&
-    (needsSourceHunt || (hasStream && buffering));
+    !everPlayed;
   /**
    * Staged, honest status text for the overlay above. `undefined` while
    * still hunting (no source picked yet) lets LoadingScreen's own
@@ -4399,85 +4390,44 @@ export function VideoPlayer({
 
       pendingRemuxSeekTargetRef.current = target;
       setCurrentTime(target);
-      showStatusNotice("Preparing requested position…", REMUX_SEEK_NOTICE_MS);
+      showStatusNotice("Opening that position…", REMUX_SEEK_NOTICE_MS);
 
       remuxSeekTimerRef.current = setTimeout(() => {
         remuxSeekTimerRef.current = null;
         const source = activeSourceRef.current;
-        if (!source || sourceDelivery(source) !== "remux" || !tmdbId) return;
+        if (
+          !source ||
+          sourceDelivery(source) !== "remux" ||
+          !tmdbId ||
+          generation !== remuxSeekGenerationRef.current
+        ) {
+          return;
+        }
         const startAtSeconds = normalizeRemuxStart(target, fullDuration);
-        const controller = new AbortController();
-        remuxSeekAbortRef.current = controller;
-        let timedOut = false;
-        const timeout = window.setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, REMUX_SEEK_TIMEOUT_MS);
-        const prewarmUrl = buildRemuxUrl({
-          source,
-          mediaType: mediaType ?? "movie",
-          tmdbId,
-          season: tvSeason,
-          episode: tvEpisode,
-          audio: audioSelectionRef.current,
-          prewarm: true,
-          startAtSeconds,
-        });
-        void prewarmRemuxPosition(prewarmUrl, { signal: controller.signal })
-          .then(() => {
-            if (
-              controller.signal.aborted ||
-              generation !== remuxSeekGenerationRef.current ||
-              activeSourceRef.current?.id !== source.id
-            ) {
-              return;
-            }
-            const logicalTime = logicalPlayhead(video.currentTime);
-            remuxRollbackRef.current = {
-              sourceId: source.id,
-              startAtSeconds: remuxStartAtRef.current,
-              logicalTime,
-              targetSeconds: target,
-            };
-            resumeAtRef.current = target;
-            initialTimeAppliedRef.current = false;
-            setBuffering(true);
-            setIsSwitchingServer(true);
-            if (remuxStartAtRef.current === startAtSeconds) {
-              setSourceReloadGeneration((value) => value + 1);
-            } else {
-              setRemuxStart(startAtSeconds);
-            }
-          })
-          .catch(() => {
-            if (
-              generation === remuxSeekGenerationRef.current &&
-              activeSourceRef.current?.id === source.id &&
-              (timedOut || !controller.signal.aborted)
-            ) {
-              setCurrentTime(logicalPlayhead(video.currentTime));
-              pendingRemuxSeekTargetRef.current = null;
-              showStatusNotice("Couldn’t prepare that position — playback continued", 3_000);
-            }
-          })
-          .finally(() => {
-            window.clearTimeout(timeout);
-            if (remuxSeekAbortRef.current === controller) {
-              remuxSeekAbortRef.current = null;
-            }
-          });
+        remuxRollbackRef.current = {
+          sourceId: source.id,
+          startAtSeconds: remuxStartAtRef.current,
+          logicalTime: logicalPlayhead(video.currentTime),
+          targetSeconds: target,
+        };
+        resumeAtRef.current = target;
+        initialTimeAppliedRef.current = false;
+        setBuffering(true);
+        setIsSwitchingServer(true);
+        if (remuxStartAtRef.current === startAtSeconds) {
+          setSourceReloadGeneration((value) => value + 1);
+        } else {
+          setRemuxStart(startAtSeconds);
+        }
       }, REMUX_SEEK_DEBOUNCE_MS);
     },
     [
       logicalPlayhead,
-      mediaType,
       setBuffering,
       setCurrentTime,
       setRemuxStart,
       showStatusNotice,
       tmdbId,
-      tvEpisode,
-      tvSeason,
     ]
   );
 

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { detectDeviceClass } from "@/lib/playback/device-profile";
 import {
+  bloomMeterProgress,
   bloomPhase,
   bloomPhaseCopy,
   bloomRosterCopy,
@@ -14,6 +15,8 @@ import {
 } from "@/lib/playback/bloom-visuals";
 import "@/components/brand-mark.css";
 import "./loading-bloom.css";
+
+const EXIT_MS = 380;
 
 const TV_POSTER_RENDITION = "w342";
 
@@ -46,6 +49,9 @@ export function LoadingScreen({
   bufferFill = 0,
 }: LoadingScreenProps) {
   const [hue, setHue] = useState<number>(FALLBACK_HUE);
+  const [mounted, setMounted] = useState(visible);
+  const [leaving, setLeaving] = useState(false);
+  const fillFloorRef = useRef(0);
   const artPath = useMemo(
     () => tmdbPathFromUrl(posterUrl) ?? tmdbPathFromUrl(backdropUrl),
     [posterUrl, backdropUrl]
@@ -71,9 +77,28 @@ export function LoadingScreen({
     };
   }, [visible, artPath]);
 
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      setLeaving(false);
+      return;
+    }
+    if (!mounted) return;
+    setLeaving(true);
+    const timer = window.setTimeout(() => {
+      setMounted(false);
+      setLeaving(false);
+      fillFloorRef.current = 0;
+    }, EXIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [visible, mounted]);
+
   const phase = bloomPhase(status ?? null, sourceCount);
   const phaseCopy = bloomPhaseCopy(phase);
   const rosterCopy = bloomRosterCopy(sourceCount);
+  const rawFill = bloomMeterProgress(phase, sourceCount, bufferFill);
+  const fill = Math.max(fillFloorRef.current, rawFill);
+  fillFloorRef.current = fill;
   const deviceClass = useMemo(
     () => (visible ? detectDeviceClass() : "desktop"),
     [visible]
@@ -90,15 +115,14 @@ export function LoadingScreen({
     [deviceClass, backdropUrl, posterUrl]
   );
 
-  if (!visible) return null;
-
-  const fill = Math.min(1, Math.max(0, bufferFill));
+  if (!mounted) return null;
 
   return (
     <div
       className={cn(
         "bloom-stage pointer-events-none absolute inset-0 z-40",
-        "flex flex-col items-center justify-center overflow-hidden bg-black"
+        "flex flex-col items-center justify-center overflow-hidden bg-black",
+        leaving && "bloom-stage--out"
       )}
       data-phase={phase}
       data-device={deviceClass}

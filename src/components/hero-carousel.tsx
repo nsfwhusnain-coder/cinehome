@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/hooks/use-navigate";
@@ -178,7 +178,6 @@ function GlassSegmentedActions({
 export function HeroCarousel({ items }: Props) {
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
-  const pausedRef = useRef(paused);
   const navigate = useNavigate();
   const { data: session } = useSession();
   const { isIn, add, remove } = useWatchlist();
@@ -208,10 +207,6 @@ export function HeroCarousel({ items }: Props) {
   useAmbientColor(ambientPath);
 
   useEffect(() => {
-    pausedRef.current = paused;
-  }, [paused]);
-
-  useEffect(() => {
     const mq = window.matchMedia("(min-width: 768px)");
     const apply = () =>
       setImageBleedPx(mq.matches ? IMAGE_BLEED_DESKTOP_PX : IMAGE_BLEED_MOBILE_PX);
@@ -221,13 +216,12 @@ export function HeroCarousel({ items }: Props) {
   }, []);
 
   useEffect(() => {
-    if (items.length <= 1) return;
-    const id = setInterval(() => {
-      if (pausedRef.current) return;
+    if (items.length <= 1 || paused) return;
+    const id = window.setTimeout(() => {
       setIndex((i) => (i + 1) % items.length);
     }, SLIDE_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [items.length]);
+    return () => window.clearTimeout(id);
+  }, [index, items.length, paused]);
 
   if (items.length === 0) return null;
   const current = items[safeIndex];
@@ -459,13 +453,27 @@ export function HeroCarousel({ items }: Props) {
               aria-current={i === index ? "true" : undefined}
             >
               <span
-                className="block rounded-full transition-all duration-300 ease-out"
+                className="relative block overflow-hidden rounded-full"
                 style={{
                   height: 6,
-                  width: i === index ? 22 : 6,
-                  background: i === index ? "#ffffff" : "rgba(255,255,255,0.4)",
+                  width: i === index ? 28 : 6,
+                  background: "rgba(255,255,255,0.32)",
+                  transition: "width 280ms cubic-bezier(0.16, 1, 0.3, 1)",
                 }}
-              />
+              >
+                {i === index ? (
+                  <span
+                    key={`${current.id}-${index}`}
+                    className="absolute inset-y-0 left-0 rounded-full bg-white"
+                    style={{
+                      width: "100%",
+                      transformOrigin: "left center",
+                      animation: `hero-slide-fill ${SLIDE_INTERVAL_MS}ms linear forwards`,
+                      animationPlayState: paused ? "paused" : "running",
+                    }}
+                  />
+                ) : null}
+              </span>
             </button>
           ))}
         </div>

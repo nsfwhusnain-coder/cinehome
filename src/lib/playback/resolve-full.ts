@@ -2,6 +2,38 @@ import type { MediaType, PlaybackResponse } from "@/lib/playback";
 import { getProvider } from "@/lib/playback";
 import { mergeDebridSources, resolveDebridSourcesSafely } from "./merge-debrid";
 
+/** Fresh enough that a 4K skip does not re-scrape the whole roster. */
+export const ROSTER_CACHE_TTL_MS = 90_000;
+
+interface RosterCacheEntry {
+  at: number;
+  value: PlaybackResponse;
+}
+
+const rosterCache = new Map<string, RosterCacheEntry>();
+
+export function rosterCacheKey(args: {
+  userId: string;
+  type: MediaType;
+  tmdbId: number;
+  season?: number;
+  episode?: number;
+  qualityHint?: "auto" | number;
+}): string {
+  return [
+    args.userId,
+    args.type,
+    args.tmdbId,
+    args.season ?? "",
+    args.episode ?? "",
+    args.qualityHint ?? "",
+  ].join(":");
+}
+
+export function clearRosterCache(): void {
+  rosterCache.clear();
+}
+
 /**
  * Resolve the FULL playback roster — base embed sources (provider.resolve) PLUS
  * the debrid tier (Real-Debrid + TorBox) merged in — identical to what
@@ -26,6 +58,11 @@ export async function resolveFullRoster(args: {
   qualityHint?: "auto" | number;
 }): Promise<PlaybackResponse> {
   const { userId, type, tmdbId, season, episode, qualityHint } = args;
+  const cacheKey = rosterCacheKey(args);
+  const cached = rosterCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < ROSTER_CACHE_TTL_MS) {
+    return cached.value;
+  }
 
   const provider = await getProvider();
 
@@ -43,6 +80,7 @@ export async function resolveFullRoster(args: {
   ]);
 
   mergeDebridSources(result, debridSources, qualityHint);
+  rosterCache.set(cacheKey, { at: Date.now(), value: result });
   return result;
 }
 

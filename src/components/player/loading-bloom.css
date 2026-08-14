@@ -5,6 +5,12 @@
   --bloom-fill: 0;
   --crimson: 8 86% 56%;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  opacity: 1;
+  transition: opacity 360ms var(--ease);
+}
+
+.bloom-stage--out {
+  opacity: 0;
 }
 
 .bloom-wash {
@@ -114,6 +120,7 @@
 }
 
 .bloom-meter-fill {
+  position: relative;
   display: block;
   height: 100%;
   width: calc(var(--bloom-fill) * 100%);
@@ -123,16 +130,22 @@
     hsl(var(--crimson)),
     hsl(var(--bloom-hue) 80% 72%)
   );
-  transition: width 400ms var(--ease);
+  transition: width 520ms var(--ease);
+  overflow: hidden;
 }
 
-.bloom-stage[data-phase="searching"] .bloom-meter-fill {
-  width: 18%;
-  animation: bloom-seek 1.8s var(--ease) infinite;
-}
-
-.bloom-stage[data-phase="connecting"] .bloom-meter-fill {
-  width: max(32%, calc(var(--bloom-fill) * 100%));
+.bloom-meter-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.45) 50%,
+    transparent 100%
+  );
+  transform: translateX(-120%);
+  animation: bloom-sheen 2.4s var(--ease) infinite;
 }
 
 .bloom-phase {
@@ -176,10 +189,10 @@
   to { transform: scale(1.045); }
 }
 
-@keyframes bloom-seek {
-  0%,
-  100% { transform: translateX(-30%); opacity: 0.55; }
-  50% { transform: translateX(30%); opacity: 1; }
+@keyframes bloom-sheen {
+  0% { transform: translateX(-120%); }
+  55%,
+  100% { transform: translateX(160%); }
 }
 
 .bloom-stage[data-device="tv"] .bloom-wash {
@@ -201,7 +214,8 @@
   .bloom-poster,
   .bloom-card-wrap,
   .bloom-copy,
-  .bloom-meter-fill {
+  .bloom-meter-fill,
+  .bloom-meter-fill::after {
     animation: none;
   }
 }

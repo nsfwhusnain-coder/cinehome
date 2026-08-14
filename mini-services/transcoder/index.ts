@@ -663,10 +663,15 @@ function trackCompletion(key: string, proc: ChildProcess): void {
  * has a single segment. Handing back a master whose first variant 404s is as
  * bad as no playlist at all. Returns the path on success, rejects on timeout.
  */
-async function waitForPlaylist(key: string, budgetMs: number): Promise<string> {
+async function waitForPlaylist(
+  key: string,
+  budgetMs: number,
+  minFragments = 1
+): Promise<string> {
   const path = playlistPath(key);
   const dir = cacheDir(key);
   const start = Date.now();
+  const wanted = Math.max(1, Math.floor(minFragments));
   while (Date.now() - start < budgetMs) {
     if (existsSync(path)) {
       let master = "";
@@ -692,12 +697,13 @@ async function waitForPlaylist(key: string, budgetMs: number): Promise<string> {
         .map((line) => line.trim())
         .filter((line) => line.length > 0 && !line.startsWith("#"));
       const initReady = !initName || existsSync(join(dir, basename(initName)));
-      // Offset remuxes use a six-second preroll. Waiting for two four-second
-      // fMP4 fragments means the requested local seek can land immediately;
-      // ordinary MPEG-TS ladders still need only their first fragment.
-      const requiredMediaFiles = initName ? mediaFiles.slice(0, 2) : mediaFiles.slice(0, 1);
+      // Start-from-zero remuxes return on the first fragment so 4K can begin
+      // while later fragments keep writing. Offset seeks still wait for two
+      // so the six-second preroll is already on disk.
+      const need = initName ? wanted : 1;
+      const requiredMediaFiles = mediaFiles.slice(0, need);
       const segmentReady =
-        requiredMediaFiles.length === (initName ? 2 : 1) &&
+        requiredMediaFiles.length === need &&
         requiredMediaFiles.every((file) =>
           existsSync(join(dir, basename(file.split("?", 1)[0]!)))
         );
@@ -870,7 +876,7 @@ async function getOrBuild(
   // player can start on the first segment while transcode continues. Budget
   // covers input-open (slow RD CDN) + decode warmup + the fallback chain's
   // own attempt timeouts on cold 4K inputs.
-  return waitForPlaylist(key, PLAYLIST_READY_BUDGET_MS);
+  return waitForPlaylist(key, PLAYLIST_READY_BUDGET_MS, startAtSeconds > 0 ? 2 : 1);
 }
 
 // ── Cache management ──────────────────────────────────────────────────────

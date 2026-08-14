@@ -101,6 +101,26 @@ export function bloomPhaseCopy(phase: BloomPhase): string {
   return "Searching";
 }
 
+/**
+ * Honest meter fill. Searching grows with real sources found; connecting and
+ * opening use the measured buffer. Never invents a percent from a timer.
+ */
+export function bloomMeterProgress(
+  phase: BloomPhase,
+  sourceCount: number,
+  bufferFill: number
+): number {
+  const sources = Math.max(0, Math.floor(sourceCount));
+  const buffer = Math.min(1, Math.max(0, bufferFill));
+  if (phase === "searching") {
+    return Math.min(0.28, 0.08 + sources * 0.035);
+  }
+  if (phase === "connecting") {
+    return Math.min(0.68, 0.34 + buffer * 0.28);
+  }
+  return Math.min(1, 0.62 + buffer * 0.38);
+}
+
 /** Roster line — omitted entirely until a real source exists. */
 export function bloomRosterCopy(sourceCount: number): string | null {
   const n = Math.max(0, Math.floor(sourceCount));

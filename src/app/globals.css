@@ -396,3 +396,20 @@ html[data-tv="1"] :where(.text-sm, .text-\[15px\], .text-\[0\.9rem\]) {
 html[data-tv="1"] .max-w-md {
   max-width: 34rem;
 }
+
+@keyframes hero-slide-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-slide-fill,
+  [style*="hero-slide-fill"] {
+    animation: none !important;
+    transform: scaleX(1);
+  }
+}

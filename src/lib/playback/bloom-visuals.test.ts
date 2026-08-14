@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   bloomChips,
+  bloomMeterProgress,
   bloomPhase,
   bloomPhaseCopy,
   bloomRosterCopy,
@@ -80,6 +81,26 @@ describe("bloomPhase", () => {
   it("does not claim a stage from a count alone", () => {
     // Sources existing is not the same as having chosen one.
     expect(bloomPhase(null, 9)).toBe("searching");
+  });
+});
+
+describe("bloomMeterProgress", () => {
+  it("grows with sources while searching and never invents a full bar", () => {
+    expect(bloomMeterProgress("searching", 0, 0)).toBeCloseTo(0.08);
+    expect(bloomMeterProgress("searching", 4, 0)).toBeGreaterThan(
+      bloomMeterProgress("searching", 1, 0)
+    );
+    expect(bloomMeterProgress("searching", 40, 1)).toBeLessThanOrEqual(0.28);
+  });
+
+  it("steps forward through connecting and opening", () => {
+    expect(bloomMeterProgress("connecting", 3, 0)).toBeGreaterThan(
+      bloomMeterProgress("searching", 3, 0)
+    );
+    expect(bloomMeterProgress("buffering", 3, 0.5)).toBeGreaterThan(
+      bloomMeterProgress("connecting", 3, 0.5)
+    );
+    expect(bloomMeterProgress("buffering", 3, 1)).toBe(1);
   });
 });
 

@@ -175,6 +175,7 @@ export function ProgressBar({
           style={{
             width: `${playedRatio * 100}%`,
             backgroundColor: "#ffffff",
+            transition: dragging ? "none" : "width 160ms linear",
           }}
         />
       </div>
