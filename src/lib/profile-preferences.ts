@@ -20,7 +20,7 @@ export interface ProfilePlaybackPreferences {
 }
 
 export const DEFAULT_PROFILE_PLAYBACK_PREFERENCES: ProfilePlaybackPreferences = {
-  playbackQuality: "auto",
+  playbackQuality: 2160,
   audioLanguage: "en",
   audioPreference: "original",
   subtitlePreference: "english",

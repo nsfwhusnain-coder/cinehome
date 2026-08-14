@@ -3173,7 +3173,7 @@ const server = createServer(async (req, res) => {
     const qhRaw = url.searchParams.get("qualityHint");
     const qhNum = qhRaw ? Number(qhRaw) : NaN;
     const qualityHintHeight =
-      Number.isFinite(qhNum) && qhNum >= 1080 ? Math.min(qhNum, 4320) : 1080;
+      Number.isFinite(qhNum) && qhNum >= 1080 ? Math.min(qhNum, 4320) : 2160;
 
     if (!tmdbId) {
       res.statusCode = 400;

@@ -31,6 +31,10 @@ import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
 import { pickClientStartupSource } from "@/lib/playback/client-ranking";
 import {
+  findLateFourKSource,
+  wantsFourKDiscovery,
+} from "@/lib/playback/late-fourk";
+import {
   PLAYBACK_4K_PREWARM_ENABLED,
   PLAYBACK_FAST_4K_ENABLED,
   PLAYBACK_RANDOM_ACCESS_REMUX_ENABLED,
@@ -1147,6 +1151,7 @@ export function VideoPlayer({
   const autoUpgradedRef = useRef(false);
   /** One background 4K remux preparation attempt per source and watch session. */
   const fourKPrewarmAttemptedRef = useRef<Set<string>>(new Set());
+  const lateFourKAttemptedRef = useRef<Set<string>>(new Set());
   /**
    * One-shot "adopt a refreshed URL for the currently-active source id" flag.
    * Armed by the session-expired (410) retry path and the "Retry full" button —
@@ -4539,7 +4544,7 @@ export function VideoPlayer({
       !PLAYBACK_4K_PREWARM_ENABLED ||
       !PLAYBACK_FAST_4K_ENABLED ||
       !everPlayed ||
-      qualityTargetRef.current !== 2160 ||
+      !wantsFourKDiscovery(qualityTargetRef.current) ||
       fourKStartupRef.current !== "fast" ||
       !activeSource ||
       !tmdbId ||
@@ -4585,7 +4590,7 @@ export function VideoPlayer({
       .then((response) => {
         if (!response.ok || controller.signal.aborted) return;
         if (
-          qualityTargetRef.current !== 2160 ||
+          !wantsFourKDiscovery(qualityTargetRef.current) ||
           userSelectedSourceRef.current ||
           activeSourceRef.current?.id !== activeSource.id
         ) {
@@ -4615,6 +4620,25 @@ export function VideoPlayer({
     tmdbId,
     tvEpisode,
     tvSeason,
+  ]);
+
+  useEffect(() => {
+    if (!everPlayed || !activeSource || userSelectedSourceRef.current) return;
+    const candidate = findLateFourKSource(activeSource, orderedSources, {
+      preferredProvider: getPreferredProvider(),
+      preferredHeight: qualityTargetRef.current,
+      failedIds: failedSourceIdsRef.current,
+    });
+    if (!candidate || lateFourKAttemptedRef.current.has(candidate.id)) return;
+    lateFourKAttemptedRef.current.add(candidate.id);
+    showStatusNotice("4K ready — switching…", 2_200);
+    handleSourceChange(candidate);
+  }, [
+    activeSource,
+    everPlayed,
+    handleSourceChange,
+    orderedSources,
+    showStatusNotice,
   ]);
 
   const togglePip = useCallback(async () => {

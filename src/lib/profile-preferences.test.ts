@@ -25,6 +25,7 @@ describe("profile playback preferences", () => {
   });
 
   test("defaults to original audio, English subtitles, and fast 4K startup", () => {
+    expect(DEFAULT_PROFILE_PLAYBACK_PREFERENCES.playbackQuality).toBe(2160);
     expect(DEFAULT_PROFILE_PLAYBACK_PREFERENCES.audioPreference).toBe("original");
     expect(DEFAULT_PROFILE_PLAYBACK_PREFERENCES.subtitlePreference).toBe("english");
     expect(DEFAULT_PROFILE_PLAYBACK_PREFERENCES.fourKStartup).toBe("fast");

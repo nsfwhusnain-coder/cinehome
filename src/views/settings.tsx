@@ -505,9 +505,9 @@ function PlaybackPreferencesSection() {
       <CardHeader>
         <CardTitle className="font-display text-base">Playback preferences</CardTitle>
         <CardDescription>
-          Auto is the default and adapts to your connection. Choose a fixed default only
-          when you want every title to start at that quality. You can still change quality
-          for the current video without changing this profile setting.
+          Ultra is the default: start at 1080p immediately, then switch to 4K when a
+          real 4K source is found. Auto does the same hunt. Pick a lower cap only when
+          you want every title locked to that height.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -518,7 +518,7 @@ function PlaybackPreferencesSection() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="auto">Auto — best for your connection</SelectItem>
+              <SelectItem value="auto">Auto — 1080p now, 4K when available</SelectItem>
               <SelectItem value="2160">Ultra — 4K when available</SelectItem>
               <SelectItem value="1440">Higher — 1440p when available</SelectItem>
               <SelectItem value="1080">High — 1080p</SelectItem>

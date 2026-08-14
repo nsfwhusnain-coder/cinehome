@@ -9,6 +9,7 @@ import {
 const ORIGINAL = {
   PROVIDER_CINEPRO: process.env.PROVIDER_CINEPRO,
   CINEPRO_EVAL_UNTIL: process.env.CINEPRO_EVAL_UNTIL,
+  CINEPRO_URL: process.env.CINEPRO_URL,
 };
 
 afterEach(() => {
@@ -16,13 +17,23 @@ afterEach(() => {
   else process.env.PROVIDER_CINEPRO = ORIGINAL.PROVIDER_CINEPRO;
   if (ORIGINAL.CINEPRO_EVAL_UNTIL === undefined) delete process.env.CINEPRO_EVAL_UNTIL;
   else process.env.CINEPRO_EVAL_UNTIL = ORIGINAL.CINEPRO_EVAL_UNTIL;
+  if (ORIGINAL.CINEPRO_URL === undefined) delete process.env.CINEPRO_URL;
+  else process.env.CINEPRO_URL = ORIGINAL.CINEPRO_URL;
 });
 
 describe("CinePro re-enable / 48h eval (Change 4)", () => {
-  it("is disabled by default", () => {
+  it("is disabled when no URL and no opt-in", () => {
     delete process.env.PROVIDER_CINEPRO;
     delete process.env.CINEPRO_EVAL_UNTIL;
+    delete process.env.CINEPRO_URL;
     expect(isProviderEnabled("cinepro")).toBe(false);
+  });
+
+  it("enables when CINEPRO_URL is configured without a kill switch", () => {
+    delete process.env.PROVIDER_CINEPRO;
+    delete process.env.CINEPRO_EVAL_UNTIL;
+    process.env.CINEPRO_URL = "http://cinepro-core:3000";
+    expect(isProviderEnabled("cinepro")).toBe(true);
   });
 
   it("enables when PROVIDER_CINEPRO=1", () => {

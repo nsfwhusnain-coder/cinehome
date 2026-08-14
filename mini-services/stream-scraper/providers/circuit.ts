@@ -84,30 +84,31 @@ function getOrCreate(id: ProviderId): CircuitInternal {
 
 /**
  * Env kill switch: unset/empty = enabled; `0` / `false` / `off` = disabled.
- * CinePro is OFF by default (historic 87% fail / 28s hangs burned the pool).
+ * CinePro is enabled when `CINEPRO_URL` is configured (it is a separate HTTP
+ * fan-out and does not touch the Playwright pool). Kill with `PROVIDER_CINEPRO=0`.
  *
- * Re-enable paths (feature-flagged, never hardcoded on):
+ * Also enabled by:
  * 1. `PROVIDER_CINEPRO=1` (or true/on/yes) — permanent opt-in
- * 2. `CINEPRO_EVAL_UNTIL=<unix_ms_or_ISO>` — 48h evaluation window only
- *    while `now < CINEPRO_EVAL_UNTIL`. After expiry, falls back to disabled
- *    unless PROVIDER_CINEPRO=1 remains set.
- *
- * Evaluation workflow: run `bun scripts/cinepro-eval.ts`, if green set
- * `CINEPRO_EVAL_UNTIL` to now+48h and restart. Review /health circuits.cinepro
- * before promoting to permanent PROVIDER_CINEPRO=1.
+ * 2. `CINEPRO_EVAL_UNTIL=<unix_ms_or_ISO>` — 48h evaluation window
  */
+export function isCineproUrlConfigured(): boolean {
+  const raw = process.env.CINEPRO_URL?.trim();
+  if (!raw) return false;
+  const v = raw.toLowerCase();
+  return v !== "0" && v !== "off" && v !== "false";
+}
+
 export function isProviderEnabled(id: ProviderId): boolean {
   const envKey = ENV_KILL_SWITCH[id];
   if (!envKey) return true;
   const raw = process.env[envKey];
-  // Cinepro opt-in only — half_open + pool starvation otherwise.
   if (id === "cinepro") {
     if (raw !== undefined && raw !== "") {
       const v = raw.trim().toLowerCase();
       if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
       if (v === "0" || v === "false" || v === "off" || v === "no") return false;
     }
-    // 48h evaluation circuit (Change 4) — time-bounded, feature-flagged.
+    if (isCineproUrlConfigured()) return true;
     return isCineproEvalWindowOpen();
   }
   if (raw === undefined || raw === "") return true;

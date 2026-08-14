@@ -563,10 +563,10 @@ describe("pickDefaultSource — poison gate", () => {
 });
 
 describe("resolvePreferredHeightTarget / preferred-height scoring (Change 11)", () => {
-  it("auto and null resolve to the 1080 floor", () => {
-    expect(resolvePreferredHeightTarget("auto")).toBe(1080);
-    expect(resolvePreferredHeightTarget(null)).toBe(1080);
-    expect(resolvePreferredHeightTarget(undefined)).toBe(1080);
+  it("auto and null hunt 4K while explicit HD stays capped", () => {
+    expect(resolvePreferredHeightTarget("auto")).toBe(2160);
+    expect(resolvePreferredHeightTarget(null)).toBe(2160);
+    expect(resolvePreferredHeightTarget(undefined)).toBe(2160);
   });
 
   it("honours a lower explicit profile target without changing Auto's HD start", () => {
@@ -598,6 +598,12 @@ describe("resolvePreferredHeightTarget / preferred-height scoring (Change 11)", 
     const sub = makeSource({ id: "sub", label: "Luna", maxHeight: 720 });
     const hd = makeSource({ id: "hd", label: "Aether", maxHeight: 1080 });
     expect(pickDefaultSource([sub, hd], null, "auto")?.id).toBe("hd");
+  });
+
+  it("preferred auto ranks a known 4K source over a known 1080p one", () => {
+    const hd = makeSource({ id: "hd", label: "Aether", maxHeight: 1080 });
+    const uhd = makeSource({ id: "uhd", label: "Horizon", maxHeight: 2160 });
+    expect(pickDefaultSource([hd, uhd], null, "auto")?.id).toBe("uhd");
   });
 });
 

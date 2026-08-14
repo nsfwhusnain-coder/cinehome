@@ -214,11 +214,15 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
     if (req.fast) params.set("fast", "1");
     if (req.noCache) params.set("nocache", "1");
     // Preferred quality → scraper ranking (never blocks TTFF; ranking only).
-    if (req.qualityHint != null && req.qualityHint !== "auto") {
-      params.set("qualityHint", String(req.qualityHint));
-    } else if (req.qualityHint === "auto") {
-      params.set("qualityHint", "1080");
-    }
+    // Auto hunts 4K; an explicit 1080 profile stays at 1080. Ranking only.
+    params.set(
+      "qualityHint",
+      String(
+        req.qualityHint != null && req.qualityHint !== "auto"
+          ? req.qualityHint
+          : 2160
+      )
+    );
 
     const scraperUrl = req.fast
       ? SCRAPER_BASE.replace(/\/scrape$/, "/prefetch")

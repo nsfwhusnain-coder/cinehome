@@ -62,4 +62,13 @@ describe("client startup ranking", () => {
     });
     expect(decision.immediate?.id).toBe("remux-4k");
   });
+
+  test("auto uses the same fast 4K handoff as Ultra", () => {
+    const decision = pickClientStartupSource([remux4k, direct1080], {
+      preferredHeight: "auto",
+      fourKStartup: "fast",
+    });
+    expect(decision.immediate?.id).toBe("direct-1080");
+    expect(decision.deferredFourK?.id).toBe("remux-4k");
+  });
 });
