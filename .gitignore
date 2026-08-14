@@ -63,6 +63,7 @@ prompt
 # belongs in version control.
 db/
 !db/.gitkeep
+db-backups/
 
 # Stale root App Router must never re-enter the tree (canonical is src/app)
 /app/

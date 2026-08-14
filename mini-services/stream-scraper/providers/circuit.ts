@@ -88,12 +88,13 @@ function getOrCreate(id: ProviderId): CircuitInternal {
 
 /**
  * Env kill switch: unset/empty = enabled; `0` / `false` / `off` = disabled.
- * CinePro is enabled when `CINEPRO_URL` is configured (it is a separate HTTP
- * fan-out and does not touch the Playwright pool). Kill with `PROVIDER_CINEPRO=0`.
  *
- * Also enabled by:
+ * CinePro is quarantined. A reachable `CINEPRO_URL` is not an enable switch —
+ * compose always injects the Docker DNS name, and the 8s fast budget was
+ * stealing the multi-API race. Enable only by:
  * 1. `PROVIDER_CINEPRO=1` (or true/on/yes) — permanent opt-in
- * 2. `CINEPRO_EVAL_UNTIL=<unix_ms_or_ISO>` — 48h evaluation window
+ * 2. `CINEPRO_EVAL_UNTIL=<unix_ms_or_ISO>` — time-boxed evaluation window
+ * `PROVIDER_CINEPRO=0` kills even an open eval window.
  */
 export function isCineproUrlConfigured(): boolean {
   const raw = process.env.CINEPRO_URL?.trim();
@@ -112,7 +113,6 @@ export function isProviderEnabled(id: ProviderId): boolean {
       if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
       if (v === "0" || v === "false" || v === "off" || v === "no") return false;
     }
-    if (isCineproUrlConfigured()) return true;
     return isCineproEvalWindowOpen();
   }
   if (raw === undefined || raw === "") return true;

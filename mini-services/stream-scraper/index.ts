@@ -2360,85 +2360,56 @@ async function resolveFastApiSources(
   // back on the race — the old enc-dec.app Videasy path is still dead.
   // CinePro uses the shorter fast budget so timeout can record circuit failure
   // instead of hanging past FAST_MAX_WAIT as a silent late-only arm.
-  const arms: Array<Promise<SourceEntry[]>> = [
-    resolveVixsrcFast(tmdbId, mediaType, season, episode),
-    resolveNotorrentEntries(tmdbId, mediaType, season, episode),
-    resolveVidlinkEntries(tmdbId, mediaType, season, episode),
-    resolveCineproEntries(tmdbId, mediaType, season, episode, {
-      mode: "fast",
-      timeoutMs: CINEPRO_FAST_TIMEOUT_MS,
-    }),
-    resolveCinemaosEntries(tmdbId, mediaType, season, episode),
-    resolveVideasyEntries(tmdbId, mediaType, season, episode),
-    resolveVidrockEntries(tmdbId, mediaType, season, episode),
-  ];
-
-  const out: SourceEntry[] = [];
-  const started = Date.now();
-  let firstHitAt: number | null = null;
-  let remaining = arms.length;
-  let returned = false;
-
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      returned = true;
-      resolve();
-    };
-
-    const maybeFinish = () => {
-      if (remaining <= 0) {
-        finish();
-        return;
-      }
-      if (firstHitAt != null && Date.now() - firstHitAt >= FAST_FIRST_GRACE_MS) {
-        finish();
-        return;
-      }
-      if (Date.now() - started >= FAST_MAX_WAIT_MS) {
-        finish();
-      }
-    };
-
-    const graceTimer = setTimeout(maybeFinish, FAST_FIRST_GRACE_MS + 50);
-    const maxTimer = setTimeout(finish, FAST_MAX_WAIT_MS);
-
-    for (const arm of arms) {
-      arm
-        .then((entries) => {
-          if (!entries.length) return;
-          out.push(...entries);
-          // Keep merging after early return so cache grows past Luna-only.
-          if (returned) {
-            options.onLateSources?.(entries);
-            return;
-          }
-          if (firstHitAt == null) {
-            firstHitAt = Date.now();
-            setTimeout(maybeFinish, FAST_FIRST_GRACE_MS);
-          }
-        })
-        .catch(() => {
-          /* arm failures ignored */
-        })
-        .finally(() => {
-          remaining -= 1;
-          maybeFinish();
-          if (remaining <= 0) {
-            clearTimeout(graceTimer);
-            clearTimeout(maxTimer);
-          }
-        });
+  const race = await raceProviderArms<SourceEntry>(
+    [
+      { provider: "vixsrc", run: () => resolveVixsrcFast(tmdbId, mediaType, season, episode) },
+      {
+        provider: "notorrent",
+        run: () => resolveNotorrentEntries(tmdbId, mediaType, season, episode),
+      },
+      {
+        provider: "vidlink",
+        run: () => resolveVidlinkEntries(tmdbId, mediaType, season, episode),
+      },
+      {
+        provider: "cinepro",
+        run: () =>
+          resolveCineproEntries(tmdbId, mediaType, season, episode, {
+            mode: "fast",
+            timeoutMs: CINEPRO_FAST_TIMEOUT_MS,
+          }),
+      },
+      {
+        provider: "cinemaos",
+        run: () => resolveCinemaosEntries(tmdbId, mediaType, season, episode),
+      },
+      {
+        provider: "videasy",
+        run: () => resolveVideasyEntries(tmdbId, mediaType, season, episode),
+      },
+      {
+        provider: "vidrock",
+        run: () => resolveVidrockEntries(tmdbId, mediaType, season, episode),
+      },
+    ],
+    {
+      firstHitGraceMs: FAST_FIRST_GRACE_MS,
+      maxWaitMs: FAST_MAX_WAIT_MS,
+      onLateEntries: (_provider, entries) => options.onLateSources?.(entries),
+      onOutcome: (outcome) => {
+        logAt(
+          outcome.status === "error" ? "warn" : "info",
+          `[provider] fast request provider=${outcome.provider} status=${outcome.status} count=${outcome.count} ms=${outcome.ms} late=${outcome.late}${outcome.error ? ` error=${outcome.error}` : ""}`
+        );
+      },
     }
-  });
+  );
 
   logAt(
     "info",
-    `[scrape] fast race → ${out.length} source(s) in ${Date.now() - started}ms (first@${firstHitAt != null ? firstHitAt - started : "—"}ms)`
+    `[scrape] fast race → ${race.entries.length} source(s) in ${race.totalMs}ms (first@${race.firstHitMs ?? "—"}ms)`
   );
-  return [...out];
+  return [...race.entries];
 }
 
 function countUniqueSources(entries: SourceEntry[]): number {
@@ -3437,7 +3408,7 @@ function logCineproBootState(): void {
   ) {
     reason = "PROVIDER_CINEPRO kill";
   } else {
-    reason = "opt-in (no PROVIDER_CINEPRO / no open CINEPRO_EVAL_UNTIL)";
+    reason = "quarantined (URL is not an enable switch)";
   }
   logAt(
     "info",

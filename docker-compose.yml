@@ -38,8 +38,9 @@ services:
       # real 4K lives - is dead inventory. Disk is bounded separately
       # (TRANSCODER_REMUX_MIN_FREE_BYTES / _MAX_JOB_BYTES); set to 0 to disable.
       - REMUX_ENABLED=${REMUX_ENABLED:-1}
-      # Lordflix-class multi-source API (cinepro-core on embedin_default network):
+      # CinePro stays reachable for opt-in eval, but URL-alone must not enable it.
       - CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}
+      - PROVIDER_CINEPRO=${PROVIDER_CINEPRO:-0}
       # Shared warm Chromium worker. The active primary wave has one measured
       # productive host; concurrent background enrichment queues here.
       - BROWSER_POOL_SIZE=${BROWSER_POOL_SIZE:-1}

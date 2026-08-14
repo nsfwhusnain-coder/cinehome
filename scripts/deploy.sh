@@ -48,6 +48,7 @@ if [[ "${SKIP_RSYNC}" != "1" ]]; then
     --exclude 'mini-services/stream-scraper/node_modules/' \
     --exclude '.next/' \
     --exclude 'db/' \
+    --exclude 'db-backups/' \
     --exclude 'transcode-cache/' \
     --exclude '.browser-qa/' \
     --exclude '.runtime-cache/' \
@@ -95,6 +96,11 @@ fi
 chmod +x scripts/*.sh start.sh 2>/dev/null || true
 ./scripts/disk-preflight.sh
 
+echo "=== sqlite snapshot ==="
+if ! ./scripts/db-backup.sh; then
+  echo "WARNING: sqlite backup failed; continuing deploy" >&2
+fi
+
 # Docker RUN steps normally use the daemon/host resolver, which can be broken
 # while CineHome's explicit container DNS remains healthy. Resolve nodejs.org
 # through the running production container when possible and pass the address
@@ -138,6 +144,9 @@ for i in $(seq 1 30); do
   if curl -sf --max-time 5 "$DEPLOY_HEALTH_URL" >/dev/null 2>&1 \
     || curl -sf --max-time 5 "http://127.0.0.1:4445" >/dev/null 2>&1; then
     echo "health OK (HTTP)"
+    echo "=== docker disk prune ==="
+    ./scripts/disk-prune.sh --dangling --keep-last-2-cinehome \
+      || echo "WARNING: disk prune failed; continuing" >&2
     exit 0
   fi
   if docker exec cinehome curl -sf --max-time 5 http://127.0.0.1:3030/health >/dev/null 2>&1; then

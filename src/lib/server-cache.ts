@@ -58,13 +58,28 @@ export async function cachedFetch<T>(
 
 /**
  * Per-user playback response cache (proxy URLs embed HLS session ids).
- * Complete resolves: 3m warm. Partial: short so progressive poll can advance.
+ * Complete resolves: 3m warm. Empty partial: short. Playable partial: 45s.
  */
 const playbackStore = new Map<string, { value: unknown; until: number }>();
 /** Match the 3m scraper TTL so expired signed links are never kept for 20m. */
 export const PLAYBACK_TTL_MS = 3 * 60 * 1000;
-/** Below the client's 2s poll interval so progressive results can actually advance. */
+/** Empty partial — short so a genuine soft-miss hunt can advance. */
 export const PLAYBACK_PARTIAL_TTL_MS = 1_500;
+/** Partial with playable sources — long enough that a stray refetch is a cache hit. */
+export const PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS = 45 * 1000;
+
+export function playbackResponseTtlMs(result: {
+  partial?: boolean;
+  sources?: unknown[] | null;
+  streamUrl?: string | null;
+}): number {
+  const hasSources = Boolean(
+    (result.sources && result.sources.length > 0) || result.streamUrl
+  );
+  if (result.partial && !hasSources) return PLAYBACK_PARTIAL_TTL_MS;
+  if (result.partial) return PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS;
+  return PLAYBACK_TTL_MS;
+}
 
 export function getCachedPlayback<T>(key: string): T | null {
   const hit = playbackStore.get(key);

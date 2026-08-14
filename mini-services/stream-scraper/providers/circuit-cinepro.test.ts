@@ -29,11 +29,18 @@ describe("CinePro re-enable / 48h eval (Change 4)", () => {
     expect(isProviderEnabled("cinepro")).toBe(false);
   });
 
-  it("enables when CINEPRO_URL is configured without a kill switch", () => {
+  it("stays quarantined when CINEPRO_URL is set without an explicit opt-in", () => {
     delete process.env.PROVIDER_CINEPRO;
     delete process.env.CINEPRO_EVAL_UNTIL;
     process.env.CINEPRO_URL = "http://cinepro-core:3000";
-    expect(isProviderEnabled("cinepro")).toBe(true);
+    expect(isProviderEnabled("cinepro")).toBe(false);
+  });
+
+  it("PROVIDER_CINEPRO=0 kills even when CINEPRO_URL is configured", () => {
+    process.env.PROVIDER_CINEPRO = "0";
+    delete process.env.CINEPRO_EVAL_UNTIL;
+    process.env.CINEPRO_URL = "http://cinepro-core:3000";
+    expect(isProviderEnabled("cinepro")).toBe(false);
   });
 
   it("enables when PROVIDER_CINEPRO=1", () => {

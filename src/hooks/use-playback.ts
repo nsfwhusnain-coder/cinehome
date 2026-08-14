@@ -28,8 +28,13 @@ import {
   shouldWaitForMaximumFourK,
 } from "@/lib/playback/quality-discovery";
 import { tvQueryIndex } from "@/lib/playback/tv-index";
+import {
+  playbackPollRefetchCount,
+  watchPlaybackPollInterval,
+} from "@/hooks/watch-playback-poll";
 
 export { tvQueryIndex } from "@/lib/playback/tv-index";
+export { playbackPollRefetchCount } from "@/hooks/watch-playback-poll";
 
 interface Args {
   tmdbId: number;
@@ -78,6 +83,7 @@ async function fetchPlayback(
     params.set("episode", String(tvQueryIndex(episode)));
   }
   if (fast) params.set("fast", "1");
+  // recovery refresh=1 only — never nocache. Admin nocache stays off this hook.
   if (recoveryRefresh) params.set("refresh", "1");
   // Settings preferred quality → scraper ranking (Change 3).
   try {
@@ -105,27 +111,6 @@ async function fetchPlayback(
   return json;
 }
 
-/** Early polls while roster is thin. */
-const POLL_INTERVAL_BASE_MS = 2_000;
-/** Back off once we have a few playable sources. */
-const POLL_INTERVAL_LATER_MS = 5_000;
-/** Cap progressive re-fetches (was 12). */
-const MAX_SOURCE_POLL_REFETCHES = 5;
-/** Aggressive 2s polls only while below this count. */
-const SOURCE_POLL_AGGRESSIVE_UNTIL = 3;
-/** Stop hunting once roster is healthy (3–5 band). */
-const SOURCE_POLL_TARGET = 4;
-/** Wall-clock budget for progressive hunting / refetchInterval. */
-const POLL_WALL_MS = 30_000;
-
-export function playbackPollRefetchCount(
-  dataUpdateCount: number,
-  baselineUpdates: number
-): number {
-  const completedSinceMount = dataUpdateCount - baselineUpdates;
-  const initialFetchOffset = baselineUpdates === 0 ? 1 : 0;
-  return Math.max(0, completedSinceMount - initialFetchOffset);
-}
 /**
  * After this many ms with at least one source, stop advertising "searching for more"
  * even if the scraper still marks partial (Playwright bg). Overlay must not hang minutes.
@@ -376,40 +361,25 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
       // A closed server bucket is authoritative. Retrying every 1–2 seconds
       // cannot enrich the roster and only adds load; manual exhausted-roster
       // recovery remains independently available.
-      if (isPlaybackRateLimited(query.state.error)) return false;
-      // Once full has measured the roster, its healthy count is authoritative.
-      // A large fast roster of unprobed/dead URLs must not stop polling before
-      // a late healthy provider arrives.
-      const mergedCount = query.state.data
-        ? usableSourceCount(query.state.data)
-        : usableSourceCount(fastData);
       const discoveryResponse = query.state.data ?? fastData;
-      const stillPartial = Boolean(discoveryResponse?.partial);
-      const preferredQualityPending =
-        preferredQualityDiscoveryPending(discoveryResponse);
-      // Enough sources + complete → stop.
-      if (mergedCount >= SOURCE_POLL_TARGET && !stillPartial) return false;
-      // Healthy roster is enough even if scraper still marks partial (PW bg).
-      if (mergedCount >= SOURCE_POLL_TARGET && !preferredQualityPending) {
-        return false;
-      }
-      if (!query.state.data || query.state.fetchStatus === "fetching") return false;
-      const extraFetches = playbackPollRefetchCount(
-        query.state.dataUpdateCount,
-        pollBudgetRef.current.baselineUpdates
-      );
-      if (extraFetches >= MAX_SOURCE_POLL_REFETCHES) return false;
-
       if (pollStartedAtRef.current == null) {
         pollStartedAtRef.current = Date.now();
       }
-      if (Date.now() - pollStartedAtRef.current >= POLL_WALL_MS) return false;
-
-      // 2s while thin roster; 5s once we have ≥3 sources or after early cycles.
-      if (mergedCount < SOURCE_POLL_AGGRESSIVE_UNTIL && extraFetches < 3) {
-        return POLL_INTERVAL_BASE_MS;
-      }
-      return POLL_INTERVAL_LATER_MS;
+      return watchPlaybackPollInterval({
+        rateLimited: isPlaybackRateLimited(query.state.error),
+        hasFullData: Boolean(query.state.data),
+        fetching: query.state.fetchStatus === "fetching",
+        playableCount: query.state.data
+          ? usableSourceCount(query.state.data)
+          : usableSourceCount(fastData),
+        preferredQualityPending:
+          preferredQualityDiscoveryPending(discoveryResponse),
+        extraFetches: playbackPollRefetchCount(
+          query.state.dataUpdateCount,
+          pollBudgetRef.current.baselineUpdates
+        ),
+        elapsedMs: Date.now() - pollStartedAtRef.current,
+      });
     },
   });
 

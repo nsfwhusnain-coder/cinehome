@@ -186,8 +186,7 @@ export async function GET(
     getCachedPlayback,
     setCachedPlayback,
     playbackCacheKey,
-    PLAYBACK_TTL_MS,
-    PLAYBACK_PARTIAL_TTL_MS,
+    playbackResponseTtlMs,
   } = await import("@/lib/server-cache");
   // Per-user key: proxy URLs embed HLS session ids. Cross-user warm is raw scrape.
   const cacheKey = playbackCacheKey(
@@ -309,10 +308,10 @@ export async function GET(
     mergeDebridSources(result, debridSources, qualityHint);
   }
 
-  // Cache available resolves for warm Play. Partial → short TTL so poll advances.
+  // Cache available resolves. Empty partial stays short; playable partial
+  // must not expire every 1.5s and re-trigger scrape + debrid.
   if (result && result.status !== "error") {
-    const ttl = result.partial ? PLAYBACK_PARTIAL_TTL_MS : PLAYBACK_TTL_MS;
-    setCachedPlayback(cacheKey, result, ttl);
+    setCachedPlayback(cacheKey, result, playbackResponseTtlMs(result));
   }
 
   const healthAwareResult = withRuntimeProviderHealth(

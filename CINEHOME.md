@@ -40,26 +40,22 @@
 - `mini-services/stream-scraper` on port **3030 inside the container only** (never publish 3030)
 - HLS proxy: local `/api/hls/[sessionId]` by default (residential uplink — works with embed CDNs)
 - Optional Cloudflare Worker only when **`WORKER_PROXY_ENABLED=1`** (many CDNs 403 CF IPs — verify before enabling)
-- **CinePro OMSS**: `circuit.ts` enables CinePro whenever `CINEPRO_URL` is set
-  unless `PROVIDER_CINEPRO=0`. Compose injects
-  `CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}`, so live is on unless
-  the kill switch is set. Observed 2026-08-14: enabled, often
-  `cinepro_timeout_8000`.
+- **CinePro OMSS**: quarantined. `CINEPRO_URL` is not an enable switch (compose
+  always injects `http://cinepro-core:3000`). Enable only with
+  `PROVIDER_CINEPRO=1` or an open `CINEPRO_EVAL_UNTIL` window. Compose defaults
+  `PROVIDER_CINEPRO=0`.
 - Watch page: **CineHome** (custom hls.js) + **Embed** mode (iframe servers like Cineby)
 - Host publish: **4445 → 3000** (`docker-compose.yml`)
 - **Sign-in required** for playback
 
 ### Optional CinePro evaluation
 
-`circuit.ts` enables CinePro whenever `CINEPRO_URL` is set unless
-`PROVIDER_CINEPRO=0`. Compose injects that URL (default
-`http://cinepro-core:3000`), so production is on without an explicit
-`PROVIDER_CINEPRO=1`. Kill with `PROVIDER_CINEPRO=0` — do not flip the live
-env from a laptop deploy. Live (2026-08-14): cinepro is enabled and often
-surfaces `cinepro_timeout_8000` (8s fast budget). A dead instance still adds
-repeated 500s and a wasteful 20-title boot warmer. Run
-`bun scripts/cinepro-eval.ts` to measure hit rate; `CINEPRO_EVAL_UNTIL` can
-enable the arm even without a URL.
+CinePro is opt-in only. Compose still injects `CINEPRO_URL` so cinepro-core
+stays reachable, and defaults `PROVIDER_CINEPRO=0` so the 8s fast budget cannot
+steal the multi-API race. Enable with `PROVIDER_CINEPRO=1` after
+`bun scripts/cinepro-eval.ts` looks healthy, or with a time-boxed
+`CINEPRO_EVAL_UNTIL`. A dead instance previously added repeated 500s and a
+wasteful 20-title boot warmer.
 
 ```bash
 # .env

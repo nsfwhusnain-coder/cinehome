@@ -11,7 +11,7 @@ import { useMounted } from "@/hooks/use-mounted";
 import { VideoPlayer } from "@/components/video-player";
 import { AlertCircle, Loader2, ExternalLink, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useWatchPlayback } from "@/hooks/use-playback";
+import { usePlayback, useWatchPlayback } from "@/hooks/use-playback";
 import { NoProvider } from "@/components/empty-states";
 import { toast } from "sonner";
 import { useSession } from "next-auth/react";
@@ -538,6 +538,20 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
     [mediaType, tvSeason, tvEpisode, meta?.seasons]
   );
   const hasNextEpisode = nextEpisodeTarget != null;
+
+  // Fast-path only — no chrome change. Warms the next episode while this one plays.
+  usePlayback({
+    tmdbId: id,
+    mediaType: "tv",
+    season: nextEpisodeTarget?.season,
+    episode: nextEpisodeTarget?.episode,
+    enabled:
+      mounted &&
+      tvParamsInUrl &&
+      mediaType === "tv" &&
+      nextEpisodeTarget != null,
+    prefetch: true,
+  });
 
   /**
    * TMDB's stated runtime, in seconds.

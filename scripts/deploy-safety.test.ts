@@ -29,6 +29,24 @@ describe("deploy rsync --delete excludes", () => {
     expect(deploy).toContain("--exclude 'transcode-cache/'");
     expect(deploy).toContain("--exclude '.browser-qa/'");
     expect(deploy).toContain("--exclude '.runtime-cache/'");
+    expect(deploy).toContain("--exclude 'db-backups/'");
     expect(deploy).toContain("rsync -az --delete");
+  });
+});
+
+describe("deploy sqlite backup and image prune", () => {
+  test("snapshots SQLite before Compose can replace the container", () => {
+    const backup = deploy.indexOf("./scripts/db-backup.sh");
+    const build = deploy.indexOf("docker compose build");
+    expect(backup).toBeGreaterThan(0);
+    expect(build).toBeGreaterThan(backup);
+  });
+
+  test("prunes dangling and old cinehome images only after health is OK", () => {
+    const health = deploy.indexOf("health OK (HTTP)");
+    const prune = deploy.indexOf("disk-prune.sh --dangling --keep-last-2-cinehome");
+    expect(health).toBeGreaterThan(0);
+    expect(prune).toBeGreaterThan(health);
+    expect(deploy).not.toContain("--builder-all");
   });
 });

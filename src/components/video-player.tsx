@@ -82,6 +82,7 @@ import {
   type SourceAttemptToken,
 } from "@/lib/playback/source-attempt";
 import { preresolvePlayback } from "@/lib/playback-preresolve";
+import { shouldPrefetchNextEpisode } from "@/lib/playback/next-episode-prefetch";
 import {
   isRemoteBackEvent,
   isTvLikeDevice,
@@ -219,8 +220,6 @@ const HLS_BACK_BUFFER_LENGTH_S = 30;
 const HLS_ABR_DEFAULT_ESTIMATE_BPS = 10_000_000;
 /** Pre-roll seconds the bloom's core ring treats as a full buffer. */
 const BLOOM_TARGET_BUFFER_S = 8;
-/** Preload next TV episode sources at this progress ratio. */
-const NEXT_EP_PRELOAD_RATIO = 0.8;
 /** Hard floor — never load below this when a ≥1080 rung exists. */
 const HLS_MIN_HEIGHT = HD_FLOOR_HEIGHT;
 /** Product default / fixed preference target. */
@@ -1099,7 +1098,7 @@ export function VideoPlayer({
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastProgressSave = useRef(0);
   const firstProgressSavedRef = useRef(false);
-  /** Fire-once next-episode source preresolve at 80% progress. */
+  /** Fire-once next-episode source preresolve once binge progress crosses 45%. */
   const nextEpPreloadedRef = useRef(false);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   /** Prevent the synthetic click following a touch gesture from firing the
@@ -3699,15 +3698,18 @@ export function VideoPlayer({
         firstProgressSavedRef.current = true;
         onProgressRef.current(t, progressDuration);
       }
-      // TV binge: warm next episode sources at 80% so next-ep TTFF is near-instant.
+      // TV binge: warm next episode sources once we are halfway so next-ep
+      // TTFF is near-instant. The watch page also prefetches on mount.
       const nextEpTarget = nextEpisodeTargetRef.current;
       if (
-        !nextEpPreloadedRef.current &&
-        mediaType === "tv" &&
-        tvId != null &&
-        nextEpTarget &&
-        progressDuration > 0 &&
-        t / progressDuration >= NEXT_EP_PRELOAD_RATIO
+        shouldPrefetchNextEpisode({
+          alreadyPreloaded: nextEpPreloadedRef.current,
+          mediaType,
+          tvId,
+          hasNextTarget: Boolean(nextEpTarget),
+          progressDuration,
+          currentTime: t,
+        })
       ) {
         nextEpPreloadedRef.current = true;
         void preresolvePlayback({
