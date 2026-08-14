@@ -133,6 +133,25 @@ describe("pickDefaultSource — HD-floor-first ranking", () => {
     expect(picked?.id).toBe("aether");
   });
 
+  it("picks native Videasy 1080 Quasar over Luna 720", () => {
+    const luna = makeSource({
+      id: "luna",
+      label: "Luna",
+      provider: "Vixsrc",
+      maxHeight: 720,
+      type: "hls",
+    });
+    const quasar = makeSource({
+      id: "quasar",
+      label: "Quasar",
+      provider: "Videasy",
+      maxHeight: 1080,
+      quality: "1080p",
+      type: "mp4",
+    });
+    expect(pickDefaultSource([luna, quasar])?.id).toBe("quasar");
+  });
+
   it("never lets a confirmed-working 720p source outrank an untested 1080p source", () => {
     // Regression for the pre-fix tier order: probe.ok / isTopTierSource ran
     // BEFORE the height comparison, so a probe-verified 720p HLS source could

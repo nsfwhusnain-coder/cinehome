@@ -582,6 +582,13 @@ function isSolsticeSource(source: PlaybackSource): boolean {
   return p.includes("vidking") || l.startsWith("solstice");
 }
 
+/** Native Videasy API (Cypher/Yoru) plus CinePro's Quasar sub-provider. */
+function isQuasarSource(source: PlaybackSource): boolean {
+  const p = source.provider.toLowerCase();
+  const l = source.label.toLowerCase();
+  return p.includes("videasy") || l === "quasar" || l.startsWith("quasar ");
+}
+
 /** CinePro multi-provider streams (Lordflix-class proxy path). */
 function isCineproSource(source: PlaybackSource): boolean {
   const p = source.provider.toLowerCase();
@@ -1012,6 +1019,8 @@ function sourceFailoverPriority(source: PlaybackSource): number {
   if (source.origin === "debrid" && isSourcePlayableHere(source)) return 110;
   // Best free fallback: direct CDN + known referer overrides, single hop.
   if (isSolsticeSource(source)) return 100;
+  // Native Videasy/Quasar 1080 MP4 ladder — above Luna, below Solstice.
+  if (isQuasarSource(source) && !isHevcSource(source)) return 82;
   // Share/Fshare progressive rungs — often probe-soft-fail; never auto-default over HLS CDNs.
   if (l.startsWith("share") || p.includes("fshare")) {
     if (l.includes("1080")) return 25;
@@ -1048,13 +1057,7 @@ function sourceFailoverPriority(source: PlaybackSource): number {
   if (p.includes("2embed") || l.startsWith("astra")) return 4;
   if (p.includes("multiembed") || l.startsWith("blaze")) return 3;
   if (p.includes("smashy") || l.startsWith("comet")) return 2;
-  // "videasy" is CinePro's LIVE OMSS sub-provider (surfaced as "Quasar") —
-  // it only reaches this far down on its HEVC-source path (non-HEVC Quasar
-  // already scores 80 via the CinePro branch above, same as Aether/Horizon).
-  // It must never share a bucket with "lordflix", a fully dead API removed
-  // from the active roster 2026-07-21 and kept below only so a stray cached
-  // label never falls out of theme.
-  if (p.includes("videasy")) return 2;
+  // HEVC-only Videasy leftovers. Non-HEVC Quasar already scored 82 above.
   if (p.includes("lordflix")) return 1;
   if (p.includes("embed")) return 6;
   return 0;

@@ -11,7 +11,8 @@ export type ProviderId =
   | "notorrent"
   | "playwright"
   | "cinepro"
-  | "cinemaos";
+  | "cinemaos"
+  | "videasy";
 
 /** Window: last N attempts or WINDOW_MS, whichever trims first. */
 const WINDOW_MAX_SAMPLES = 20;
@@ -60,6 +61,7 @@ const ENV_KILL_SWITCH: Record<ProviderId, string | null> = {
   playwright: "PROVIDER_PLAYWRIGHT",
   cinepro: "PROVIDER_CINEPRO",
   cinemaos: "PROVIDER_CINEMAOS",
+  videasy: "PROVIDER_VIDEASY",
 };
 
 const circuits = new Map<ProviderId, CircuitInternal>();
@@ -299,6 +301,7 @@ export function getAllCircuitSnapshots(): Record<ProviderId, CircuitSnapshot> {
     "playwright",
     "cinepro",
     "cinemaos",
+    "videasy",
   ];
   const out = {} as Record<ProviderId, CircuitSnapshot>;
   for (const id of ids) {

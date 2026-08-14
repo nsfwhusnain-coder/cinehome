@@ -26,6 +26,10 @@ import {
   CINEMAOS_OUTER_TIMEOUT_MS,
 } from "./providers/cinemaos";
 import {
+  resolveVideasy,
+  VIDEASY_OUTER_TIMEOUT_MS,
+} from "./providers/videasy";
+import {
   canAttempt,
   getAllCircuitSnapshots,
   isProviderEnabled,
@@ -512,6 +516,11 @@ function providerPriority(provider: string, label = "", url = ""): number {
     return 4;
   }
   if (p === "vixsrc" || l === "luna") return 8;
+  // Videasy/Quasar — native 1080 MP4 ladder (Cypher). Above Luna, below Solstice.
+  if (p.includes("videasy") || l === "quasar" || l.startsWith("quasar ")) {
+    if (url.includes(".m3u8")) return 10;
+    return 9;
+  }
   // CinemaOS — progressive MP4 via worker proxies; below Solstice / CinePro HLS.
   if (p.includes("cinemaos") || l === "cinema" || l.startsWith("cinema ")) {
     if (url.includes(".m3u8")) return 8;
@@ -2159,6 +2168,43 @@ async function resolveCinemaosEntries(
 }
 
 /**
+ * Videasy / Vidking API — Cypher MP4 ladder + Yoru HLS. Empty = title miss.
+ * Stamp maxHeight from the quality token so 1080 beats Luna 720 on the fast path.
+ */
+async function resolveVideasyEntries(
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  season?: number,
+  episode?: number
+): Promise<SourceEntry[]> {
+  if (!isProviderEnabled("videasy")) return [];
+  const streams = await withCircuit(
+    "videasy",
+    async () => {
+      const r = await withTimeout(
+        resolveVideasy(tmdbId, mediaType, season, episode),
+        VIDEASY_OUTER_TIMEOUT_MS
+      );
+      if (r == null) throw new Error("videasy_timeout");
+      return r;
+    },
+    { isSuccess: (r) => r != null }
+  );
+  if (!streams?.length) return [];
+  logAt("info", `[videasy] ${streams.length} stream(s) for ${tmdbId}`);
+  return streams.map((stream) => {
+    const entry = providerToEntry(stream);
+    const height = parseInt(stream.quality, 10);
+    if (Number.isFinite(height) && height > 0) {
+      entry.maxHeight = height;
+      entry.ladder = [height];
+      entry.qualitySource = "label";
+    }
+    return entry;
+  });
+}
+
+/**
  * Settle window after the FIRST playable source lands, before returning.
  *
  * This is a peer-collection window, not a correctness requirement: every arm
@@ -2223,9 +2269,8 @@ async function resolveFastApiSources(
   episode?: number,
   options: { onLateSources?: (entries: SourceEntry[]) => void } = {}
 ): Promise<SourceEntry[]> {
-  // Fast race: live providers only. Lordflix/Videasy (enc-dec.app) were removed
-  // from the roster entirely (2026-07-21 — 100% zero-result over 24h of prod
-  // logs), so there is nothing to keep off the race slots anymore.
+  // Fast race: live providers only. Native Videasy (speedracelight enc=2) is
+  // back on the race — the old enc-dec.app Videasy path is still dead.
   // CinePro uses the shorter fast budget so timeout can record circuit failure
   // instead of hanging past FAST_MAX_WAIT as a silent late-only arm.
   const arms: Array<Promise<SourceEntry[]>> = [
@@ -2237,6 +2282,7 @@ async function resolveFastApiSources(
       timeoutMs: CINEPRO_FAST_TIMEOUT_MS,
     }),
     resolveCinemaosEntries(tmdbId, mediaType, season, episode),
+    resolveVideasyEntries(tmdbId, mediaType, season, episode),
   ];
 
   const out: SourceEntry[] = [];
@@ -2989,6 +3035,13 @@ async function scrapeStream(
       return [] as SourceEntry[];
     }
   );
+  const videasyPromise = resolveVideasyEntries(tmdbId, mediaType, season, episode).catch(
+    (e: unknown) => {
+      const message = e instanceof Error ? e.message : String(e);
+      logAt("warn", `[videasy] early resolve error: ${message}`);
+      return [] as SourceEntry[];
+    }
+  );
   const notorrentPromise = resolveNotorrentEntries(tmdbId, mediaType, season, episode).catch(
     (e: unknown) => {
       const message = e instanceof Error ? e.message : String(e);
@@ -3003,6 +3056,7 @@ async function scrapeStream(
       { provider: "vixsrc", run: () => lunaPromise },
       { provider: "cinemaos", run: () => cinemaosPromise },
       { provider: "vidlink", run: () => vidlinkPromise },
+      { provider: "videasy", run: () => videasyPromise },
       { provider: "notorrent", run: () => notorrentPromise },
     ],
     {
