@@ -13,6 +13,7 @@ import {
   RotateCw,
   Cast,
   Cloud,
+  Download,
   ArrowLeft,
   PictureInPicture2,
   SkipForward as NextEpisodeIcon,
@@ -97,6 +98,7 @@ interface Props {
   onSleepMinutesChange?: (minutes: number | null) => void;
   /** TMDB runtime used to label a live-growing remux honestly. */
   expectedDurationS?: number;
+  tmdbId?: number;
 }
 
 export function PlayerControls({
@@ -139,6 +141,7 @@ export function PlayerControls({
   sleepMinutes = null,
   onSleepMinutesChange,
   expectedDurationS = 0,
+  tmdbId,
 }: Props) {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const currentTime = usePlayerStore((s) => s.currentTime);
@@ -255,6 +258,11 @@ export function PlayerControls({
           onCloseDock();
           onToggleShortcuts?.();
         }}
+        title={title}
+        mediaType={mediaType === "tv" ? "tv" : "movie"}
+        tmdbId={tmdbId}
+        tvSeason={tvSeason}
+        tvEpisode={tvEpisode}
       />
 
       {showTvEpisodes ? (
@@ -392,10 +400,20 @@ export function PlayerControls({
             <IconBtn
               onClick={() => {
                 setShowEpisodes(false);
+                onToggleSettings?.("download");
+              }}
+              label="Download"
+              active={settingsOpen && dockSection === "download"}
+            >
+              <Download className="h-5 w-5" />
+            </IconBtn>
+            <IconBtn
+              onClick={() => {
+                setShowEpisodes(false);
                 onToggleSettings?.("quality");
               }}
               label="Settings"
-              active={settingsOpen}
+              active={settingsOpen && dockSection !== "download"}
             >
               <Settings className="h-5 w-5" />
             </IconBtn>

@@ -122,4 +122,24 @@ describe("rememberPlaybackSource / lookupPlaybackSourceUrl", () => {
       "https://cdn.example/b.mkv"
     );
   });
+
+  it("remembers quality rungs under sourceId::height", () => {
+    rememberPlaybackRoster(identity, [
+      {
+        id: "quasar",
+        url: "https://cdn.example/1080.mp4",
+        provider: "Videasy",
+        label: "Quasar",
+        quality: "1080p",
+        type: "mp4",
+        qualityRungs: [
+          { height: 1080, url: "https://cdn.example/1080.mp4" },
+          { height: 720, url: "https://cdn.example/720.mp4" },
+        ],
+      },
+    ]);
+    expect(
+      lookupPlaybackSourceUrl({ ...identity, sourceId: "quasar::720" })?.url
+    ).toBe("https://cdn.example/720.mp4");
+  });
 });

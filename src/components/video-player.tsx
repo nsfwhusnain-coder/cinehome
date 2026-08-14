@@ -5288,6 +5288,7 @@ export function VideoPlayer({
         sleepMinutes={sleepMinutes}
         onSleepMinutesChange={setSleepMinutes}
         expectedDurationS={fallbackDurationS}
+        tmdbId={tmdbId}
       />
     </div>
   );

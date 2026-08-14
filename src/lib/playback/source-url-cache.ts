@@ -67,6 +67,18 @@ export function rememberPlaybackRoster(
   if (!sources?.length) return;
   for (const source of sources) {
     rememberPlaybackSource({ ...identity, source });
+    for (const rung of source.qualityRungs ?? []) {
+      if (rung.height <= 0 || !rung.url) continue;
+      rememberPlaybackSource({
+        ...identity,
+        source: {
+          id: `${source.id}::${rung.height}`,
+          url: rung.url,
+          container: source.container,
+          codec: source.codec,
+        },
+      });
+    }
   }
 }
 

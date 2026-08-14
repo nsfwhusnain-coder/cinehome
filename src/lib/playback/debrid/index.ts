@@ -79,6 +79,7 @@ import {
   fetchTorrentioCandidatesNoDebrid,
   isMoviePackRelease,
   parseReleaseTitle,
+  parseSizeBytes,
   resolveImdbId,
   effectiveReleaseContainer,
   isDirectPlayDebridRelease,
@@ -263,6 +264,7 @@ function toPlaybackSource(
   const safariHint = safariHintFor(record.compat, codec);
   const release = parseReleaseTitle(record.title);
   const inferredLang = inferAudioLanguageFromText(record.title);
+  const sizeBytes = parseSizeBytes(record.title);
   return {
     id: buildSourceId(provider, imdbId, mediaType, season, episode, quality),
     url: record.url,
@@ -276,6 +278,7 @@ function toPlaybackSource(
     audioLanguage: inferredLang === "und" ? "en" : inferredLang,
     titleMatch: isMoviePackRelease(record.title) ? "pack" : "exact",
     identityEvidence: "release_title",
+    ...(sizeBytes ? { sizeBytes } : {}),
     ...(codec ? { codec } : {}),
     ...(release.audioCodec !== "unknown"
       ? { audioCodec: release.audioCodec }
@@ -317,6 +320,7 @@ function toRdPlaybackSource(
   const effectiveContainer = effectiveReleaseContainer(record.url, container);
   const release = parseReleaseTitle(record.title);
   const inferredLang = inferAudioLanguageFromText(record.title);
+  const sizeBytes = parseSizeBytes(record.title);
   return {
     id: buildSourceId("realdebrid", imdbId, mediaType, season, episode, slot),
     url: record.url,
@@ -330,6 +334,7 @@ function toRdPlaybackSource(
     audioLanguage: inferredLang === "und" ? "en" : inferredLang,
     titleMatch: isMoviePackRelease(record.title) ? "pack" : "exact",
     identityEvidence: "release_title",
+    ...(sizeBytes ? { sizeBytes } : {}),
     ...(codec && codec !== "unknown" ? { codec } : {}),
     ...(effectiveContainer && effectiveContainer !== "unknown"
       ? { container: effectiveContainer }

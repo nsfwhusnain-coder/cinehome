@@ -41,6 +41,7 @@ export interface QualityRung {
   height: number;
   url: string;
   bitrateBps?: number;
+  sizeBytes?: number;
 }
 
 export interface PlaybackSource {
@@ -113,6 +114,8 @@ export interface PlaybackSource {
    * URL so remux never scrapes again, even after a process restart.
    */
   remuxTicket?: string;
+  /** Exact file size when the resolver knew it (Torrentio footer, RD filesize). */
+  sizeBytes?: number;
   /**
    * Actual container format, when known. Debrid sources always drop MKV/WebM
    * before ever becoming a PlaybackSource (see

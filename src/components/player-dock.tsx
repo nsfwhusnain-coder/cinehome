@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { StreamInfoPanel } from "@/components/player/StreamInfoPanel";
+import { DownloadPanel } from "@/components/player/DownloadPanel";
 import { cn } from "@/lib/utils";
 import { usePlayerStore, PLAYBACK_SPEEDS, type MediaTrack } from "@/stores/player-store";
 import { buildServerSlots, type ServerSlot } from "@/lib/playback/expected-servers";
@@ -20,7 +21,7 @@ import {
   sourceUnavailableReason,
 } from "@/lib/playback/source-quality";
 import { setPreferredProvider } from "@/lib/player-preferences";
-import type { PlaybackSource } from "@/lib/playback/types";
+import type { MediaType, PlaybackSource } from "@/lib/playback/types";
 import type {
   PlayerQualityOption,
   PlayerQualityTarget,
@@ -42,7 +43,8 @@ export type DockSection =
   | "subtitles"
   | "audio"
   | "playback"
-  | "info";
+  | "info"
+  | "download";
 
 type DirectionKey = "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown";
 
@@ -110,6 +112,11 @@ interface Props {
   /** Controlled sleep timer (minutes); null = Off. Parent owns the actual timeout. */
   sleepMinutes?: number | null;
   onSleepMinutesChange?: (minutes: number | null) => void;
+  title?: string;
+  mediaType?: MediaType;
+  tmdbId?: number;
+  tvSeason?: number;
+  tvEpisode?: number;
 }
 
 function statusDotClass(status: ReturnType<typeof buildServerSlots>[number]["status"]): string {
@@ -208,6 +215,7 @@ const PRIMARY_TABS: Array<{ section: DockSection; label: string }> = [
   { section: "audio", label: "Audio" },
   { section: "playback", label: "Speed" },
   { section: "info", label: "Info" },
+  { section: "download", label: "Download" },
 ];
 
 export function PlayerDock({
@@ -229,6 +237,11 @@ export function PlayerDock({
   onOpenShortcuts,
   sleepMinutes: sleepMinutesProp = null,
   onSleepMinutesChange,
+  title = "",
+  mediaType = "movie",
+  tmdbId,
+  tvSeason,
+  tvEpisode,
 }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -239,6 +252,7 @@ export function PlayerDock({
   const levels = usePlayerStore((s) => s.levels);
   const bufferedEnd = usePlayerStore((s) => s.bufferedEnd);
   const currentTime = usePlayerStore((s) => s.currentTime);
+  const duration = usePlayerStore((s) => s.duration);
   const serverDisplayName = usePlayerStore((s) => s.serverDisplayName);
   const subtitlesOn = usePlayerStore((s) => s.subtitlesOn);
   const subtitleTracks = usePlayerStore((s) => s.subtitleTracks);
@@ -568,6 +582,20 @@ export function PlayerDock({
           No alternate audio on this stream. Switch server if available — some hosts expose
           multi-language tracks.
         </div>
+      );
+    }
+
+    if (activeSection === "download") {
+      return (
+        <DownloadPanel
+          sources={sources}
+          title={title}
+          mediaType={mediaType}
+          tmdbId={tmdbId}
+          season={tvSeason}
+          episode={tvEpisode}
+          durationSeconds={duration > 0 ? duration : 0}
+        />
       );
     }
 
