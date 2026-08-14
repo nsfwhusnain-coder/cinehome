@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildPlayerQualityOptions,
   normalizePlayerQualityHeight,
+  pickQualityRungUrl,
   selectSourceForQuality,
 } from "./quality-router";
 import type { PlaybackSource } from "./types";
@@ -24,6 +25,27 @@ function source(
     probe: { ok: true, ttfbMs: 100, bytesPerSec: 1_000_000, speedScore: 90 },
   };
 }
+
+describe("pickQualityRungUrl", () => {
+  it("picks the 1080 rung on Auto and the exact height when asked", () => {
+    const mp4: PlaybackSource = {
+      id: "quasar",
+      url: "https://example.test/1080.mp4",
+      provider: "Videasy",
+      label: "Quasar",
+      quality: "1080p",
+      type: "mp4",
+      maxHeight: 1080,
+      qualityRungs: [
+        { height: 1080, url: "https://example.test/1080.mp4" },
+        { height: 720, url: "https://example.test/720.mp4" },
+        { height: 480, url: "https://example.test/480.mp4" },
+      ],
+    };
+    expect(pickQualityRungUrl(mp4, "auto")).toBe("https://example.test/1080.mp4");
+    expect(pickQualityRungUrl(mp4, 720)).toBe("https://example.test/720.mp4");
+  });
+});
 
 describe("quality router", () => {
   it("normalizes conventional and cropped delivery heights honestly", () => {

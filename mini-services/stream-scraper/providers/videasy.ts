@@ -131,29 +131,42 @@ function sortByQuality(sources: VideasyRawSource[]): VideasyRawSource[] {
 }
 
 function mapStreams(raw: VideasyRawSource[]): ProviderStream[] {
-  const out: ProviderStream[] = [];
   const seen = new Set<string>();
-  let bestAssigned = false;
+  const rungs: { height: number; url: string; type: "hls" | "mp4" | "dash" }[] = [];
   for (const item of sortByQuality(raw)) {
     const streamUrl = typeof item.url === "string" ? item.url.trim() : "";
     if (!streamUrl || seen.has(streamUrl) || isPoisonStreamUrl(streamUrl)) continue;
     seen.add(streamUrl);
     const quality = parseVideasyQuality(String(item.quality ?? ""));
-    const isBest = !bestAssigned;
-    if (isBest) bestAssigned = true;
-    out.push({
+    const height = qualityHeight(quality);
+    rungs.push({
+      height: height > 0 ? height : 0,
       url: streamUrl,
-      quality,
-      label: videasyStreamLabel(quality, isBest),
-      provider: PROVIDER_NAME,
       type: detectVideasyStreamType(streamUrl, item.type),
+    });
+    if (rungs.length >= MAX_STREAMS) break;
+  }
+  const best = rungs[0];
+  if (!best) return [];
+  const qualityRungs = rungs
+    .filter((rung) => rung.height > 0)
+    .map((rung) => ({ height: rung.height, url: rung.url }));
+  const ladder = qualityRungs.map((rung) => rung.height);
+  const quality = best.height > 0 ? `${best.height}p` : "auto";
+  return [
+    {
+      url: best.url,
+      quality,
+      label: LABEL_BASE,
+      provider: PROVIDER_NAME,
+      type: best.type,
       referer: REFERER,
       origin: ORIGIN,
       userAgent: DEFAULT_UA,
-    });
-    if (out.length >= MAX_STREAMS) break;
-  }
-  return out;
+      ...(best.height > 0 ? { maxHeight: best.height } : {}),
+      ...(ladder.length ? { ladder, qualityRungs } : {}),
+    },
+  ];
 }
 
 async function fetchJson(

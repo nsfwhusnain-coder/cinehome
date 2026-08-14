@@ -55,6 +55,7 @@ function providerToken(lowerProvider: string): string {
   // standalone Videasy API provider. "vidfast" (Flux) and "lordflix"
   // (Nebula) were removed 2026-07-21 — both dropped from the active roster,
   // kept themed below only so a stray cached label never falls out of theme.
+  if (lowerProvider.includes("vidrock")) return "rock";
   if (lowerProvider.includes("videasy")) return "quasar";
   if (lowerProvider.includes("embed")) return "embed";
   return lowerProvider;

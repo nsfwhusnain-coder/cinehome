@@ -1134,6 +1134,32 @@ describe("findQualityUpgradeSource — never upgrades to an unplayable-here sour
   });
 });
 
+describe("sourceDelivery - never pack HLS/DASH", () => {
+  it("plays HLS and DASH directly even when audio looks exotic", () => {
+    expect(
+      sourceDelivery(
+        makeSource({
+          id: "hls-eac3",
+          type: "hls",
+          codec: "h264",
+          audioCodec: "eac3",
+          multiAudio: true,
+        })
+      )
+    ).toBe("direct");
+    expect(
+      sourceDelivery(
+        makeSource({
+          id: "dash-ac3",
+          type: "dash",
+          codec: "h264",
+          audioCodec: "ac3",
+        })
+      )
+    ).toBe("direct");
+  });
+});
+
 describe("sourceDelivery - audio safety", () => {
   it("keeps a single-track AAC MP4 direct", () => {
     expect(
@@ -1155,6 +1181,7 @@ describe("sourceDelivery - audio safety", () => {
         makeSource({
           id: "dts-remux",
           origin: "debrid",
+          type: "mp4",
           codec: "h264",
           container: "mp4",
           audioCodec: "dts",

@@ -486,9 +486,14 @@ function audioNeedsRemux(source: PlaybackSource): boolean {
 }
 
 export function sourceDelivery(source: PlaybackSource): SourceDelivery {
+  if (!codecDecodableHere(source)) return "unavailable";
   const containerOk =
     !source.container || isBrowserPlayableContainer(source.container);
-  if (!codecDecodableHere(source)) return "unavailable";
+  // HLS/DASH playlists are already browser-legal. Packing them is the
+  // "Repackaging" stall. An MKV still remuxes even if someone labelled it HLS.
+  if ((source.type === "hls" || source.type === "dash") && containerOk) {
+    return "direct";
+  }
   return containerOk && !audioNeedsRemux(source) ? "direct" : "remux";
 }
 
@@ -1045,6 +1050,16 @@ function sourceFailoverPriority(source: PlaybackSource): number {
     if (u.includes(".php") || u.includes("hostingersite.com")) return 1;
     if (isHlsSource(source) && !isHevcSource(source)) return 22;
     return 5;
+  }
+  if (
+    (p.includes("vidrock") || l === "rock" || l.startsWith("rock ")) &&
+    !isHevcSource(source)
+  ) {
+    if (isHlsSource(source)) return 78;
+    return 70;
+  }
+  if (p.includes("cinemaos") || l === "cinema" || l.startsWith("cinema ")) {
+    return sourceMaxHeight(source) >= 1080 ? 76 : 60;
   }
   if (isLunaSource(source)) return 50;
   if (isPhoenixSource(source)) {

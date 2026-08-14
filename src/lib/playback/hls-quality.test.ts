@@ -13,6 +13,7 @@ import {
   isQualityMismatch,
   pickDefaultQualityIndex,
   pickStartLevelIndex,
+  levelsFromQualityRungs,
 } from "./hls-quality";
 import type { QualityLevel } from "@/stores/player-store";
 
@@ -21,6 +22,19 @@ import type { QualityLevel } from "@/stores/player-store";
  * user can switch freely (4K / 1080 / 720 / 480). Default start is still
  * pickDefaultQualityIndex (≥1080 when present).
  */
+describe("levelsFromQualityRungs", () => {
+  it("turns an MP4 host ladder into picker levels", () => {
+    const levels = levelsFromQualityRungs([
+      { height: 1080, bitrateBps: 4_000_000 },
+      { height: 720 },
+      { height: 480 },
+    ]);
+    expect(levels.map((level) => level.height)).toEqual([1080, 720, 480]);
+    expect(levels[0]?.index).toBe(0);
+    expect(levels[0]?.bitrate).toBe(4_000_000);
+  });
+});
+
 describe("buildQualityOptions", () => {
   it("classifies cropped 1920-wide cinema levels as 1080p", () => {
     expect(

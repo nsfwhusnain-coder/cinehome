@@ -51,4 +51,29 @@ describe("scraper source 4K inventory", () => {
 
     expect(hd.id).not.toBe(uhd.id);
   });
+
+  it("keeps a host quality ladder on the playback source", () => {
+    const source = toPlaybackSource(
+      {
+        url: "https://media.example/1080.mp4",
+        quality: "1080p",
+        label: "Quasar",
+        provider: "Videasy",
+        session,
+        type: "mp4",
+        maxHeight: 1080,
+        ladder: [1080, 720, 480],
+        qualityRungs: [
+          { height: 1080, url: "/api/hls/1080" },
+          { height: 720, url: "/api/hls/720" },
+          { height: 480, url: "/api/hls/480" },
+        ],
+      },
+      "/api/hls/1080"
+    );
+    expect(source.qualityRungs?.map((rung) => rung.height)).toEqual([
+      1080, 720, 480,
+    ]);
+    expect(source.ladder).toEqual([1080, 720, 480]);
+  });
 });

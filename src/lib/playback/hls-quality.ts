@@ -60,6 +60,19 @@ export const MIN_QUALITY_OPTION_HEIGHT = 1080;
  *
  * "Auto" is not in this list — the dock renders it as its own first row.
  */
+export function levelsFromQualityRungs(
+  rungs: ReadonlyArray<{ height: number; bitrateBps?: number }>
+): QualityLevel[] {
+  return rungs
+    .filter((rung) => rung.height > 0)
+    .map((rung, index) => ({
+      index,
+      height: rung.height,
+      width: Math.round((rung.height * 16) / 9),
+      bitrate: rung.bitrateBps ?? 0,
+    }));
+}
+
 export function buildQualityOptions(levels: QualityLevel[]): QualityOption[] {
   const withHeights = levels
     .map((l) => ({ ...l, height: effectiveLevelHeight(l) }))

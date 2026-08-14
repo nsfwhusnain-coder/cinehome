@@ -30,6 +30,10 @@ import {
   VIDEASY_OUTER_TIMEOUT_MS,
 } from "./providers/videasy";
 import {
+  resolveVidrock,
+  VIDROCK_OUTER_TIMEOUT_MS,
+} from "./providers/vidrock";
+import {
   canAttempt,
   getAllCircuitSnapshots,
   isProviderEnabled,
@@ -262,6 +266,8 @@ interface SourceEntry {
   qualitySource?: QualitySource;
   /** Declared bitrate for the rendition at maxHeight, when present in a manifest. */
   bitrateBps?: number;
+  /** Alternate progressive URLs on this source (one host, many heights). */
+  qualityRungs?: { height: number; url: string; bitrateBps?: number }[];
 }
 
 interface ScrapeResult {
@@ -448,8 +454,17 @@ function mergeSourceEntries(entries: SourceEntry[]): SourceEntry[] {
  * Returns up to MAX_VIDLINK_API_SOURCES for distinct Phoenix / Phoenix 2 labels.
  */
 function pickVidlinkStreams(
-  sources: { url: string; quality: string; label: string; score: number }[]
-): { url: string; quality: string; label: string; score: number }[] {
+  sources: {
+    url: string;
+    quality: string;
+    label: string;
+    score: number;
+    type?: "hls" | "mp4" | "dash";
+    maxHeight?: number;
+    ladder?: number[];
+    qualityRungs?: { height: number; url: string }[];
+  }[]
+): typeof sources {
   const usable = sources.filter((s) => !s.url.includes(".srt"));
   const nonHevcHls = usable
     .filter((s) => s.url.includes(".m3u8") && !isHevcStream(s.url))
@@ -520,6 +535,10 @@ function providerPriority(provider: string, label = "", url = ""): number {
   if (p.includes("videasy") || l === "quasar" || l.startsWith("quasar ")) {
     if (url.includes(".m3u8")) return 10;
     return 9;
+  }
+  if (p.includes("vidrock") || l === "rock" || l.startsWith("rock ")) {
+    if (url.includes(".m3u8")) return 8;
+    return 7;
   }
   // CinemaOS — progressive MP4 via worker proxies; below Solstice / CinePro HLS.
   if (p.includes("cinemaos") || l === "cinema" || l.startsWith("cinema ")) {
@@ -1938,12 +1957,26 @@ function providerToEntry(stream: ProviderStream): SourceEntry {
   // (e.g. Vixsrc's parseBestQuality, CinePro's upstream field) — keep it instead of
   // discarding it to "auto"; applyLatencyProbes still fills in maxHeight/ladder later.
   const q = (stream.quality || "").trim();
+  const rungs = stream.qualityRungs?.filter((rung) => rung.height > 0 && rung.url);
+  const ladder =
+    stream.ladder && stream.ladder.length
+      ? stream.ladder
+      : rungs?.length
+        ? rungs.map((rung) => rung.height)
+        : undefined;
+  const maxHeight =
+    stream.maxHeight && stream.maxHeight > 0
+      ? stream.maxHeight
+      : ladder?.[0];
   return {
     url: stream.url,
     quality: q && q.toLowerCase() !== "auto" ? q : "auto",
     label: stream.label || stream.provider,
     provider: stream.provider,
     ...(stream.type ? { type: stream.type } : {}),
+    ...(maxHeight ? { maxHeight, qualitySource: "label" as const } : {}),
+    ...(ladder?.length ? { ladder } : {}),
+    ...(rungs?.length ? { qualityRungs: rungs } : {}),
     session: {
       referer: stream.referer,
       origin: stream.origin,
@@ -2028,19 +2061,30 @@ async function resolveVidlinkEntries(
     `[vidlink-api] mapped ${picked.length} source(s) (from ${vidlink.sources.length} raw)`
   );
 
-  return picked.map((stream, index) => ({
-    url: stream.url,
-    quality: stream.quality || "auto",
-    label: vidlinkSourceLabel(index),
-    provider: "VidLink",
-    session: {
-      referer: vidlink.session.referer,
-      origin: vidlink.session.origin,
-      userAgent: vidlink.session.userAgent,
-      cookies: vidlink.session.cookies,
-      extraHeaders: { ...vidlink.session.extraHeaders },
-    },
-  }));
+  return picked.map((stream, index) => {
+    const rungs = stream.qualityRungs?.filter((rung) => rung.height > 0 && rung.url);
+    const ladder = stream.ladder?.length
+      ? stream.ladder
+      : rungs?.map((rung) => rung.height);
+    const maxHeight = stream.maxHeight || ladder?.[0];
+    return {
+      url: stream.url,
+      quality: stream.quality || "auto",
+      label: vidlinkSourceLabel(index),
+      provider: "VidLink",
+      ...(stream.type ? { type: stream.type } : {}),
+      ...(maxHeight ? { maxHeight, qualitySource: "label" as const } : {}),
+      ...(ladder?.length ? { ladder } : {}),
+      ...(rungs?.length ? { qualityRungs: rungs } : {}),
+      session: {
+        referer: vidlink.session.referer,
+        origin: vidlink.session.origin,
+        userAgent: vidlink.session.userAgent,
+        cookies: vidlink.session.cookies,
+        extraHeaders: { ...vidlink.session.extraHeaders },
+      },
+    };
+  });
 }
 
 /** NoTorrent only — used on the fast path so Pulse can race Luna without enc-dec noise. */
@@ -2197,11 +2241,38 @@ async function resolveVideasyEntries(
     const height = parseInt(stream.quality, 10);
     if (Number.isFinite(height) && height > 0) {
       entry.maxHeight = height;
-      entry.ladder = [height];
+      entry.ladder = stream.ladder?.length ? stream.ladder : [height];
       entry.qualitySource = "label";
     }
     return entry;
   });
+}
+
+/**
+ * Vidrock — AES-GCM English HLS + Astra MP4 ladder. Empty = title miss.
+ */
+async function resolveVidrockEntries(
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  season?: number,
+  episode?: number
+): Promise<SourceEntry[]> {
+  if (!isProviderEnabled("vidrock")) return [];
+  const streams = await withCircuit(
+    "vidrock",
+    async () => {
+      const r = await withTimeout(
+        resolveVidrock(tmdbId, mediaType, season, episode),
+        VIDROCK_OUTER_TIMEOUT_MS
+      );
+      if (r == null) throw new Error("vidrock_timeout");
+      return r;
+    },
+    { isSuccess: (r) => r != null }
+  );
+  if (!streams?.length) return [];
+  logAt("info", `[vidrock] ${streams.length} stream(s) for ${tmdbId}`);
+  return streams.map(providerToEntry);
 }
 
 /**
@@ -2283,6 +2354,7 @@ async function resolveFastApiSources(
     }),
     resolveCinemaosEntries(tmdbId, mediaType, season, episode),
     resolveVideasyEntries(tmdbId, mediaType, season, episode),
+    resolveVidrockEntries(tmdbId, mediaType, season, episode),
   ];
 
   const out: SourceEntry[] = [];
@@ -3042,6 +3114,13 @@ async function scrapeStream(
       return [] as SourceEntry[];
     }
   );
+  const vidrockPromise = resolveVidrockEntries(tmdbId, mediaType, season, episode).catch(
+    (e: unknown) => {
+      const message = e instanceof Error ? e.message : String(e);
+      logAt("warn", `[vidrock] early resolve error: ${message}`);
+      return [] as SourceEntry[];
+    }
+  );
   const notorrentPromise = resolveNotorrentEntries(tmdbId, mediaType, season, episode).catch(
     (e: unknown) => {
       const message = e instanceof Error ? e.message : String(e);
@@ -3057,6 +3136,7 @@ async function scrapeStream(
       { provider: "cinemaos", run: () => cinemaosPromise },
       { provider: "vidlink", run: () => vidlinkPromise },
       { provider: "videasy", run: () => videasyPromise },
+      { provider: "vidrock", run: () => vidrockPromise },
       { provider: "notorrent", run: () => notorrentPromise },
     ],
     {

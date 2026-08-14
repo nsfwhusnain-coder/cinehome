@@ -55,10 +55,28 @@ function sourceOffersHeight(
   source: PlaybackSource,
   height: PlayerQualityHeight
 ): boolean {
-  const declared = source.ladder?.length
-    ? source.ladder
-    : [sourceMaxHeight(source)];
+  const declared = source.qualityRungs?.length
+    ? source.qualityRungs.map((rung) => rung.height)
+    : source.ladder?.length
+      ? source.ladder
+      : [sourceMaxHeight(source)];
   return declared.some((candidate) => normalizePlayerQualityHeight(candidate) === height);
+}
+
+export function pickQualityRungUrl(
+  source: PlaybackSource,
+  target: PlayerQualityTarget
+): string | null {
+  const rungs = source.qualityRungs;
+  if (!rungs?.length) return null;
+  if (target === "auto") {
+    const hd = rungs.find((rung) => rung.height >= 1080);
+    return (hd ?? rungs[0])!.url;
+  }
+  const match = rungs.find(
+    (rung) => normalizePlayerQualityHeight(rung.height) === target
+  );
+  return (match ?? rungs.find((rung) => rung.height >= 1080) ?? rungs[0])!.url;
 }
 
 function levelForHeight(

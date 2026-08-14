@@ -11,6 +11,7 @@ import {
   resolveCinemaos,
   sortCinemaosStreams,
   keepCinemaosLanguageLadders,
+  groupCinemaosStreamsByLanguage,
   CINEMAOS_MAX_STREAMS,
   CINEMAOS_OUTER_TIMEOUT_MS,
   CINEMAOS_TIMEOUT_MS,
@@ -172,6 +173,36 @@ describe("keepCinemaosLanguageLadders", () => {
       "https://example.test/en1080",
       "https://example.test/hi1080",
       "https://example.test/hi720",
+    ]);
+  });
+});
+
+describe("groupCinemaosStreamsByLanguage", () => {
+  it("folds one language into a single ladder, English first", () => {
+    const groups = groupCinemaosStreamsByLanguage([
+      {
+        name: "AoneRoom (Hindi) 720p [MP4]",
+        title: "Fight Club",
+        quality: "720p",
+        url: "https://example.test/hi720",
+      },
+      {
+        name: "AoneRoom (English) 1080p [MP4]",
+        title: "Fight Club",
+        quality: "1080p",
+        url: "https://example.test/en1080",
+      },
+      {
+        name: "AoneRoom (English) 2160p [MP4]",
+        title: "Fight Club",
+        quality: "2160p",
+        url: "https://example.test/en2160",
+      },
+    ]);
+    expect(groups.map((group) => group.key)).toEqual(["EN", "HI"]);
+    expect(groups[0]?.streams.map((stream) => stream.url)).toEqual([
+      "https://example.test/en2160",
+      "https://example.test/en1080",
     ]);
   });
 });

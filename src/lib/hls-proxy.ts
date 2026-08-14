@@ -1258,6 +1258,9 @@ function refererFor(session: HlsSession, target: string): string {
     if (host.endsWith(".vodvidl.site") || host.endsWith(".hakunaymatata.com")) {
       return "https://vidlink.pro/";
     }
+    if (host.endsWith(".1shows.app") || host.endsWith(".streamrk.site")) {
+      return "https://vidrock.net/";
+    }
     return session.referer;
   } catch {
     return session.referer;
@@ -1318,6 +1321,10 @@ export const CDN_HOSTS = [
   "remoteconsultinggroup.site",
   "moderncon.site",
   "moderncontentengine.site",
+  "cdn1.1shows.app",
+  "cdn2.1shows.app",
+  "streamrk.site",
+  "v1.streamrk.site",
 ];
 
 /**
@@ -1339,6 +1346,8 @@ export const CDN_SUFFIXES = [
   ".fsharetv.cc",
   ".highperformancebrands.site",
   ".remoteconsultinggroup.site",
+  ".1shows.app",
+  ".streamrk.site",
 ];
 
 function isPrivateIpv4(a: number, b: number): boolean {

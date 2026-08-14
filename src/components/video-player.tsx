@@ -82,6 +82,7 @@ import {
   maxLevelHeight,
   pickDefaultQualityIndex,
   pickStartLevelIndex,
+  levelsFromQualityRungs,
 } from "@/lib/playback/hls-quality";
 import {
   getPreferredProvider,
@@ -115,6 +116,7 @@ import type { DockSection } from "@/components/player-dock";
 import {
   buildPlayerQualityOptions,
   normalizePlayerQualityHeight,
+  pickQualityRungUrl,
   qualityLabel as playerQualityLabel,
   type PlayerQualityTarget,
 } from "@/lib/playback/quality-router";
@@ -3708,23 +3710,36 @@ export function VideoPlayer({
       } else if (isWorkerProxy) {
         video.crossOrigin = "anonymous";
       }
-      video.src = effectiveSrc;
+      const rungs = activeSourceRef.current?.qualityRungs ?? [];
+      const rungUrl = activeSourceRef.current
+        ? pickQualityRungUrl(activeSourceRef.current, qualityTargetRef.current)
+        : null;
+      video.src = rungUrl || effectiveSrc;
       setLevelsPending(false);
       setBuffering(false);
-      // Progressive / single-URL: no adaptive ladder — seed honest single-rung
-      // metadata from the source when known, then refine with video.videoHeight.
+      // Progressive file: use the source's own quality rungs when the host
+      // exposed a ladder. Otherwise seed a single honest height.
       {
-        const metaH = activeSourceRef.current
-          ? sourceMaxHeight(activeSourceRef.current)
-          : 0;
-        if (metaH > 0) {
-          setLevels([{ index: 0, height: metaH }]);
-          setPlayingHeight(metaH);
+        if (rungs.length > 1) {
+          const levels = levelsFromQualityRungs(rungs);
+          setLevels(levels);
+          const startIdx = pickStartLevelIndex(levels, qualityTargetRef.current);
+          const startLevel = startIdx >= 0 ? levels[startIdx] : levels[0];
+          setQuality(startIdx >= 0 ? startIdx : 0);
+          if (startLevel?.height) setPlayingHeight(startLevel.height);
         } else {
-          setLevels([]);
-          setPlayingHeight(0);
+          const metaH = activeSourceRef.current
+            ? sourceMaxHeight(activeSourceRef.current)
+            : 0;
+          if (metaH > 0) {
+            setLevels([{ index: 0, height: metaH }]);
+            setPlayingHeight(metaH);
+          } else {
+            setLevels([]);
+            setPlayingHeight(0);
+          }
+          setQuality(-1);
         }
-        setQuality(-1);
       }
       onMp4Loaded = () => {
         const vh = video.videoHeight || 0;
@@ -3734,9 +3749,11 @@ export function VideoPlayer({
             vh
           );
           setPlayingHeight(decodedTier);
-          // Prefer decoded height over source-label metadata for honesty.
-          // Single-rung only — never invent a multi-rung menu for progressive MP4.
-          setLevels([{ index: 0, height: decodedTier }]);
+          // Keep a host-provided MP4 ladder. Only invent a single rung when
+          // the source is genuinely one file.
+          if ((activeSourceRef.current?.qualityRungs?.length ?? 0) < 2) {
+            setLevels([{ index: 0, height: decodedTier }]);
+          }
           const sid = activeSourceRef.current?.id;
           if (sid) recordDetectedHeight(sid, decodedTier);
         }
@@ -4711,6 +4728,29 @@ export function VideoPlayer({
           dash.updateSettings({
             streaming: { abr: { autoSwitchBitrate: { video: true } } },
           } as Parameters<typeof dash.updateSettings>[0]);
+        } else {
+          const autoRungs = activeSourceRef.current?.qualityRungs;
+          const autoVideo = videoRef.current;
+          const autoUrl = activeSourceRef.current
+            ? pickQualityRungUrl(activeSourceRef.current, "auto")
+            : null;
+          if (autoRungs && autoRungs.length > 1 && autoVideo && autoUrl) {
+            const time = autoVideo.currentTime;
+            const wasPaused = autoVideo.paused;
+            autoVideo.src = autoUrl;
+            const resume = () => {
+              autoVideo.removeEventListener("loadedmetadata", resume);
+              if (time > 0.25) {
+                try {
+                  autoVideo.currentTime = time;
+                } catch {
+                  /* media not ready */
+                }
+              }
+              if (!wasPaused) void autoVideo.play().catch(() => {});
+            };
+            autoVideo.addEventListener("loadedmetadata", resume);
+          }
         }
         setQuality(-1);
         if (announce) showStatusNotice("Quality set to Auto", 1_800);
@@ -4745,6 +4785,37 @@ export function VideoPlayer({
           showStatusNotice(`Switching to ${playerQualityLabel(target)}`, 1_800);
         }
         return;
+      }
+
+      const rungs = activeSourceRef.current?.qualityRungs;
+      const video = videoRef.current;
+      if (rungs && rungs.length > 1 && video && !hls && !dash) {
+        const nextUrl =
+          option?.levelIndex != null
+            ? rungs[option.levelIndex]?.url
+            : pickQualityRungUrl(activeSourceRef.current!, target);
+        if (nextUrl) {
+          const time = video.currentTime;
+          const wasPaused = video.paused;
+          video.src = nextUrl;
+          const resume = () => {
+            video.removeEventListener("loadedmetadata", resume);
+            if (time > 0.25) {
+              try {
+                video.currentTime = time;
+              } catch {
+                /* media not ready */
+              }
+            }
+            if (!wasPaused) void video.play().catch(() => {});
+          };
+          video.addEventListener("loadedmetadata", resume);
+          setQuality(option?.levelIndex ?? -1);
+          if (announce) {
+            showStatusNotice(`Switching to ${playerQualityLabel(target)}`, 1_800);
+          }
+          return;
+        }
       }
 
       const replacement = option?.sourceId

@@ -1,3 +1,9 @@
+export interface QualityRung {
+  height: number;
+  url: string;
+  bitrateBps?: number;
+}
+
 export interface ProviderStream {
   url: string;
   quality: string;
@@ -7,6 +13,9 @@ export interface ProviderStream {
   referer: string;
   origin: string;
   userAgent: string;
+  maxHeight?: number;
+  ladder?: number[];
+  qualityRungs?: QualityRung[];
 }
 
 export interface TmdbLookup {

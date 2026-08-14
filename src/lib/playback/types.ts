@@ -31,6 +31,13 @@ export interface SourceProbeMetrics {
   speedScore: number;
 }
 
+/** One switchable height on a single source (MP4 ladders, VidLink file qualities). */
+export interface QualityRung {
+  height: number;
+  url: string;
+  bitrateBps?: number;
+}
+
 export interface PlaybackSource {
   id: string;
   url: string;
@@ -41,6 +48,11 @@ export interface PlaybackSource {
   maxHeight?: number; // best known resolution for UI badges (0 = probed but unknown)
   /** Desc-sorted rendition heights from a probed HLS/DASH master, e.g. [1080,720,480]. Omitted/empty for single-rendition or mp4. */
   ladder?: number[];
+  /**
+   * Alternate progressive URLs on THIS source. Quality picker swaps `url`
+   * in-place instead of changing servers. Proxied before it reaches the client.
+   */
+  qualityRungs?: QualityRung[];
   /** How maxHeight/ladder was obtained — scraper provenance for ranking honesty. */
   qualitySource?: "manifest" | "label" | "probe" | "unknown";
   /**

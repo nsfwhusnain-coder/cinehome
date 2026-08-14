@@ -127,13 +127,16 @@ describe("resolveVideasy", () => {
     }) as typeof fetch;
 
     const streams = await resolveVideasy(61838, "tv", 1, 1);
-    expect(streams.map((s) => s.quality)).toEqual(["1080p", "720p", "480p"]);
+    expect(streams).toHaveLength(1);
+    expect(streams[0]?.quality).toBe("1080p");
     expect(streams[0]?.label).toBe("Quasar");
-    expect(streams[1]?.label).toBe("Quasar 720p");
     expect(streams[0]?.provider).toBe("Videasy");
     expect(streams[0]?.type).toBe("mp4");
     expect(streams[0]?.referer).toBe("https://www.vidking.net/");
     expect(streams[0]?.url).toContain("/mp4/q1080");
+    expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).toEqual([
+      1080, 720, 480,
+    ]);
   });
 
   it("returns empty on seed miss instead of throwing", async () => {

@@ -43,6 +43,7 @@ export interface ScraperSourceEntry {
   qualitySource?: "manifest" | "label" | "probe" | "unknown";
   /** Manifest-declared bits/sec at maxHeight — separates same-height releases. */
   bitrateBps?: number;
+  qualityRungs?: { height: number; url: string; bitrateBps?: number }[];
   probe?: {
     ok: boolean;
     ttfbMs: number;
@@ -183,6 +184,7 @@ export function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): P
     ...(entry.bitrateBps != null && entry.bitrateBps > 0
       ? { bitrateBps: entry.bitrateBps }
       : {}),
+    ...(entry.qualityRungs?.length ? { qualityRungs: entry.qualityRungs } : {}),
     ...(codec !== "unknown" ? { codec } : {}),
     ...(entry.verified === false ? { verified: false } : entry.verified === true ? { verified: true } : {}),
     ...(entry.probe
@@ -303,7 +305,26 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
         entriesForClient.map((entry) => {
           const hlsSession = createHlsSession(req.userId, entry.url, entry.session);
           const proxyUrl = buildPlaybackProxyUrl(hlsSession);
-          return toPlaybackSource(entry, proxyUrl);
+          const qualityRungs = entry.qualityRungs
+            ?.filter((rung) => rung.height > 0 && rung.url)
+            .map((rung) => {
+              const rungSession = createHlsSession(
+                req.userId,
+                rung.url,
+                entry.session
+              );
+              return {
+                height: rung.height,
+                url: buildPlaybackProxyUrl(rungSession),
+                ...(rung.bitrateBps && rung.bitrateBps > 0
+                  ? { bitrateBps: rung.bitrateBps }
+                  : {}),
+              };
+            });
+          return toPlaybackSource(
+            { ...entry, ...(qualityRungs?.length ? { qualityRungs } : {}) },
+            proxyUrl
+          );
         })
       );
 

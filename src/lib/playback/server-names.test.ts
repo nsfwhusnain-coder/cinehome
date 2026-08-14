@@ -39,9 +39,11 @@ describe("getServerDisplayName — Greek theme", () => {
     const solstice = getServerDisplayName("vidking", "hls");
     const phoenix = getServerDisplayName("vidlink", "auto");
     const luna = getServerDisplayName("vixsrc", "");
+    const rock = getServerDisplayName("vidrock", "Rock");
     expect(solstice).not.toBe(phoenix);
     expect(phoenix).not.toBe(luna);
     expect(solstice).not.toBe(luna);
+    expect(rock).toBe("Nemesis");
   });
 
   it("passes through CinePro/LordFlix-style friendly labels via the theme table (never raw)", () => {

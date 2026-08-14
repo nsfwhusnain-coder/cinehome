@@ -16,12 +16,11 @@ const API_HEADERS: Record<string, string> = {
   Accept: "application/json",
 };
 
-export interface VidlinkStream {
-  url: string;
-  quality: string;
-  label: string;
-  score: number;
-}
+export type { VidlinkStream } from "./vidlink-quality";
+import {
+  extractVidlinkStreams,
+  type VidlinkStream,
+} from "./vidlink-quality";
 
 export interface VidlinkSession {
   referer: string;
@@ -52,49 +51,8 @@ function encryptToken(mediaId: string): string {
   return Buffer.from(full).toString("base64url");
 }
 
-function scoreUrl(url: string): number {
-  if (url.includes(".m3u8")) return 100;
-  if (url.includes(".mpd")) {
-    if (url.includes("h265") || url.includes("hevc")) return 80;
-    return 95;
-  }
-  if (url.includes("/h265/") || url.includes("h265")) return 15;
-  if (url.includes(".mp4") && !url.includes(".srt")) return 92;
-  return 30;
-}
-
 function extractUrls(data: unknown): VidlinkStream[] {
-  const found: VidlinkStream[] = [];
-  const walk = (node: unknown) => {
-    if (!node) return;
-    if (typeof node === "string") {
-      if (
-        node.startsWith("http") &&
-        !node.includes(".srt") &&
-        (node.includes(".m3u8") || node.includes(".mp4") || node.includes(".mpd"))
-      ) {
-        const label = node.includes(".m3u8") ? "HLS" : node.includes(".mpd") ? "DASH" : "MP4";
-        found.push({ url: node, quality: "auto", label, score: scoreUrl(node) });
-      }
-      return;
-    }
-    if (Array.isArray(node)) {
-      node.forEach(walk);
-      return;
-    }
-    if (typeof node === "object") {
-      for (const v of Object.values(node as Record<string, unknown>)) walk(v);
-    }
-  };
-  walk(data);
-  const seen = new Set<string>();
-  return found
-    .filter((s) => {
-      if (seen.has(s.url)) return false;
-      seen.add(s.url);
-      return true;
-    })
-    .sort((a, b) => b.score - a.score);
+  return extractVidlinkStreams(data);
 }
 
 export async function resolveVidlinkApi(

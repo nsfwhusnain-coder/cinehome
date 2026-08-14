@@ -35,6 +35,25 @@ export function cinemaosLanguageKey(stream: RankableCinemaosStream): string {
 }
 
 /** One language = one ladder. Other sites expose rungs on a single source. */
+export function groupCinemaosStreamsByLanguage<T extends RankableCinemaosStream>(
+  streams: T[]
+): Array<{ key: string; streams: T[] }> {
+  const sorted = sortCinemaosStreams(streams);
+  const groups = new Map<string, T[]>();
+  for (const stream of sorted) {
+    const key = cinemaosLanguageKey(stream);
+    const list = groups.get(key) ?? [];
+    list.push(stream);
+    groups.set(key, list);
+  }
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (a === "EN") return -1;
+    if (b === "EN") return 1;
+    return a.localeCompare(b);
+  });
+  return keys.map((key) => ({ key, streams: groups.get(key) ?? [] }));
+}
+
 export function keepCinemaosLanguageLadders<T extends RankableCinemaosStream>(
   streams: T[],
   perLanguage = CINEMAOS_MAX_PER_LANGUAGE
@@ -339,32 +358,38 @@ export async function resolveCinemaos(
     }
     if (!result.streams.length) return [];
 
-    const sorted = keepCinemaosLanguageLadders(result.streams).slice(
+    const groups = groupCinemaosStreamsByLanguage(result.streams).slice(
       0,
       MAX_STREAMS
     );
-    let bestEnglishAssigned = false;
     const out: ProviderStream[] = [];
-    const usedLabels = new Set<string>();
-
-    for (const s of sorted) {
-      const isBestEnglish =
-        !bestEnglishAssigned && isCinemaosEnglish(`${s.name} ${s.title}`);
-      if (isBestEnglish) bestEnglishAssigned = true;
-      let label = cinemaosStreamLabel(s, { isBestEnglish });
-      if (usedLabels.has(label)) {
-        label = `${label} ${usedLabels.size + 1}`;
-      }
-      usedLabels.add(label);
+    for (const group of groups) {
+      const best = group.streams[0];
+      if (!best) continue;
+      const isEnglish = group.key === "EN";
+      const label = isEnglish
+        ? "Cinema"
+        : `Cinema ${group.key}`;
+      const qualityRungs = group.streams
+        .map((stream) => ({
+          height: parseInt(stream.quality, 10) || 0,
+          url: stream.url,
+        }))
+        .filter((rung) => rung.height > 0);
+      const maxHeight = qualityRungs[0]?.height;
       out.push({
-        url: s.url,
-        quality: s.quality,
+        url: best.url,
+        quality: best.quality,
         label,
         provider: "CinemaOS",
         type: "mp4",
         referer: `${REFERER_ORIGIN}/`,
         origin: REFERER_ORIGIN,
         userAgent: DEFAULT_UA,
+        ...(maxHeight ? { maxHeight } : {}),
+        ...(qualityRungs.length
+          ? { ladder: qualityRungs.map((rung) => rung.height), qualityRungs }
+          : {}),
       });
     }
     return out;
