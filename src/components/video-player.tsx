@@ -442,8 +442,6 @@ interface Props {
 
 
 
-/** Base label for an audio track (lang-aware); disambiguate duplicates with track index. */
- */
 function findAutoLevelCapIndex(levels: QualityLevel[], maxHeight: number): number {
   let bestIdx = -1;
   let bestBitrate = -1;
