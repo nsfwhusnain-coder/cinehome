@@ -19,6 +19,12 @@ const FIRE_TV_STICK =
 const HISENSE_VIDAA =
   "Mozilla/5.0 (Linux; U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.146 " +
   "Safari/537.36 VIDAA/6.0";
+const HISENSE_PANEL =
+  "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/91.0.4472.114 Safari/537.36 Hisense";
+const HISENSE_PHONE =
+  "Mozilla/5.0 (Linux; Android 12; Hisense H50) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36";
 const DESKTOP_CHROME =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/126.0.0.0 Safari/537.36";
@@ -42,6 +48,7 @@ describe("isTvUserAgent", () => {
     expect(isTvUserAgent(CHROMECAST_GOOGLE_TV)).toBe(true);
     expect(isTvUserAgent(FIRE_TV_STICK)).toBe(true);
     expect(isTvUserAgent(HISENSE_VIDAA)).toBe(true);
+    expect(isTvUserAgent(HISENSE_PANEL)).toBe(true);
   });
 
   it("does not mistake a desktop or a phone for a television", () => {
@@ -49,6 +56,7 @@ describe("isTvUserAgent", () => {
     expect(isTvUserAgent(IPHONE)).toBe(false);
     // Bare Android must not match: only the TV device tokens do.
     expect(isTvUserAgent(ANDROID_PHONE)).toBe(false);
+    expect(isTvUserAgent(HISENSE_PHONE)).toBe(false);
   });
 
   it("does not let the Fire TV pattern match an English word", () => {

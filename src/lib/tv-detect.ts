@@ -52,7 +52,12 @@ const OVERRIDE_STORAGE_KEY = "cinehome.tv-mode";
 
 /** Classify from a user-agent string. Pure, so it tests without a DOM. */
 export function isTvUserAgent(userAgent: string): boolean {
-  return TV_USER_AGENT.test(userAgent) || FIRE_TV_DEVICE.test(userAgent);
+  if (TV_USER_AGENT.test(userAgent) || FIRE_TV_DEVICE.test(userAgent)) {
+    return true;
+  }
+  // Hisense panels often omit VIDAA and just say "Hisense". Phones always
+  // include Mobile; an 85-inch set never does.
+  return /hisense/i.test(userAgent) && !/mobile/i.test(userAgent);
 }
 
 /**
@@ -177,6 +182,7 @@ else{var s=localStorage.getItem(${JSON.stringify(OVERRIDE_STORAGE_KEY)});if(s===
 var t=o;
 if(t===null){var u=navigator.userAgent||"";
 t=new RegExp(${JSON.stringify(TV_USER_AGENT.source)},"i").test(u)||new RegExp(${JSON.stringify(FIRE_TV_DEVICE.source)}).test(u);
+if(!t)t=/hisense/i.test(u)&&!/mobile/i.test(u);
 if(!t){var w=window.innerWidth||d.clientWidth||0;
 t=w>=${TV_MIN_VIEWPORT_WIDTH_PX}&&!matchMedia("(any-hover: hover)").matches&&!matchMedia("(any-pointer: fine)").matches&&(navigator.maxTouchPoints||0)===0}}
 if(t)d.setAttribute("data-tv","1")}catch(e){}})()`;

@@ -47,22 +47,41 @@
 /* Light theme (fallback / "light" option) */
 :root {
   --radius: 1rem;
+  /* Hex first: Hisense VIDAA / Chrome 76 cannot parse oklch() and would
+     otherwise paint default black text or drop the color entirely. */
+  --background: #fafafa;
   --background: oklch(0.99 0.002 280);
+  --foreground: #2c2c34;
   --foreground: oklch(0.18 0.01 280);
+  --card: #ffffff;
   --card: oklch(1 0 0);
+  --card-foreground: #2c2c34;
   --card-foreground: oklch(0.18 0.01 280);
+  --popover: #ffffff;
   --popover: oklch(1 0 0);
+  --popover-foreground: #2c2c34;
   --popover-foreground: oklch(0.18 0.01 280);
+  --primary: #c43c32;
   --primary: oklch(0.55 0.22 25);          /* crimson red */
+  --primary-foreground: #fafafa;
   --primary-foreground: oklch(0.98 0.005 280);
+  --secondary: #eeeeef;
   --secondary: oklch(0.94 0.005 280);
+  --secondary-foreground: #2c2c34;
   --secondary-foreground: oklch(0.18 0.01 280);
+  --muted: #eeeeef;
   --muted: oklch(0.94 0.005 280);
+  --muted-foreground: #6e6e78;
   --muted-foreground: oklch(0.45 0.01 280);
+  --accent: #e8e8ec;
   --accent: oklch(0.92 0.01 280);
+  --accent-foreground: #2c2c34;
   --accent-foreground: oklch(0.18 0.01 280);
+  --destructive: #c43c32;
   --destructive: oklch(0.55 0.24 25);
+  --border: rgba(0, 0, 0, 0.1);
   --border: oklch(0 0 0 / 10%);
+  --input: rgba(0, 0, 0, 0.14);
   --input: oklch(0 0 0 / 14%);
   /* Neutral on purpose. This was oklch(0.55 0.22 25) against a --destructive of
      oklch(0.55 0.24 25): the same hue, 0.02 apart in chroma and indistinguishable
@@ -93,22 +112,39 @@
   /* Page canvas — exact hex so hero bottom scrim can match with zero seam */
   --background: #0a0a0f;
   --canvas: #0a0a0f;
+  --foreground: #f4f4f6;
   --foreground: oklch(0.97 0.003 280);
+  --card: #1c1c24;
   --card: oklch(0.13 0.006 280);
+  --card-foreground: #f4f4f6;
   --card-foreground: oklch(0.97 0.003 280);
+  --popover: #202028;
   --popover: oklch(0.15 0.007 280);
+  --popover-foreground: #f4f4f6;
   --popover-foreground: oklch(0.97 0.003 280);
+  --primary: #e04a3c;
   --primary: oklch(0.62 0.24 25);
+  --primary-foreground: #fafafa;
   --primary-foreground: oklch(0.98 0.005 280);
+  --secondary: #2a2a32;
   --secondary: oklch(0.19 0.008 280);
+  --secondary-foreground: #f4f4f6;
   --secondary-foreground: oklch(0.97 0.003 280);
+  --muted: #2a2a32;
   --muted: oklch(0.19 0.008 280);
+  --muted-foreground: #b4b4bc;
   --muted-foreground: oklch(0.7 0.008 280);
+  --accent: #32323c;
   --accent: oklch(0.23 0.01 280);
+  --accent-foreground: #f4f4f6;
   --accent-foreground: oklch(0.97 0.003 280);
+  --destructive: #e85a4a;
   --destructive: oklch(0.7 0.24 22);
+  --border: rgba(255, 255, 255, 0.12);
   --border: oklch(1 0 0 / 12%);
+  --input: rgba(255, 255, 255, 0.14);
   --input: oklch(1 0 0 / 14%);
+  --ring: #c8c8d0;
   --ring: oklch(0.78 0.02 280);
 }
 
@@ -287,27 +323,90 @@ html[data-tv="1"] {
    across twice the width, so every glyph rendered at half its intended
    physical size. Deriving the root size from the viewport is ratio-agnostic
    and fixes both panels at once: it lands on exactly 20px at 1920, 40px at
-   3840, and the two are the same apparent size from a sofa. */
+   3840, and the two are the same apparent size from a sofa.
+
+   Chrome 76 on Hisense VIDAA does not implement clamp(). A clamp-only rule
+   is discarded and the set falls back to 16px laptop type — the "weird tiny
+   text" report. 20px is the sofa-readable fallback; clamp upgrades it. */
 html[data-tv="1"] {
-  font-size: clamp(18px, calc(100vw / 96), 44px);
+  font-size: 20px;
 }
 
-/* Grayscale antialiasing thins every stroke. That is a fair trade on a phone
-   held at arm's length and a bad one on a panel three metres away, where the
-   thinned stems are most of what makes the text read as soft and smeared. */
+@media (min-width: 2560px) {
+  html[data-tv="1"] {
+    font-size: 28px;
+  }
+}
+
+@media (min-width: 3200px) {
+  html[data-tv="1"] {
+    font-size: 36px;
+  }
+}
+
+@supports (font-size: clamp(1px, 1vw, 2px)) {
+  html[data-tv="1"] {
+    font-size: clamp(18px, calc(100vw / 96), 40px);
+  }
+}
+
+/*
+ * Variable Inter / Montserrat (font-weight: 100 900) is what next/font ships.
+ * Hisense VIDAA and other living-room Chromiums either reject the face or
+ * lock the wght axis at 100, so titles look hairline, stretched, or like a
+ * default serif. System UI faces are already on the panel and stay upright.
+ */
+html[data-tv="1"] {
+  --font-inter: Roboto, "Noto Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-montserrat: Roboto, "Noto Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-geist-mono: ui-monospace, "Roboto Mono", Menlo, Consolas, monospace;
+  --font-sans: Roboto, "Noto Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-display: Roboto, "Noto Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
 html[data-tv="1"] body {
-  -webkit-font-smoothing: auto;
+  font-family: Roboto, "Noto Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  font-synthesis: none;
+  font-feature-settings: normal;
+  font-variation-settings: normal;
+  font-kerning: normal;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #f4f4f6;
+  color: var(--foreground);
 }
 
-/* Sub-normal weights do not survive the viewing distance. */
+/* Sub-normal weights and tight tracking do not survive three metres. */
 html[data-tv="1"] :where(.font-thin, .font-extralight, .font-light) {
   font-weight: 400;
+}
+
+html[data-tv="1"] :where(.font-display, h1, h2, h3) {
+  font-family: Roboto, "Noto Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.015em;
+  line-height: 1.2;
+}
+
+html[data-tv="1"] :where(.tracking-tight, .tracking-tighter) {
+  letter-spacing: 0.01em;
+}
+
+/* CSS filter drop-shadows smear glyphs on TV scalers. A real text-shadow
+   stays sharp. */
+html[data-tv="1"] .drop-shadow {
+  filter: none;
+  text-shadow: 0 2px 10px rgb(0 0 0 / 0.7);
 }
 
 /* Secondary copy at oklch(0.7) over this canvas measures about 5:1 — fine on a
    monitor, marginal once a television's gamma and its picture mode have had
    their say. */
 html[data-tv="1"].dark {
+  --muted-foreground: #d0d0d6;
   --muted-foreground: oklch(0.82 0.006 280);
 }
 
