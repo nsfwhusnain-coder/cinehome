@@ -1,3 +1,5 @@
+import { isTvUserAgent } from "@/lib/tv-detect";
+
 /**
  * What this browser can actually decode.
  *
@@ -142,6 +144,18 @@ export function av1Support(): DecodeSupport {
 }
 
 export function supportsHevc(): boolean {
+  // 4K living-room SoCs decode HEVC in hardware. Hisense VIDAA / Chrome 76
+  // still answers canPlayType("") for every hvc1 string, which hid every 4K
+  // release on the 85-inch set. Trust the panel, not the broken probe.
+  if (typeof navigator !== "undefined" && isTvUserAgent(navigator.userAgent || "")) {
+    return true;
+  }
+  if (
+    typeof document !== "undefined" &&
+    document.documentElement?.getAttribute("data-tv") === "1"
+  ) {
+    return true;
+  }
   return hevcSupport().supported;
 }
 

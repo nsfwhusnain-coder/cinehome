@@ -344,12 +344,9 @@ function nativeCandidatesAt(
 }
 
 function safariCandidatesAt(candidates: DebridCandidate[], height: 1080 | 2160): DebridCandidate[] {
-  return candidates.filter(
-    (c) =>
-      c.compat === "safari" &&
-      c.resolutionHeight === height &&
-      isDirectPlayDebridRelease(c.container, c.audioCodec)
-  );
+  // HEVC 4K almost always ships as MKV. The native-slot MP4-only rule must
+  // not apply here or Hades disappears and a TV only sees 1080p.
+  return candidates.filter((c) => c.compat === "safari" && c.resolutionHeight === height);
 }
 
 /**
@@ -500,7 +497,10 @@ async function resolveSlotCandidate(
       resolved.directUrl,
       resolved.container
     );
-    if (!isDirectPlayDebridRelease(effectiveContainer, resolved.audioCodec)) {
+    if (
+      resolved.compat === "native" &&
+      !isDirectPlayDebridRelease(effectiveContainer, resolved.audioCodec)
+    ) {
       continue;
     }
     if (effectiveContainer === "unknown") {
@@ -654,7 +654,9 @@ async function readCachedRdSlots(
         hit.container
       );
       const release = parseReleaseTitle(hit.title);
+      const slot = RD_SLOTS[index]!;
       if (
+        slot.startsWith("native-") &&
         validation.acceptable &&
         !isDirectPlayDebridRelease(effectiveContainer, release.audioCodec)
       ) {

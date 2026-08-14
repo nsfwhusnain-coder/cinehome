@@ -107,7 +107,11 @@ function persistOverride(enabled: boolean): void {
  * would silently lapse on the next launch.
  */
 function readOverride(): boolean | null {
-  const forced = new URLSearchParams(window.location.search).get("tv");
+  const search =
+    typeof window.location === "object" && window.location
+      ? window.location.search
+      : "";
+  const forced = new URLSearchParams(search).get("tv");
   if (forced === "1" || forced === "0") {
     const enabled = forced === "1";
     persistOverride(enabled);
@@ -120,7 +124,7 @@ function detect(): { isTv: boolean; reason: TvReason } {
   const override = readOverride();
   if (override !== null) return { isTv: override, reason: "override" };
 
-  if (isTvUserAgent(window.navigator.userAgent || "")) {
+  if (isTvUserAgent(window.navigator?.userAgent || "")) {
     return { isTv: true, reason: "user-agent" };
   }
 

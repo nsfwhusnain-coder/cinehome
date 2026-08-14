@@ -322,6 +322,30 @@ describe("Real-Debrid roster — full + fast paths", () => {
     expect(safari2160[0]?.codec).toBe("hevc");
   });
 
+  it("full path: HEVC 4K MKV still fills safari-2160 when no MP4 Ultra exists", async () => {
+    const MKV_2160_HASH = "9".repeat(40);
+    mockTorrentioStreams([
+      {
+        title: "Movie.2024.1080p.WEB-DL.H264-GRP\n👤 40 💾 3 GB ⚙️ X",
+        infoHash: NATIVE_1080_HASHES[0],
+        fileIdx: 0,
+        url: resolveProxyUrl(NATIVE_1080_HASHES[0], 0, "movie.1080p.h264.mp4"),
+      },
+      {
+        title: "Movie.2024.2160p.UHD.BluRay.x265.HDR.mkv\n👤 80 💾 35 GB ⚙️ X",
+        infoHash: MKV_2160_HASH,
+        fileIdx: 0,
+        url: resolveProxyUrl(MKV_2160_HASH, 0, "movie.2160p.hevc.hdr.mkv"),
+      },
+    ]);
+
+    const sources = await resolveDebridSources({ tmdbId: 3, mediaType: "movie" });
+    const safari2160 = sources.filter((s) => s.compat === "safari" && s.maxHeight === 2160);
+    expect(safari2160.length).toBe(1);
+    expect(safari2160[0]?.url).toContain(MKV_2160_HASH);
+    expect(safari2160[0]?.codec).toBe("hevc");
+  });
+
   it("full path: repeat resolve is a pure cache read (zero Torrentio/RD network calls)", async () => {
     mockTorrentioStreams(buildStreams());
     const first = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });

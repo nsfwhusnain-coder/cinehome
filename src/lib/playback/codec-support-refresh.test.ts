@@ -37,6 +37,7 @@ afterEach(() => {
   delete (globalThis as Mutable).window;
   delete (globalThis as Mutable).MediaSource;
   delete (globalThis as Mutable).navigator;
+  delete (globalThis as Mutable).document;
   resetDecodeCapabilityCache();
 });
 
@@ -58,6 +59,29 @@ describe("server-side probe is never cached", () => {
 
     // Cached: flipping the underlying probe must not change the answer.
     (globalThis as Mutable).MediaSource = { isTypeSupported: () => false };
+    expect(supportsHevc()).toBe(true);
+  });
+});
+
+describe("living-room HEVC trust", () => {
+  it("treats a Hisense panel as HEVC-capable even when canPlayType is empty", () => {
+    // VIDAA Chrome 76 answers "" for every hvc1 string. That used to hide
+    // every 4K HEVC release on the 85-inch set.
+    installFakeBrowser(false);
+    (globalThis as Mutable).navigator = {
+      userAgent:
+        "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/91.0.4472.114 Safari/537.36 Hisense",
+    };
+    expect(supportsHevc()).toBe(true);
+  });
+
+  it("also trusts the data-tv marker when the UA is disguised", () => {
+    installFakeBrowser(false);
+    (globalThis as Mutable).navigator = { userAgent: "Mozilla/5.0 Chrome/76.0" };
+    (globalThis as Mutable).document = {
+      documentElement: { getAttribute: (name: string) => (name === "data-tv" ? "1" : null) },
+    };
     expect(supportsHevc()).toBe(true);
   });
 });

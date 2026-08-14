@@ -41,22 +41,17 @@ const DESKTOP_PROFILE: MediaBufferProfile = {
 };
 
 /**
- * TV values. Roughly a quarter of the desktop memory envelope, which is the
- * band where a webOS tab holds a 1080p ladder without the SourceBuffer
- * competing against the app for heap.
- *
- * The ABR estimate drops to 5 Mbps because televisions are overwhelmingly on
- * Wi-Fi with weaker radios than a laptop; opening at 10 Mbps invites an
- * immediate over-reach, a stall, and the punitive downshift that follows.
- * Starting lower and climbing on measurement is strictly faster to steady 1080p
- * than starting high and collapsing.
+ * TV values. Smaller than desktop so a webOS/VIDAA tab does not OOM, but
+ * large enough that a 4K HEVC fragment (~4–8 MB) fits. The previous 16 MB
+ * ceiling plus a 5 Mbps ABR guess made hls.js treat 4K as unsustainable, so
+ * an 85-inch set only ever locked 1080p even when the ladder had Ultra.
  */
 const TV_PROFILE: MediaBufferProfile = {
-  maxBufferLengthS: 12,
-  maxMaxBufferLengthS: 24,
-  maxBufferSizeBytes: 16_000_000,
-  backBufferLengthS: 10,
-  abrInitialEstimateBps: 5_000_000,
+  maxBufferLengthS: 16,
+  maxMaxBufferLengthS: 32,
+  maxBufferSizeBytes: 48_000_000,
+  backBufferLengthS: 12,
+  abrInitialEstimateBps: 12_000_000,
 };
 
 /**

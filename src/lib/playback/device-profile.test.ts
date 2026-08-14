@@ -50,17 +50,23 @@ describe("bufferProfileFor", () => {
     });
   });
 
-  it("gives a TV a materially smaller memory envelope", () => {
+  it("gives a TV a smaller duration envelope than desktop", () => {
     const tv = bufferProfileFor("tv");
     const desktop = bufferProfileFor("desktop");
-    expect(tv.maxBufferSizeBytes).toBeLessThan(desktop.maxBufferSizeBytes / 2);
+    expect(tv.maxBufferSizeBytes).toBeLessThan(desktop.maxBufferSizeBytes);
     expect(tv.maxMaxBufferLengthS).toBeLessThan(desktop.maxMaxBufferLengthS);
     expect(tv.backBufferLengthS).toBeLessThan(desktop.backBufferLengthS);
   });
 
-  it("opens ABR lower on a TV so an over-reach cannot trigger the collapse", () => {
-    expect(bufferProfileFor("tv").abrInitialEstimateBps).toBeLessThan(
-      bufferProfileFor("desktop").abrInitialEstimateBps
+  it("still reserves enough bytes for a 4K HEVC fragment", () => {
+    expect(bufferProfileFor("tv").maxBufferSizeBytes).toBeGreaterThanOrEqual(
+      40_000_000
+    );
+  });
+
+  it("opens ABR high enough on a TV that 4K is eligible", () => {
+    expect(bufferProfileFor("tv").abrInitialEstimateBps).toBeGreaterThanOrEqual(
+      10_000_000
     );
   });
 
