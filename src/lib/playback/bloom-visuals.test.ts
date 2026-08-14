@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import {
   bloomChips,
   bloomPhase,
+  bloomPhaseCopy,
+  bloomRosterCopy,
   hexToHue,
   MAX_CHIPS,
   premiumSourceCount,
@@ -78,6 +80,20 @@ describe("bloomPhase", () => {
   it("does not claim a stage from a count alone", () => {
     // Sources existing is not the same as having chosen one.
     expect(bloomPhase(null, 9)).toBe("searching");
+  });
+});
+
+describe("bloomPhaseCopy / bloomRosterCopy", () => {
+  it("maps each phase to a short title-card line", () => {
+    expect(bloomPhaseCopy("searching")).toBe("Searching");
+    expect(bloomPhaseCopy("connecting")).toBe("Preparing");
+    expect(bloomPhaseCopy("buffering")).toBe("Opening");
+  });
+
+  it("hides the roster until a source exists", () => {
+    expect(bloomRosterCopy(0)).toBeNull();
+    expect(bloomRosterCopy(1)).toBe("1 source");
+    expect(bloomRosterCopy(4)).toBe("4 sources");
   });
 });
 

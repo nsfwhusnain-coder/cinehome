@@ -82,7 +82,7 @@ const OUT_DIR =
   process.env.CINEBY_PLAYER_OUT_DIR || "/app/.browser-qa/cineby-player-pass";
 const WATCH_PATH = process.env.CINEBY_PLAYER_WATCH_PATH || "/watch/movie/550";
 const EXPECTED_TABS = ["Quality", "Sources", "Subtitles", "Audio", "Speed"];
-const EXPECTED_QUALITIES = ["Auto", "4K", "1440p", "1080p", "720p", "480p", "360p"];
+const EXPECTED_QUALITIES = ["Auto", "4K", "1080p", "720p", "480p", "360p"];
 const checks: Check[] = [];
 
 function record(
@@ -222,7 +222,7 @@ async function auditSheet(
   await dialog.getByRole("tab", { name: "Quality", exact: true }).click();
   const qualityButtons = dialog
     .getByRole("button")
-    .filter({ hasText: /^(?:Auto|4K|1440p|1080p|720p|480p|360p)(?:\s|$)/ });
+    .filter({ hasText: /^(?:Auto|4K|1080p|720p|480p|360p)(?:\s|$)/ });
   const qualityLabels = (await qualityButtons.allTextContents()).map((text) =>
     text.replace(/·.*$/, "").trim()
   );

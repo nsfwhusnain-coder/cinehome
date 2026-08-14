@@ -13,6 +13,7 @@ describe("profile playback preferences", () => {
   test("validates quality defaults independently of browser storage", () => {
     expect(parsePlaybackQualityPreference("auto")).toBe("auto");
     expect(parsePlaybackQualityPreference("2160")).toBe(2160);
+    expect(parsePlaybackQualityPreference("1440")).toBe(2160);
     expect(parsePlaybackQualityPreference(720)).toBe(720);
     expect(parsePlaybackQualityPreference(320)).toBeNull();
     expect(parsePlaybackQualityPreference("best")).toBeNull();

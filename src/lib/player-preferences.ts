@@ -62,7 +62,7 @@ export function setPreferredProvider(provider: string): void {
 /**
  * Preferred height in pixels (e.g. 1080, 2160) or auto.
  * Product rule: **1080p minimum** — never return a preference below 1080.
- * "auto" = ABR among 1080 / 1440 / 4K only (player enforces floor).
+ * "auto" = ABR among 1080 / 4K only (player enforces floor).
  */
 export function getPreferredQualityHeight(): PlaybackQualityPreference {
   if (typeof window === "undefined") {

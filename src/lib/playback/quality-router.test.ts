@@ -30,7 +30,7 @@ describe("quality router", () => {
     expect(normalizePlayerQualityHeight(2160)).toBe(2160);
     expect(normalizePlayerQualityHeight(1080)).toBe(1080);
     expect(normalizePlayerQualityHeight(800)).toBe(720);
-    expect(normalizePlayerQualityHeight(1440)).toBe(1440);
+    expect(normalizePlayerQualityHeight(1440)).toBe(1080);
   });
 
   it("keeps the same stable rail and marks real availability", () => {
@@ -47,7 +47,6 @@ describe("quality router", () => {
     expect(options.map((option) => option.label)).toEqual([
       "Auto",
       "4K",
-      "1440p",
       "1080p",
       "720p",
       "480p",

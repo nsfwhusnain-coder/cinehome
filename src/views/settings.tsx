@@ -520,7 +520,6 @@ function PlaybackPreferencesSection() {
             <SelectContent>
               <SelectItem value="auto">Auto — 1080p now, 4K when available</SelectItem>
               <SelectItem value="2160">Ultra — 4K when available</SelectItem>
-              <SelectItem value="1440">Higher — 1440p when available</SelectItem>
               <SelectItem value="1080">High — 1080p</SelectItem>
               <SelectItem value="720">Balanced — 720p</SelectItem>
               <SelectItem value="480">Data saver — 480p</SelectItem>

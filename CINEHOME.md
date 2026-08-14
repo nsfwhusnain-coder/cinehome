@@ -200,7 +200,7 @@ docker run --rm --network host \
 ### Cineby-style quality/source acceptance pass
 
 The player has one responsive playback sheet with five stable tabs: **Quality,
-Sources, Subtitles, Audio, Speed**. Quality always shows `Auto`, `4K`, `1440p`,
+Sources, Subtitles, Audio, Speed**. Quality always shows `Auto`, `4K`,
 `1080p`, `720p`, `480p`, and `360p`; unavailable rungs remain visible but
 disabled. `Auto` is the profile default. A fixed default is stored per user in
 `UserSetting` through `/api/preferences`; a one-off in-player switch applies

@@ -4,7 +4,7 @@ export const AUDIO_PREFERENCE_SETTING_KEY = "audio_preference";
 export const SUBTITLE_PREFERENCE_SETTING_KEY = "subtitle_preference";
 export const FOUR_K_STARTUP_SETTING_KEY = "four_k_startup";
 
-export const PLAYBACK_QUALITY_HEIGHTS = [2160, 1440, 1080, 720, 480, 360] as const;
+export const PLAYBACK_QUALITY_HEIGHTS = [2160, 1080, 720, 480, 360] as const;
 export type PlaybackQualityHeight = (typeof PLAYBACK_QUALITY_HEIGHTS)[number];
 export type PlaybackQualityPreference = "auto" | PlaybackQualityHeight;
 export type AudioPreference = "original" | "english" | "preferred";
@@ -39,7 +39,11 @@ export function parsePlaybackQualityPreference(
       : typeof value === "string" && value.trim() !== ""
         ? Number(value)
         : Number.NaN;
-  return Number.isFinite(parsed) && PLAYBACK_QUALITY_SET.has(parsed)
+  if (!Number.isFinite(parsed)) return null;
+  // 1440p was retired — almost no title has that rung. Old Ultra-adjacent
+  // "Higher" profiles become Ultra so 4K still wins when it exists.
+  if (parsed === 1440) return 2160;
+  return PLAYBACK_QUALITY_SET.has(parsed)
     ? (parsed as PlaybackQualityHeight)
     : null;
 }

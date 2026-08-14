@@ -94,6 +94,20 @@ export function bloomPhase(status: string | null, sourceCount: number): BloomPha
   return "searching";
 }
 
+/** Honest, short title-card copy. Never a fake percent. */
+export function bloomPhaseCopy(phase: BloomPhase): string {
+  if (phase === "buffering") return "Opening";
+  if (phase === "connecting") return "Preparing";
+  return "Searching";
+}
+
+/** Roster line — omitted entirely until a real source exists. */
+export function bloomRosterCopy(sourceCount: number): string | null {
+  const n = Math.max(0, Math.floor(sourceCount));
+  if (n <= 0) return null;
+  return n === 1 ? "1 source" : `${n} sources`;
+}
+
 /** Beyond this the ring stops reading as countable and starts reading as texture. */
 export const MAX_CHIPS = 12;
 

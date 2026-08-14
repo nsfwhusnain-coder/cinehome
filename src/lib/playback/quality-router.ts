@@ -9,7 +9,7 @@ import {
 import { effectiveLevelHeight } from "./hls-quality";
 
 /** Cineby-style stable rail. A rung stays visible even while it is unavailable. */
-export const PLAYER_QUALITY_HEIGHTS = [2160, 1440, 1080, 720, 480, 360] as const;
+export const PLAYER_QUALITY_HEIGHTS = [2160, 1080, 720, 480, 360] as const;
 export type PlayerQualityHeight = (typeof PLAYER_QUALITY_HEIGHTS)[number];
 export type PlayerQualityTarget = "auto" | PlayerQualityHeight;
 export type PlayerQualityStatus =
@@ -44,8 +44,7 @@ export function normalizePlayerQualityHeight(
   height: number
 ): PlayerQualityHeight | null {
   if (height >= 1800) return 2160;
-  if (height >= 1400 && height < 1800) return 1440;
-  if (height >= 850 && height < 1400) return 1080;
+  if (height >= 850 && height < 1800) return 1080;
   if (height >= 600 && height < 850) return 720;
   if (height >= 400 && height < 600) return 480;
   if (height >= 280 && height < 400) return 360;

@@ -681,12 +681,12 @@ function findAutoLevelCapIndex(levels: QualityLevel[], maxHeight: number): numbe
  *  - "adaptive" (default, Netflix/YouTube): under sustained starvation (buffer
  *    < ADAPTIVE_STARVATION_BUFFER_S) drop one rung toward ADAPTIVE_FLOOR_MIN_HEIGHT
  *    to keep video playing; once buffer recovers past ADAPTIVE_CLIMB_BACK_BUFFER_S,
- *    hand control back to Auto ABR so it can climb to 1440/4K again. This is the
+ *    hand control back to Auto ABR so it can climb to 4K again. This is the
  *    "drop quality to avoid a stall, then ramp back up" behavior real streaming
  *    services use.
  *
  * Never force-pin `currentLevel` while Auto is active (`currentLevel === -1`) —
- * that would permanently disable ABR climb to 1440/4K. Auto gets load/nextLevel/
+ * that would permanently disable ABR climb to 4K. Auto gets load/nextLevel/
  * startLevel nudges; fixed prefs re-pin currentLevel.
  */
 export interface AdaptiveRecoverContext {
@@ -752,7 +752,7 @@ function recoverHlsAdaptive(
   );
 
   // CLIMB-BACK: buffer recovered and we're below floor/locked low → release to
-  // Auto ABR so it can climb toward the floor / 1440 / 4K again. Only under adaptive.
+  // Auto ABR so it can climb toward the floor / 4K again. Only under adaptive.
   if (
     adaptive &&
     curH > 0 &&
@@ -909,7 +909,7 @@ function switchHlsLevelSmooth(hls: Hls, levelIndex: number): number {
 }
 
 /**
- * Always force ≥1080 immediately. "Auto" = ABR only among 1080/1440/4K, never below.
+ * Always force ≥1080 immediately. "Auto" = ABR only among 1080/4K, never below.
  */
 function applyPreferredHlsQuality(
   hls: Hls,
@@ -922,7 +922,7 @@ function applyPreferredHlsQuality(
   hls.capLevelToPlayerSize = false;
 
   if (prefRaw === "auto") {
-    // currentLevel/nextLevel stay -1 so ABR can climb to 1440/4K. Seed only
+    // currentLevel/nextLevel stay -1 so ABR can climb to 4K. Seed only
     // startLevel/loadLevel at lowest >=1080 (never absolute max / 4K default).
     // Floor enforcement mid-play uses nextLevel in LEVEL_SWITCHING (smooth,
     // non-flushing) — never currentLevel unless a fixed user pick requires it.
