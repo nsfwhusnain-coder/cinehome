@@ -28,6 +28,7 @@ import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
 import {
+  isLanguageRescueUpgrade,
   pickClientStartupSource,
   ROSTER_HEIGHT_UPGRADE_PX,
   shouldAdoptRosterUpgrade,
@@ -1891,7 +1892,14 @@ export function VideoPlayer({
       : pickDefaultSource(pool, preferred, preferredHeight);
 
     if (stillValid && !activeFailed && activeSource && best) {
-      if (userSelectedSourceRef.current || everPlayedRef.current) {
+      if (userSelectedSourceRef.current) {
+        return;
+      }
+      // Stay sticky after first frame, except Hindi/Arabic → English.
+      if (
+        everPlayedRef.current &&
+        !isLanguageRescueUpgrade(activeSource, best)
+      ) {
         return;
       }
       // Cold start only: jump to multi-rung / better ranked source before first frame.

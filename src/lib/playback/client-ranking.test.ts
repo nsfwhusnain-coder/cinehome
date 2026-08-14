@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PlaybackSource } from "./types";
 import {
+  isLanguageRescueUpgrade,
   pickClientStartupSource,
   shouldAdoptRosterUpgrade,
 } from "./client-ranking";
@@ -83,6 +84,57 @@ describe("client startup ranking", () => {
     expect(decision.immediate?.id).toBe("direct-4k");
     expect(decision.deferredFourK).toBeNull();
   });
+
+  test("does not treat Hindi CinemaOS 1080 as the fast-start HD source", () => {
+    const hindi1080: PlaybackSource = {
+      id: "cinema-hi",
+      url: "https://example.test/cinema-hi.mp4",
+      provider: "CinemaOS",
+      label: "Cinema HI 1080",
+      quality: "1080p",
+      maxHeight: 1080,
+      type: "mp4",
+      codec: "h264",
+      container: "mp4",
+      origin: "embed",
+    };
+    const decision = pickClientStartupSource([remux4k, hindi1080], {
+      preferredHeight: 2160,
+      fourKStartup: "fast",
+    });
+    expect(decision.immediate?.id).toBe("remux-4k");
+    expect(decision.deferredFourK).toBeNull();
+  });
+
+  test("fast-starts English Luna, not Hindi 1080, and still defers remux 4K", () => {
+    const hindi1080: PlaybackSource = {
+      id: "cinema-hi",
+      url: "https://example.test/cinema-hi.mp4",
+      provider: "CinemaOS",
+      label: "Cinema HI",
+      quality: "1080p",
+      maxHeight: 1080,
+      type: "mp4",
+      codec: "h264",
+      container: "mp4",
+    };
+    const luna: PlaybackSource = {
+      id: "luna",
+      url: "https://example.test/luna.m3u8",
+      provider: "Vixsrc",
+      label: "Luna",
+      quality: "1080p",
+      maxHeight: 1080,
+      type: "hls",
+      codec: "h264",
+    };
+    const decision = pickClientStartupSource([hindi1080, remux4k, luna], {
+      preferredHeight: 2160,
+      fourKStartup: "fast",
+    });
+    expect(decision.immediate?.id).toBe("luna");
+    expect(decision.deferredFourK?.id).toBe("remux-4k");
+  });
 });
 
 describe("shouldAdoptRosterUpgrade", () => {
@@ -158,5 +210,34 @@ describe("shouldAdoptRosterUpgrade", () => {
         userPicked: false,
       })
     ).toBe(true);
+  });
+
+  test("rescues Hindi 1080 to English even after first frame", () => {
+    const hindi1080: PlaybackSource = {
+      ...direct1080,
+      id: "cinema-hi",
+      provider: "CinemaOS",
+      label: "Cinema HI 1080",
+      origin: "embed",
+    };
+    expect(isLanguageRescueUpgrade(hindi1080, remux4k)).toBe(true);
+    expect(
+      shouldAdoptRosterUpgrade({
+        current: hindi1080,
+        candidate: remux4k,
+        everPlayed: true,
+        fourKStartup: "fast",
+        userPicked: false,
+      })
+    ).toBe(true);
+    expect(
+      shouldAdoptRosterUpgrade({
+        current: direct1080,
+        candidate: hindi1080,
+        everPlayed: false,
+        fourKStartup: "fast",
+        userPicked: false,
+      })
+    ).toBe(false);
   });
 });

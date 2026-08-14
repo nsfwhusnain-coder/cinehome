@@ -2,10 +2,12 @@ import type { FourKStartupPreference } from "@/lib/profile-preferences";
 import type { PlaybackSource } from "./types";
 import {
   HD_FLOOR_HEIGHT,
+  isEnglishPreferredSource,
   isFasterSource,
   isMeaningfullyRicherSource,
   isMultiRendition,
   pickDefaultSource,
+  sourceAudioLanguageRank,
   sourceDelivery,
   sourceMaxHeight,
 } from "./source-quality";
@@ -32,14 +34,24 @@ export interface RosterUpgradeDecision {
 function isDirectHdSource(source: PlaybackSource): boolean {
   return (
     sourceDelivery(source) === "direct" &&
-    sourceMaxHeight(source) >= HD_FLOOR_HEIGHT
+    sourceMaxHeight(source) >= HD_FLOOR_HEIGHT &&
+    isEnglishPreferredSource(source)
   );
+}
+
+/** True when the candidate is a better household language than the current row. */
+export function isLanguageRescueUpgrade(
+  current: PlaybackSource,
+  candidate: PlaybackSource
+): boolean {
+  return sourceAudioLanguageRank(candidate) > sourceAudioLanguageRank(current);
 }
 
 function isRemuxUhdSource(source: PlaybackSource): boolean {
   return (
     sourceDelivery(source) === "remux" &&
-    sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT
+    sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT &&
+    isEnglishPreferredSource(source)
   );
 }
 
@@ -54,13 +66,24 @@ export function shouldAdoptRosterUpgrade(
 ): boolean {
   const { current, candidate, everPlayed, fourKStartup, userPicked } = options;
   if (candidate.id === current.id) return false;
-  if (userPicked || everPlayed) return false;
+  if (userPicked) return false;
+
+  const currentLang = sourceAudioLanguageRank(current);
+  const candidateLang = sourceAudioLanguageRank(candidate);
+  if (candidateLang < currentLang) return false;
 
   const candidateRemux = sourceDelivery(candidate) === "remux";
-  const currentDirect = sourceDelivery(current) === "direct";
-  if (candidateRemux && currentDirect && fourKStartup !== "maximum") {
+  const currentEnglishDirect =
+    sourceDelivery(current) === "direct" &&
+    sourceMaxHeight(current) >= HD_FLOOR_HEIGHT &&
+    isEnglishPreferredSource(current);
+  // Hindi/Arabic 1080 is not a reason to block English remux 4K.
+  if (candidateRemux && currentEnglishDirect && fourKStartup !== "maximum") {
     return false;
   }
+
+  if (everPlayed && candidateLang <= currentLang) return false;
+  if (candidateLang > currentLang) return true;
 
   const betterMulti =
     isMultiRendition(candidate) && !isMultiRendition(current);

@@ -5,14 +5,35 @@
  * Tier order:
  *   0. Clean over never-auto-default (poison + trailer/sample/preview)
  *   1. Verified over soft-kept
- *   2. known height ≥ HD_FLOOR (1080)
- *   3. unknown height (≤ 0)
- *   4. known sub-HD
+ *   2. English / unlabeled over explicit foreign audio
+ *   3. known height ≥ HD_FLOOR (1080)
+ *   4. unknown height (≤ 0)
+ *   5. known sub-HD
  */
 
 import { isNeverAutoDefaultSource } from "./poison-url";
 
 export const HD_FLOOR_HEIGHT = 1080;
+
+/**
+ * Household default is English. Keep in sync with
+ * src/lib/playback/source-quality.ts `sourceAudioLanguageRank`.
+ */
+const FOREIGN_AUDIO_NAME =
+  /\b(hindi|arabic|french|spanish|german|portuguese|tamil|telugu|malayalam|bengali|italian|russian|turkish|indonesian|thai|vietnamese|dutch|polish|urdu|punjabi|marathi|kannada|mandarin|cantonese|korean|japanese|hebrew|persian|farsi)\b/i;
+const FOREIGN_CINEMA_CODE =
+  /\bcinema[ ._-]?(hi|ar|fr|es|de|pt|ta|te|ml|bn|it|ru|tr|id|th|vi|nl|pl|ur|pa|mr|kn|zh|ko|ja|he|fa|xx)\b/i;
+const ENGLISH_AUDIO_NAME =
+  /\benglish\b|\bcinema en\b|\bcinema-en\b|\(en\)/i;
+
+/** 2 = English/unlabeled, 1 = Cinema XX, 0 = explicit non-English. */
+export function sourceAudioLanguageRank(source: RankableSource): number {
+  const text = `${source.label ?? ""} ${source.provider ?? ""}`;
+  if (ENGLISH_AUDIO_NAME.test(text)) return 2;
+  if (/\bcinema[ ._-]?xx\b/i.test(text)) return 1;
+  if (FOREIGN_CINEMA_CODE.test(text) || FOREIGN_AUDIO_NAME.test(text)) return 0;
+  return 2;
+}
 
 /** Minimal shape needed for default ranking (SourceEntry-compatible). */
 export interface RankableSource {
@@ -156,6 +177,10 @@ export function sortSourcesForDefault<T extends RankableSource>(
     const aVer = isRankableVerified(a) ? 1 : 0;
     const bVer = isRankableVerified(b) ? 1 : 0;
     if (aVer !== bVer) return bVer - aVer;
+
+    const aLang = sourceAudioLanguageRank(a);
+    const bLang = sourceAudioLanguageRank(b);
+    if (aLang !== bLang) return bLang - aLang;
 
     const aH = effectiveMaxHeight(a, inferHeight);
     const bH = effectiveMaxHeight(b, inferHeight);

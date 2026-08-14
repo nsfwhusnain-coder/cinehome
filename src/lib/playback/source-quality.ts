@@ -932,6 +932,10 @@ export function sortSourcesForPicker(sources: PlaybackSource[]): PlaybackSource[
     // to the bottom — still listed, since inventory is real, but never above
     // something that plays. Same rule the auto-pick uses, so the list's top
     // row and the source that actually starts agree.
+    const aLang = sourceAudioLanguageRank(a);
+    const bLang = sourceAudioLanguageRank(b);
+    if (aLang !== bLang) return bLang - aLang;
+
     const deliveryOrder = compareDelivery(a, b, sourceMaxHeight(a), sourceMaxHeight(b));
     if (deliveryOrder !== 0) return deliveryOrder;
 
@@ -1049,10 +1053,33 @@ export function isFasterSource(current: PlaybackSource, candidate: PlaybackSourc
 }
 
 /**
- * Failover priority (higher = preferred when quality similar):
- * Solstice → Pulse → Luna → Phoenix (H264 HLS only) → Nova → Orion → …
- * Phoenix HEVC/DASH heavily demoted. Luna stays playable but never default over Solstice.
+ * Household default is English. CinemaOS (and a few other hosts) ship one
+ * row per language; after remux-avoidance treated *any* direct 1080 as a
+ * valid start, Hindi/Arabic 1080 MP4s beat Luna/Kronos and blocked 4K remux.
+ *
+ * 2 = English or unlabeled mainstream (debrid, Luna, Quasar, "Cinema")
+ * 1 = unknown locale (Cinema XX)
+ * 0 = explicit non-English
  */
+const FOREIGN_AUDIO_NAME =
+  /\b(hindi|arabic|french|spanish|german|portuguese|tamil|telugu|malayalam|bengali|italian|russian|turkish|indonesian|thai|vietnamese|dutch|polish|urdu|punjabi|marathi|kannada|mandarin|cantonese|korean|japanese|hebrew|persian|farsi)\b/i;
+const FOREIGN_CINEMA_CODE =
+  /\bcinema[ ._-]?(hi|ar|fr|es|de|pt|ta|te|ml|bn|it|ru|tr|id|th|vi|nl|pl|ur|pa|mr|kn|zh|ko|ja|he|fa|xx)\b/i;
+const ENGLISH_AUDIO_NAME =
+  /\benglish\b|\bcinema en\b|\bcinema-en\b|\(en\)/i;
+
+export function sourceAudioLanguageRank(source: PlaybackSource): number {
+  const text = `${source.label} ${source.provider}`;
+  if (ENGLISH_AUDIO_NAME.test(text)) return 2;
+  if (/\bcinema[ ._-]?xx\b/i.test(text)) return 1;
+  if (FOREIGN_CINEMA_CODE.test(text) || FOREIGN_AUDIO_NAME.test(text)) return 0;
+  return 2;
+}
+
+export function isEnglishPreferredSource(source: PlaybackSource): boolean {
+  return sourceAudioLanguageRank(source) >= 2;
+}
+
 /**
  * Household home-proxy rank (higher = better default).
  * Solstice first: direct CDN + known referer overrides, single hop.
@@ -1098,6 +1125,9 @@ function sourceFailoverPriority(source: PlaybackSource): number {
     return 70;
   }
   if (p.includes("cinemaos") || l === "cinema" || l.startsWith("cinema ")) {
+    if (sourceAudioLanguageRank(source) < 2) {
+      return sourceMaxHeight(source) >= 1080 ? 18 : 10;
+    }
     return sourceMaxHeight(source) >= 1080 ? 76 : 60;
   }
   if (isLunaSource(source)) return 50;
@@ -1262,23 +1292,27 @@ export function pickDefaultSource(
   // lean saved 1080p source must not suppress a meaningfully richer 1080p
   // encode (and can never override an available Ultra target).
   const pref = (preferredProvider || DEFAULT_SOURCE_KEY || "").trim();
-  const hasDirectHd = pickPool.some(
+  const hasEnglishDirectHd = pickPool.some(
     (source) =>
       sourceDelivery(source) === "direct" &&
-      sourceMaxHeight(source) >= HD_FLOOR_HEIGHT
+      sourceMaxHeight(source) >= HD_FLOOR_HEIGHT &&
+      isEnglishPreferredSource(source)
   );
 
   // Ranking only — never filters the pool empty.
-  // Poison gate first, then remux-vs-direct, then height tiers / probe / prio.
+  // Poison gate first, then English, then remux-vs-direct, then height / prio.
   const sorted = [...pickPool].sort((a, b) => {
     const aPoison = isPoisonStreamUrl(a.url) ? 1 : 0;
     const bPoison = isPoisonStreamUrl(b.url) ? 1 : 0;
     if (aPoison !== bPoison) return aPoison - bPoison;
 
-    // Auto-default only: a working direct ≥1080 must start immediately.
-    // Remux 4K stays visible in the picker (sortSourcesForPicker) and can
-    // still be user-picked or prewarmed after first frame.
-    if (hasDirectHd) {
+    const aLang = sourceAudioLanguageRank(a);
+    const bLang = sourceAudioLanguageRank(b);
+    if (aLang !== bLang) return bLang - aLang;
+
+    // Auto-default only: English direct ≥1080 starts immediately.
+    // A Hindi 1080 MP4 is not a reason to sink English remux 4K or Kronos.
+    if (hasEnglishDirectHd) {
       const aRemux = sourceDelivery(a) === "remux" ? 1 : 0;
       const bRemux = sourceDelivery(b) === "remux" ? 1 : 0;
       if (aRemux !== bRemux) return aRemux - bRemux;

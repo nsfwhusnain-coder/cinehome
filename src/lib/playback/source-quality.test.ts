@@ -13,6 +13,8 @@ import {
   pickDefaultSource,
   qualityBadge,
   resolvePreferredHeightTarget,
+  sourceAudioLanguageRank,
+  isEnglishPreferredSource,
   sortSourcesForPicker,
   sourceMaxHeight,
   sourceRosterMaxHeight,
@@ -1147,6 +1149,88 @@ describe("findQualityUpgradeSource — never upgrades to an unplayable-here sour
       720
     );
     expect(next?.id).toBe("native-hd");
+  });
+});
+
+describe("pickDefaultSource — English over foreign CinemaOS", () => {
+  const hindi1080 = makeSource({
+    id: "cinema-hi",
+    provider: "CinemaOS",
+    label: "Cinema HI 1080",
+    type: "mp4",
+    maxHeight: 1080,
+  });
+  const arabic1080 = makeSource({
+    id: "cinema-ar",
+    provider: "CinemaOS",
+    label: "Cinema AR",
+    type: "mp4",
+    maxHeight: 1080,
+  });
+  const cinemaEn = makeSource({
+    id: "cinema-en",
+    provider: "CinemaOS",
+    label: "Cinema",
+    type: "mp4",
+    maxHeight: 1080,
+  });
+  const luna = makeSource({
+    id: "luna",
+    provider: "Vixsrc",
+    label: "Luna",
+    type: "hls",
+    maxHeight: 1080,
+  });
+  const kronos = makeSource({
+    id: "kronos",
+    provider: "Debrid",
+    origin: "debrid",
+    label: "1080p • Debrid",
+    type: "mp4",
+    codec: "h264",
+    container: "mp4",
+    compat: "native",
+    maxHeight: 1080,
+  });
+  const remux4k = makeSource({
+    id: "hades-4k",
+    provider: "Debrid",
+    origin: "debrid",
+    label: "4K • Debrid · Safari",
+    type: "mp4",
+    codec: "h264",
+    container: "mkv",
+    compat: "native",
+    maxHeight: 2160,
+  });
+
+  it("ranks explicit foreign CinemaOS below unlabeled English", () => {
+    expect(sourceAudioLanguageRank(hindi1080)).toBe(0);
+    expect(sourceAudioLanguageRank(arabic1080)).toBe(0);
+    expect(sourceAudioLanguageRank(cinemaEn)).toBe(2);
+    expect(sourceAudioLanguageRank(luna)).toBe(2);
+    expect(isEnglishPreferredSource(hindi1080)).toBe(false);
+    expect(isEnglishPreferredSource(kronos)).toBe(true);
+  });
+
+  it("does not auto-default Hindi 1080 over Luna, Kronos, or English CinemaOS", () => {
+    expect(pickDefaultSource([hindi1080, luna])?.id).toBe("luna");
+    expect(pickDefaultSource([hindi1080, arabic1080, kronos])?.id).toBe("kronos");
+    expect(pickDefaultSource([hindi1080, cinemaEn])?.id).toBe("cinema-en");
+  });
+
+  it("does not let Hindi 1080 sink English remux 4K when no English direct HD exists", () => {
+    expect(pickDefaultSource([hindi1080, remux4k])?.id).toBe("hades-4k");
+  });
+
+  it("still starts English Kronos instead of remux 4K when both exist", () => {
+    expect(pickDefaultSource([hindi1080, remux4k, kronos])?.id).toBe("kronos");
+  });
+
+  it("keeps English rows above foreign rows in the picker", () => {
+    expect(
+      sortSourcesForPicker([hindi1080, remux4k, luna]).map((source) => source.id)
+    ).toEqual(["hades-4k", "luna", "cinema-hi"]);
   });
 });
 

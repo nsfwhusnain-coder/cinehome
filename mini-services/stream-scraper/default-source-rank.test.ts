@@ -296,6 +296,34 @@ describe("sortSourcesForDefault — anime ranking boost", () => {
   });
 });
 
+describe("sortSourcesForDefault — English over foreign CinemaOS", () => {
+  it("does not pick Hindi 1080 over Luna or unlabeled Cinema", () => {
+    const hindi = src({
+      id: "cinema-hi",
+      label: "Cinema HI 1080",
+      provider: "CinemaOS",
+      maxHeight: 1080,
+    });
+    const luna = src({
+      id: "luna",
+      label: "Luna",
+      provider: "Vixsrc",
+      maxHeight: 1080,
+    });
+    const cinema = src({
+      id: "cinema",
+      label: "Cinema",
+      provider: "CinemaOS",
+      maxHeight: 1080,
+    });
+    expect(pickDefaultStreamUrl([hindi, luna])).toBe(luna.url);
+    expect(pickDefaultStreamUrl([hindi, cinema])).toBe(cinema.url);
+    expect(sortSourcesForDefault([hindi, luna, cinema])[0]?.id).not.toBe(
+      "cinema-hi"
+    );
+  });
+});
+
 describe("sortSourcesForDefault — poison gate", () => {
   it("poison probe.ok 1080 loses to clean 720 HLS", () => {
     const abuse = src({
