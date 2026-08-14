@@ -4,10 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Crown,
+  Info,
   Keyboard,
   Loader2,
   X,
 } from "lucide-react";
+import { StreamInfoPanel } from "@/components/player/StreamInfoPanel";
 import { cn } from "@/lib/utils";
 import { usePlayerStore, PLAYBACK_SPEEDS, type MediaTrack } from "@/stores/player-store";
 import { buildServerSlots, type ServerSlot } from "@/lib/playback/expected-servers";
@@ -39,7 +41,8 @@ export type DockSection =
   | "server"
   | "subtitles"
   | "audio"
-  | "playback";
+  | "playback"
+  | "info";
 
 type DirectionKey = "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown";
 
@@ -204,6 +207,7 @@ const PRIMARY_TABS: Array<{ section: DockSection; label: string }> = [
   { section: "subtitles", label: "Subtitles" },
   { section: "audio", label: "Audio" },
   { section: "playback", label: "Speed" },
+  { section: "info", label: "Info" },
 ];
 
 export function PlayerDock({
@@ -229,6 +233,13 @@ export function PlayerDock({
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const playingHeight = usePlayerStore((s) => s.playingHeight);
+  const playingWidth = usePlayerStore((s) => s.playingWidth);
+  const playingBitrate = usePlayerStore((s) => s.playingBitrate);
+  const playingFps = usePlayerStore((s) => s.playingFps);
+  const levels = usePlayerStore((s) => s.levels);
+  const bufferedEnd = usePlayerStore((s) => s.bufferedEnd);
+  const currentTime = usePlayerStore((s) => s.currentTime);
+  const serverDisplayName = usePlayerStore((s) => s.serverDisplayName);
   const subtitlesOn = usePlayerStore((s) => s.subtitlesOn);
   const subtitleTracks = usePlayerStore((s) => s.subtitleTracks);
   const audioTracks = usePlayerStore((s) => s.audioTracks);
@@ -560,6 +571,25 @@ export function PlayerDock({
       );
     }
 
+    if (activeSection === "info") {
+      const activeSource =
+        sources.find((source) => source.id === activeSourceId) ?? null;
+      return (
+        <StreamInfoPanel
+          source={activeSource}
+          serverName={serverDisplayName}
+          playingWidth={playingWidth}
+          playingHeight={playingHeight}
+          playingBitrate={playingBitrate}
+          playingFps={playingFps}
+          levels={levels}
+          audioTracks={audioTracks}
+          activeAudioId={activeAudioId}
+          bufferAheadS={Math.max(0, bufferedEnd - currentTime)}
+        />
+      );
+    }
+
     if (activeSection === "playback") {
       return (
         <div className="space-y-0.5">
@@ -642,6 +672,20 @@ export function PlayerDock({
                 <div className="min-w-0 flex-1 text-[13px] font-semibold tracking-tight text-white">
                   Playback
                 </div>
+                <button
+                  type="button"
+                  onClick={() => onExpandedSectionChange("info")}
+                  className={cn(
+                    "rounded-full p-1.5 transition",
+                    activeSection === "info"
+                      ? "bg-white/20 text-white"
+                      : "text-white/55 hover:bg-white/15 hover:text-white"
+                  )}
+                  aria-label="Stream info"
+                  aria-pressed={activeSection === "info"}
+                >
+                  <Info className="h-4 w-4" />
+                </button>
                 <button
                   type="button"
                   onClick={onClose}

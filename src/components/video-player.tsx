@@ -649,6 +649,9 @@ function mapHlsLevels(
     width: l.width || 0,
     index: i,
     bitrate: l.bitrate,
+    frameRate: l.frameRate || undefined,
+    videoCodec: l.videoCodec || undefined,
+    audioCodec: l.audioCodec || undefined,
   }));
   return annotateLevelHeights(raw, sourceLadder, sourceMaxHeightFallback);
 }
@@ -1487,6 +1490,9 @@ export function VideoPlayer({
   const setShowControls = usePlayerStore((s) => s.setShowControls);
   const setQuality = usePlayerStore((s) => s.setQuality);
   const setPlayingHeight = usePlayerStore((s) => s.setPlayingHeight);
+  const setPlayingWidth = usePlayerStore((s) => s.setPlayingWidth);
+  const setPlayingBitrate = usePlayerStore((s) => s.setPlayingBitrate);
+  const setPlayingFps = usePlayerStore((s) => s.setPlayingFps);
   const setLevels = usePlayerStore((s) => s.setLevels);
   // Setter only (stable reference) — VideoPlayer never subscribes to the value
   // itself, so the ~4x/sec buffered-edge tick no longer re-renders this tree.
@@ -3362,6 +3368,9 @@ export function VideoPlayer({
           const level = list.find((l) => l.index === data.level);
           const h = level ? effectiveLevelHeight(level) : 0;
           setPlayingHeight(h);
+          setPlayingWidth(level?.width ?? videoRef.current?.videoWidth ?? 0);
+          setPlayingBitrate(level?.bitrate ?? 0);
+          setPlayingFps(level?.frameRate ?? 0);
           if (h > 0 && h < HLS_MIN_HEIGHT * 0.95 && videoRef.current) {
             applyPromotionResult(
               maybePromoteHlsQuality(
@@ -3572,6 +3581,7 @@ export function VideoPlayer({
         const onNativeMeta = () => {
           const vh = video.videoHeight || 0;
           if (vh > 0) {
+            setPlayingWidth(video.videoWidth || 0);
             const decodedTier = decodedQualityHeight(
               video.videoWidth || 0,
               vh
@@ -3716,6 +3726,9 @@ export function VideoPlayer({
     setError,
     setQuality,
     setPlayingHeight,
+    setPlayingWidth,
+    setPlayingBitrate,
+    setPlayingFps,
     markSourceFailed,
     syncHlsTracks,
     syncNativeTracks,

@@ -49,6 +49,7 @@ import {
   type QualitySource,
 } from "./quality-probe";
 import {
+  candidateMasterUrls,
   normalizeStreamUrl,
   selectEmbedCaptures,
   looksLikeHlsMasterUrl,
@@ -1432,6 +1433,40 @@ const MASTER_PEEK_MAX_CANDIDATES = 1;
  * bounded, best-effort. False (no master seen yet) on any failure so the
  * caller just falls through to its existing capture set instead of stalling.
  */
+const MASTER_RECONSTRUCT_MAX = 2;
+
+async function injectReconstructedMasters(
+  captures: StreamCapture[],
+  referer: string
+): Promise<void> {
+  if (captures.some((cap) => cap.isMaster || looksLikeHlsMasterUrl(cap.url))) {
+    return;
+  }
+  const seen = new Set(captures.map((cap) => normalizeStreamUrl(cap.url)));
+  const guesses: StreamCapture[] = [];
+  for (const cap of captures) {
+    if (!cap.url.includes(".m3u8")) continue;
+    for (const master of candidateMasterUrls(cap.url)) {
+      const key = normalizeStreamUrl(master);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      guesses.push({
+        ...cap,
+        url: master,
+        isMaster: true,
+        score: cap.score + 80,
+        label: cap.label || "HLS",
+      });
+    }
+  }
+  for (const guess of guesses.slice(0, MASTER_RECONSTRUCT_MAX)) {
+    if (await hasMasterPlaylist(guess, referer)) {
+      captures.push(guess);
+      logAt("info", `[scrape] reconstructed adaptive master from quality child`);
+    }
+  }
+}
+
 async function hasMasterPlaylist(capture: StreamCapture, referer: string): Promise<boolean> {
   try {
     const effectiveReferer = refererForCdn(capture.url, capture.referer || referer);
@@ -1787,6 +1822,10 @@ async function tryScrapeUrl(
       if (captures.length === 0) {
         await context.close();
         return { streamUrl: null, sources: [], error: "No stream URL found." };
+      }
+
+      if (!isCancelled() && captures.some((c) => c.url.includes(".m3u8"))) {
+        await injectReconstructedMasters(captures, embedUrl);
       }
 
       let verified: StreamCapture[];

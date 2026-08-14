@@ -25,6 +25,32 @@ const REFERER_ORIGIN = "https://cinemaos.tech";
 export const CINEMAOS_OUTER_TIMEOUT_MS = 14_000;
 export const CINEMAOS_TIMEOUT_MS = TIMEOUT_MS;
 export const CINEMAOS_MAX_STREAMS = MAX_STREAMS;
+/** Keep 4K + 1080 (or the two richest rungs) per language, not every 360p file. */
+export const CINEMAOS_MAX_PER_LANGUAGE = 2;
+
+export function cinemaosLanguageKey(stream: RankableCinemaosStream): string {
+  const text = `${stream.name} ${stream.title}`;
+  if (isCinemaosEnglish(text)) return "EN";
+  return extractLangCode(text) ?? "XX";
+}
+
+/** One language = one ladder. Other sites expose rungs on a single source. */
+export function keepCinemaosLanguageLadders<T extends RankableCinemaosStream>(
+  streams: T[],
+  perLanguage = CINEMAOS_MAX_PER_LANGUAGE
+): T[] {
+  const sorted = sortCinemaosStreams(streams);
+  const counts = new Map<string, number>();
+  const out: T[] = [];
+  for (const stream of sorted) {
+    const key = cinemaosLanguageKey(stream);
+    const taken = counts.get(key) ?? 0;
+    if (taken >= perLanguage) continue;
+    counts.set(key, taken + 1);
+    out.push(stream);
+  }
+  return out;
+}
 
 interface CinemaosRawStream {
   name?: string;
@@ -313,7 +339,10 @@ export async function resolveCinemaos(
     }
     if (!result.streams.length) return [];
 
-    const sorted = sortCinemaosStreams(result.streams).slice(0, MAX_STREAMS);
+    const sorted = keepCinemaosLanguageLadders(result.streams).slice(
+      0,
+      MAX_STREAMS
+    );
     let bestEnglishAssigned = false;
     const out: ProviderStream[] = [];
     const usedLabels = new Set<string>();

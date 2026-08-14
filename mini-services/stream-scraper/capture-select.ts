@@ -142,6 +142,43 @@ export function looksLikeHlsMasterUrl(url: string): boolean {
  * True for discrete quality child playlists (not the adaptive master).
  * Promoting these as separate "servers" floods the roster and breaks ranking.
  */
+/**
+ * Guess sibling master playlists for a discrete quality child.
+ * Vidking-style `index-s2160p.m3u8` and `/2160/index.m3u8` become the
+ * adaptive master other sites play — one URL, every rung.
+ */
+export function candidateMasterUrls(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname.toLowerCase().includes(".m3u8")) return [];
+    const path = parsed.pathname;
+    const out: string[] = [];
+    const push = (pathname: string) => {
+      if (pathname === path) return;
+      const next = new URL(parsed.href);
+      next.pathname = pathname;
+      out.push(next.toString());
+    };
+    const child = path.match(/^(.*)\/index-s\d{3,4}p[^/]*\.m3u8$/i);
+    if (child) {
+      push(`${child[1]}/index.m3u8`);
+      push(`${child[1]}/master.m3u8`);
+      push(`${child[1]}/playlist.m3u8`);
+    }
+    const folder = path.match(
+      /^(.*)\/(?:2160|1440|1080|720|480|360)p?\/([^/]+\.m3u8)$/i
+    );
+    if (folder) {
+      push(`${folder[1]}/${folder[2]}`);
+      push(`${folder[1]}/master.m3u8`);
+      push(`${folder[1]}/index.m3u8`);
+    }
+    return [...new Set(out)];
+  } catch {
+    return [];
+  }
+}
+
 export function looksLikeVariantChildUrl(url: string): boolean {
   const lower = url.toLowerCase();
   if (!lower.includes(".m3u8")) return false;

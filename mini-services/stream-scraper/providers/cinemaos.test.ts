@@ -10,6 +10,7 @@ import {
   parseCinemaosQuality,
   resolveCinemaos,
   sortCinemaosStreams,
+  keepCinemaosLanguageLadders,
   CINEMAOS_MAX_STREAMS,
   CINEMAOS_OUTER_TIMEOUT_MS,
   CINEMAOS_TIMEOUT_MS,
@@ -122,6 +123,55 @@ describe("sortCinemaosStreams (prefer English)", () => {
       "https://example.test/en720",
       "https://example.test/hi1080",
       "https://example.test/ar720",
+    ]);
+  });
+});
+
+describe("keepCinemaosLanguageLadders", () => {
+  it("keeps the two richest rungs per language and drops the rest", () => {
+    const kept = keepCinemaosLanguageLadders([
+      {
+        name: "AoneRoom (English) 360p [MP4]",
+        title: "Fight Club",
+        quality: "360p",
+        url: "https://example.test/en360",
+      },
+      {
+        name: "AoneRoom (English) 2160p [MP4]",
+        title: "Fight Club",
+        quality: "2160p",
+        url: "https://example.test/en2160",
+      },
+      {
+        name: "AoneRoom (English) 1080p [MP4]",
+        title: "Fight Club",
+        quality: "1080p",
+        url: "https://example.test/en1080",
+      },
+      {
+        name: "AoneRoom (English) 720p [MP4]",
+        title: "Fight Club",
+        quality: "720p",
+        url: "https://example.test/en720",
+      },
+      {
+        name: "AoneRoom (Hindi) 720p [MP4]",
+        title: "Fight Club",
+        quality: "720p",
+        url: "https://example.test/hi720",
+      },
+      {
+        name: "AoneRoom (Hindi) 1080p [MP4]",
+        title: "Fight Club",
+        quality: "1080p",
+        url: "https://example.test/hi1080",
+      },
+    ]);
+    expect(kept.map((s) => s.url)).toEqual([
+      "https://example.test/en2160",
+      "https://example.test/en1080",
+      "https://example.test/hi1080",
+      "https://example.test/hi720",
     ]);
   });
 });

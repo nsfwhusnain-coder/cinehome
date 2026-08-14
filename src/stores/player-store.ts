@@ -32,6 +32,9 @@ export interface QualityLevel {
   width?: number;
   index: number;
   bitrate?: number;
+  frameRate?: number;
+  videoCodec?: string;
+  audioCodec?: string;
 }
 
 export interface MediaTrack {
@@ -61,6 +64,9 @@ interface PlayerState {
   quality: number; // HLS level index, -1 = auto (selected preference)
   /** Actual currently-decoding height from hls LEVEL_SWITCHED (0 = unknown). */
   playingHeight: number;
+  playingWidth: number;
+  playingBitrate: number;
+  playingFps: number;
   levels: QualityLevel[];
   /** Buffered-ahead edge (seconds); lives here (not top-level VideoPlayer state) so the
    * 4x/sec updates only re-render whichever component actually subscribes to it. */
@@ -86,6 +92,9 @@ interface PlayerState {
   setShowControls: (v: boolean) => void;
   setQuality: (v: number) => void;
   setPlayingHeight: (v: number) => void;
+  setPlayingWidth: (v: number) => void;
+  setPlayingBitrate: (v: number) => void;
+  setPlayingFps: (v: number) => void;
   setLevels: (v: QualityLevel[]) => void;
   setBufferedEnd: (v: number) => void;
   setSpeed: (v: number) => void;
@@ -114,6 +123,9 @@ const initialState = {
   showControls: true,
   quality: -1,
   playingHeight: 0,
+  playingWidth: 0,
+  playingBitrate: 0,
+  playingFps: 0,
   levels: [] as QualityLevel[],
   bufferedEnd: 0,
   speed: 1,
@@ -146,6 +158,9 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   setShowControls: (v) => set({ showControls: v }),
   setQuality: (v) => set({ quality: v }),
   setPlayingHeight: (v) => set({ playingHeight: v }),
+  setPlayingWidth: (v) => set({ playingWidth: v }),
+  setPlayingBitrate: (v) => set({ playingBitrate: v }),
+  setPlayingFps: (v) => set({ playingFps: v }),
   setLevels: (v) => set({ levels: v }),
   setBufferedEnd: (v) => set({ bufferedEnd: v }),
   setSpeed: (v) => set({ speed: v }),
@@ -164,6 +179,9 @@ export const usePlayerStore = create<PlayerState>((set) => ({
       error: null,
       quality: -1,
       playingHeight: 0,
+      playingWidth: 0,
+      playingBitrate: 0,
+      playingFps: 0,
       levels: [],
       bufferedEnd: 0,
       subtitleTracks: [],

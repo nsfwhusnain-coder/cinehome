@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
 import {
+  candidateMasterUrls,
   dedupeCapturesByNormalizedUrl,
   looksLikeHlsMasterUrl,
   normalizeStreamUrl,
@@ -164,6 +165,18 @@ describe("selectEmbedCaptures", () => {
     );
     expect(out).toHaveLength(3);
     expect(out[0]!.url).toContain(".m3u8");
+  });
+
+  it("reconstructs a Vidking-style master from a discrete quality child", () => {
+    expect(candidateMasterUrls("https://cdn.example/hls/index-s2160p.m3u8")).toEqual([
+      "https://cdn.example/hls/index.m3u8",
+      "https://cdn.example/hls/master.m3u8",
+      "https://cdn.example/hls/playlist.m3u8",
+    ]);
+    expect(
+      candidateMasterUrls("https://cdn.example/v/2160/index.m3u8?token=a")
+    ).toContain("https://cdn.example/v/index.m3u8?token=a");
+    expect(candidateMasterUrls("https://cdn.example/master.m3u8")).toEqual([]);
   });
 
   it("when master exists, does not promote index-s*p child media as separate sources", () => {
