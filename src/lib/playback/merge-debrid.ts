@@ -1,5 +1,5 @@
 import type { MediaType, PlaybackResponse, PlaybackSource } from "./types";
-import { pickDefaultSource } from "./source-quality";
+import { decideImmediateSource } from "./decide-playback";
 
 /**
  * Shared debrid-merge helpers — extracted from the playback route so that any
@@ -66,7 +66,9 @@ export function mergeDebridSources(
   if (!debridSources.length) return;
   const merged = [...(result.sources ?? []), ...debridSources];
   result.sources = merged;
-  const best = pickDefaultSource(merged, null, qualityHint ?? "auto") ?? merged[0];
+  const best =
+    decideImmediateSource(merged, { preferredHeight: qualityHint ?? "auto" }) ??
+    merged[0];
   if (!best) return;
   result.streamUrl = best.url;
   if (result.status === "error" || result.status === "not_configured") {

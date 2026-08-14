@@ -3,7 +3,7 @@ import { getAuthenticatedUser } from "@/lib/auth";
 import { getProvider } from "@/lib/playback";
 import type { MediaType, PlaybackResponse, PlaybackSource } from "@/lib/playback";
 import { isPlaybackFastPathEnabled } from "@/lib/feature-flags";
-import { pickDefaultSource } from "@/lib/playback/source-quality";
+import { decideImmediateSource } from "@/lib/playback/decide-playback";
 import { buildFastDebridResponse } from "@/lib/playback/fast-debrid";
 import { RateLimiter } from "@/lib/rate-limit";
 import { getUserPlaybackPreferences } from "@/lib/profile-preferences.server";
@@ -358,7 +358,7 @@ function withRuntimeProviderHealth(
     providerHealthRegistry,
     { contentClass, viewerId }
   );
-  const best = pickDefaultSource(sources, null, qualityHint);
+  const best = decideImmediateSource(sources, { preferredHeight: qualityHint });
   return {
     ...result,
     sources,
@@ -424,7 +424,9 @@ function mergeDebridSources(
   if (!debridSources.length) return;
   const merged = [...(result.sources ?? []), ...debridSources];
   result.sources = merged;
-  const best = pickDefaultSource(merged, null, qualityHint ?? "auto") ?? merged[0];
+  const best =
+    decideImmediateSource(merged, { preferredHeight: qualityHint ?? "auto" }) ??
+    merged[0];
   if (!best) return;
   result.streamUrl = best.url;
   if (result.status === "error" || result.status === "not_configured") {

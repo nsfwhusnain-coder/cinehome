@@ -1,4 +1,5 @@
 import type { PlaybackSource } from "./types";
+import { autoLanguagePool } from "./decide-playback";
 import {
   isSourcePlayableHere,
   pickDefaultSource,
@@ -48,7 +49,7 @@ export function findLateFourKSource(
   if (!pool.length) return null;
 
   const best = pickDefaultSource(
-    pool,
+    autoLanguagePool(pool),
     options.preferredProvider,
     UHD_HEIGHT
   );

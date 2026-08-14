@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { getAuthenticatedUserId } from "@/lib/auth";
-import { resolveFullRoster } from "@/lib/playback/resolve-full";
-import {
-  lookupPlaybackSourceUrl,
-  rememberPlaybackRoster,
-} from "@/lib/playback/source-url-cache";
+import { getFreshCachedStream } from "@/lib/playback/debrid/cached-stream";
+import { parseDebridPlaybackSourceId } from "@/lib/playback/debrid/debrid-source-id";
+import { lookupPlaybackSourceUrl } from "@/lib/playback/source-url-cache";
 import { rewritePlaylist } from "@/lib/playback/transcode-playlist";
 
 /**
@@ -133,20 +131,19 @@ export async function GET(req: NextRequest) {
     ? { id: sourceId, url: cachedSource.url }
     : undefined;
   if (!source) {
-    const resolved = await resolveFullRoster({
-      userId,
-      type: type as "movie" | "tv",
-      tmdbId: id,
-      season: seasonNum,
-      episode: episodeNum,
-    });
-    rememberPlaybackRoster(sourceIdentity, resolved.sources);
-    source = resolved.sources?.find((s) => s.id === sourceId);
+    const debridKey = parseDebridPlaybackSourceId(sourceId);
+    const debridHit = debridKey ? await getFreshCachedStream(debridKey) : null;
+    if (debridHit?.url) {
+      source = { id: sourceId, url: debridHit.url };
+    }
   }
   if (!source) {
     return NextResponse.json(
-      { error: "Source not found (may have expired — retry playback)" },
-      { status: 404 }
+      {
+        error:
+          "Remux source expired — stay on the current stream or switch servers",
+      },
+      { status: 409 }
     );
   }
 

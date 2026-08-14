@@ -1,9 +1,6 @@
 import type { PlaybackSource } from "./types";
-import {
-  isSourcePlayableHere,
-  pickDefaultSource,
-  sortSourcesForPicker,
-} from "./source-quality";
+import { isSourcePlayableHere, sortSourcesForPicker } from "./source-quality";
+import { decideImmediateSource } from "./decide-playback";
 import { normalizeUrlKey } from "./source-identity";
 import {
   baseServerToken,
@@ -251,5 +248,5 @@ export function pickPlayableDefault(
     (s) => !failed.has(s.id)
   );
   if (!playable.length) return null;
-  return pickDefaultSource(playable, preferred);
+  return decideImmediateSource(playable, { preferredProvider: preferred });
 }

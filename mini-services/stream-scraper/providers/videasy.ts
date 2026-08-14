@@ -164,6 +164,7 @@ function mapStreams(raw: VideasyRawSource[]): ProviderStream[] {
       referer: REFERER,
       origin: ORIGIN,
       userAgent: DEFAULT_UA,
+      audioLanguage: "en",
       ...(best.height > 0 ? { maxHeight: best.height } : {}),
       ...(ladder.length ? { ladder, qualityRungs } : {}),
     },

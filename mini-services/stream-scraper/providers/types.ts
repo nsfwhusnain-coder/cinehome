@@ -16,6 +16,8 @@ export interface ProviderStream {
   maxHeight?: number;
   ladder?: number[];
   qualityRungs?: QualityRung[];
+  /** ISO-ish audio language when the provider knows it (`en`, `hi`, `ja`). */
+  audioLanguage?: string;
 }
 
 export interface TmdbLookup {

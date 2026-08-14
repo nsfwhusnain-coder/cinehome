@@ -8,7 +8,8 @@ import {
 } from "@/lib/server-cache";
 import { sourceId } from "./server-names";
 import { dedupePlaybackSources, sourceInstanceId } from "./source-identity";
-import { pickDefaultSource } from "./source-quality";
+import { decideImmediateSource } from "./decide-playback";
+import { inferAudioLanguageFromText } from "./source-facts";
 import type { PlaybackProvider, PlaybackRequest, PlaybackResponse, PlaybackSource } from "./types";
 
 const SCRAPER_BASE = process.env.SCRAPER_URL || "http://localhost:3030/scrape";
@@ -44,6 +45,7 @@ export interface ScraperSourceEntry {
   /** Manifest-declared bits/sec at maxHeight — separates same-height releases. */
   bitrateBps?: number;
   qualityRungs?: { height: number; url: string; bitrateBps?: number }[];
+  audioLanguage?: string;
   probe?: {
     ok: boolean;
     ttfbMs: number;
@@ -170,6 +172,9 @@ export function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): P
   const type = entry.type ?? streamTypeFrom(entry.label, entry.url, entry.provider, entry.quality);
   const codec = detectCodec(entry.url);
   const baseId = sourceId(entry.provider, entry.label);
+  const audioLanguage =
+    entry.audioLanguage ||
+    inferAudioLanguageFromText(`${entry.label} ${entry.provider}`);
   return {
     id: sourceInstanceId(baseId, entry.url),
     url: proxyUrl,
@@ -177,6 +182,8 @@ export function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): P
     quality: entry.quality || "auto",
     label: entry.label,
     type,
+    audioLanguage,
+    identityEvidence: "exact_media_route",
     // Stamp 0 only when still unknown so clients treat it as unknown tier.
     ...(maxHeight > 0 ? { maxHeight } : entry.maxHeight != null ? { maxHeight: 0 } : {}),
     ...(ladder ? { ladder } : {}),
@@ -342,7 +349,10 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
           ? ("auto" as const)
           : req.qualityHint;
       const defaultProxy =
-        pickDefaultSource(playbackSources, null, heightPref) ?? playbackSources[0];
+        decideImmediateSource(playbackSources, {
+          preferredHeight: heightPref,
+          contentClass: req.contentClass,
+        }) ?? playbackSources[0];
 
       return {
         status: "available",

@@ -28,6 +28,12 @@ const ENGLISH_AUDIO_NAME =
 
 /** 2 = English/unlabeled, 1 = Cinema XX, 0 = explicit non-English. */
 export function sourceAudioLanguageRank(source: RankableSource): number {
+  const stamped = (source.audioLanguage ?? "").trim().toLowerCase();
+  if (stamped && stamped !== "und" && stamped !== "en" && stamped !== "eng" && stamped !== "english") {
+    if (stamped === "xx") return 1;
+    return 0;
+  }
+  if (stamped === "en" || stamped === "eng" || stamped === "english") return 2;
   const text = `${source.label ?? ""} ${source.provider ?? ""}`;
   if (ENGLISH_AUDIO_NAME.test(text)) return 2;
   if (/\bcinema[ ._-]?xx\b/i.test(text)) return 1;
@@ -47,6 +53,7 @@ export interface RankableSource {
   /** Manifest-declared bitrate for the `maxHeight` rendition. */
   bitrateBps?: number;
   probe?: { ok?: boolean; speedScore?: number; bytesPerSec?: number } | null;
+  audioLanguage?: string;
 }
 
 export type HeightInfer = (text: string) => number;

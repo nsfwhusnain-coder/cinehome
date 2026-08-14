@@ -73,9 +73,11 @@
  * completely unaffected until the owner opts into at least one.
  */
 import type { MediaType, PlaybackSource } from "../types";
+import { inferAudioLanguageFromText } from "../source-facts";
 import {
   fetchTorrentioCandidates,
   fetchTorrentioCandidatesNoDebrid,
+  isMoviePackRelease,
   parseReleaseTitle,
   resolveImdbId,
   effectiveReleaseContainer,
@@ -260,6 +262,7 @@ function toPlaybackSource(
   const height = heightForQuality(quality);
   const safariHint = safariHintFor(record.compat, codec);
   const release = parseReleaseTitle(record.title);
+  const inferredLang = inferAudioLanguageFromText(record.title);
   return {
     id: buildSourceId(provider, imdbId, mediaType, season, episode, quality),
     url: record.url,
@@ -270,6 +273,9 @@ function toPlaybackSource(
     maxHeight: height,
     origin: "debrid",
     compat: record.compat,
+    audioLanguage: inferredLang === "und" ? "en" : inferredLang,
+    titleMatch: isMoviePackRelease(record.title) ? "pack" : "exact",
+    identityEvidence: "release_title",
     ...(codec ? { codec } : {}),
     ...(release.audioCodec !== "unknown"
       ? { audioCodec: release.audioCodec }
@@ -310,6 +316,7 @@ function toRdPlaybackSource(
   const safariHint = safariHintFor(record.compat, codec);
   const effectiveContainer = effectiveReleaseContainer(record.url, container);
   const release = parseReleaseTitle(record.title);
+  const inferredLang = inferAudioLanguageFromText(record.title);
   return {
     id: buildSourceId("realdebrid", imdbId, mediaType, season, episode, slot),
     url: record.url,
@@ -320,6 +327,9 @@ function toRdPlaybackSource(
     maxHeight: height,
     origin: "debrid",
     compat: record.compat,
+    audioLanguage: inferredLang === "und" ? "en" : inferredLang,
+    titleMatch: isMoviePackRelease(record.title) ? "pack" : "exact",
+    identityEvidence: "release_title",
     ...(codec && codec !== "unknown" ? { codec } : {}),
     ...(effectiveContainer && effectiveContainer !== "unknown"
       ? { container: effectiveContainer }

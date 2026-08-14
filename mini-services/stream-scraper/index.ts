@@ -270,6 +270,7 @@ interface SourceEntry {
   bitrateBps?: number;
   /** Alternate progressive URLs on this source (one host, many heights). */
   qualityRungs?: { height: number; url: string; bitrateBps?: number }[];
+  audioLanguage?: string;
 }
 
 interface ScrapeResult {
@@ -1990,6 +1991,7 @@ function providerToEntry(stream: ProviderStream): SourceEntry {
     ...(maxHeight ? { maxHeight, qualitySource: "label" as const } : {}),
     ...(ladder?.length ? { ladder } : {}),
     ...(rungs?.length ? { qualityRungs: rungs } : {}),
+    ...(stream.audioLanguage ? { audioLanguage: stream.audioLanguage } : {}),
     session: {
       referer: stream.referer,
       origin: stream.origin,

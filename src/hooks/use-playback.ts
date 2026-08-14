@@ -4,10 +4,8 @@ import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import type { MediaType, PlaybackResponse } from "@/lib/playback/types";
-import {
-  isSourcePlayableHere,
-  pickDefaultSource,
-} from "@/lib/playback/source-quality";
+import { isSourcePlayableHere } from "@/lib/playback/source-quality";
+import { decideImmediateSource } from "@/lib/playback/decide-playback";
 import { mergeProgressivePlaybackSources } from "@/lib/playback/merge-sources";
 import {
   getPlaybackDiscoveryPreferenceKey,
@@ -202,7 +200,9 @@ function mergePlaybackResponses(
       heightPref = "auto";
     }
   }
-  const defaultSource = pickDefaultSource(mergedSources, null, heightPref);
+  const defaultSource = decideImmediateSource(mergedSources, {
+    preferredHeight: heightPref,
+  });
 
   // Once full has returned, prefer its partial flag so fast's soft-miss partial doesn't stick forever.
   const partial = full

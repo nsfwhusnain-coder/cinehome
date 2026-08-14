@@ -96,6 +96,19 @@ export interface PlaybackSource {
   /** Release evidence says more than one language/audio track is present. */
   multiAudio?: boolean;
   /**
+   * ISO-ish audio language stamped by the provider (`en`, `hi`, `ja`).
+   * `und` = unlabeled mainstream. `xx` = unknown locale. Omitted = infer
+   * from the label. Ranking must prefer this over regex on display names.
+   */
+  audioLanguage?: string;
+  /**
+   * Whether this row is the title the user asked for.
+   * `pack` is a collection/season dump and must never auto-default.
+   */
+  titleMatch?: "exact" | "pack" | "unknown";
+  /** How the resolver knew this file is the right title. */
+  identityEvidence?: IdentityEvidence;
+  /**
    * Actual container format, when known. Debrid sources always drop MKV/WebM
    * before ever becoming a PlaybackSource (see
    * src/lib/playback/debrid/torrentio.ts `isBrowserPlayableContainer` +

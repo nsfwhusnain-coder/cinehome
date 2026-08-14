@@ -188,6 +188,7 @@ function streamFromResolved(
     referer: REFERER,
     origin: ORIGIN,
     userAgent: DEFAULT_UA,
+    audioLanguage: "en",
     ...(maxHeight ? { maxHeight } : {}),
     ...(ladder.length ? { ladder, qualityRungs: ordered } : {}),
   };

@@ -388,6 +388,7 @@ export async function resolveCinemaos(
         referer: `${REFERER_ORIGIN}/`,
         origin: REFERER_ORIGIN,
         userAgent: DEFAULT_UA,
+        audioLanguage: isEnglish ? "en" : group.key.toLowerCase(),
         ...(maxHeight ? { maxHeight } : {}),
         ...(qualityRungs.length
           ? { ladder: qualityRungs.map((rung) => rung.height), qualityRungs }

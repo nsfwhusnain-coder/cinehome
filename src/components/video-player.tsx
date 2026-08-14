@@ -8,7 +8,6 @@ import {
 } from "@/lib/playback/background-health-probe";
 import { getServerDisplayName } from "@/lib/playback/server-names";
 import {
-  pickDefaultSource,
   sortSourcesForPicker,
   preferenceKey,
   isFasterSource,
@@ -27,12 +26,8 @@ import {
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
-import {
-  isLanguageRescueUpgrade,
-  pickClientStartupSource,
-  ROSTER_HEIGHT_UPGRADE_PX,
-  shouldAdoptRosterUpgrade,
-} from "@/lib/playback/client-ranking";
+import { decidePlayback } from "@/lib/playback/decide-playback";
+import { selectActiveSource } from "@/lib/playback/select-active-source";
 import {
   findLateFourKSource,
   wantsFourKDiscovery,
@@ -1883,71 +1878,45 @@ export function VideoPlayer({
       remaining = orderedSources;
     }
     const pool = remaining.length ? remaining : orderedSources;
-    const best = PLAYBACK_FAST_4K_ENABLED
-      ? pickClientStartupSource(pool, {
-          preferredProvider: preferred,
-          preferredHeight,
-          fourKStartup: fourKStartupRef.current,
-        }).immediate
-      : pickDefaultSource(pool, preferred, preferredHeight);
+    const selection = selectActiveSource({
+      roster: pool,
+      active: activeSource,
+      failedIds: failedSourceIdsRef.current,
+      userPicked: userSelectedSourceRef.current,
+      everPlayed: everPlayedRef.current,
+      autoUpgraded: autoUpgradedRef.current,
+      fourKStartup: PLAYBACK_FAST_4K_ENABLED
+        ? fourKStartupRef.current
+        : "maximum",
+      preferredProvider: preferred,
+      preferredHeight,
+    });
+    const best = selection.next;
 
-    if (stillValid && !activeFailed && activeSource && best) {
-      if (userSelectedSourceRef.current) {
-        return;
+    if (selection.replace && best && best.id !== activeSource?.id) {
+      if (selection.reason === "roster_upgrade" || selection.reason === "language_rescue") {
+        autoUpgradedRef.current = true;
       }
-      // Stay sticky after first frame, except Hindi/Arabic → English.
-      if (
-        everPlayedRef.current &&
-        !isLanguageRescueUpgrade(activeSource, best)
-      ) {
-        return;
+      const t = logicalPlayhead(videoRef.current?.currentTime ?? 0);
+      if (t > RESUME_CAPTURE_MIN_S) resumeAtRef.current = t;
+      if (selection.reason === "start" || selection.reason === "failover") {
+        prepareSourceTimeline(best, t);
       }
-      // Cold start only: jump to multi-rung / better ranked source before first frame.
-      if (best.id === activeSource.id) return;
-      const betterHeight =
-        sourceMaxHeight(best) >
-        sourceMaxHeight(activeSource) + ROSTER_HEIGHT_UPGRADE_PX;
-      if (autoUpgradedRef.current && !betterHeight) return;
-      if (
-        !shouldAdoptRosterUpgrade({
-          current: activeSource,
-          candidate: best,
-          everPlayed: everPlayedRef.current,
-          fourKStartup: fourKStartupRef.current,
-          userPicked: userSelectedSourceRef.current,
-        })
-      ) {
-        return;
-      }
-      // Consume same-height richness upgrades once; the guard above still
-      // permits a later higher-resolution (for example 4K) source to replace it.
-      autoUpgradedRef.current = true;
       initialTimeAppliedRef.current = false;
       setError(null);
       invalidateSourceAttempt();
       setActiveSource(best);
       setBuffering(true);
-      return;
-    }
-
-    // Re-pick when missing, dropped from list, or failed while better sources exist.
-    if (!stillValid || (activeFailed && !userSelectedSourceRef.current)) {
-      if (best && best.id !== activeSource?.id) {
-        const t = logicalPlayhead(videoRef.current?.currentTime ?? 0);
-        if (t > RESUME_CAPTURE_MIN_S) {
-          resumeAtRef.current = t;
-        }
-        prepareSourceTimeline(best, t);
-        initialTimeAppliedRef.current = false;
-        setError(null);
-        invalidateSourceAttempt();
-        setActiveSource(best);
-        setBuffering(true);
-      }
       if (!stillValid) {
         failedSourceIdsRef.current.clear();
         setFailedSourceIds([]);
       }
+      return;
+    }
+
+    if ((!stillValid || (activeFailed && !userSelectedSourceRef.current)) && !stillValid) {
+      failedSourceIdsRef.current.clear();
+      setFailedSourceIds([]);
     }
   }, [
     orderedSources,
@@ -2380,11 +2349,11 @@ export function VideoPlayer({
   const tryNextSource = useCallback(() => {
     if (activeSource) markSourceFailed(activeSource.id);
     const available = orderedSources.filter((s) => !failedSourceIdsRef.current.has(s.id));
-    const next = pickDefaultSource(
-      available,
-      getPreferredProvider(),
-      qualityTargetRef.current
-    );
+    const next = decidePlayback(available, {
+      preferredProvider: getPreferredProvider(),
+      preferredHeight: qualityTargetRef.current,
+      fourKStartup: fourKStartupRef.current,
+    }).immediate;
     if (next) {
       handleSourceChange(next);
       // Only surface after first healthy play — cold hunting already has its own UI.
@@ -2425,11 +2394,11 @@ export function VideoPlayer({
       return;
     }
 
-    const pick = pickDefaultSource(
-      orderedSources,
-      getPreferredProvider(),
-      qualityTargetRef.current
-    );
+    const pick = decidePlayback(orderedSources, {
+      preferredProvider: getPreferredProvider(),
+      preferredHeight: qualityTargetRef.current,
+      fourKStartup: fourKStartupRef.current,
+    }).immediate;
     if (!pick || pick.id === activeSource.id) return;
     if (
       sourceDelivery(pick) === "remux" &&
@@ -4599,7 +4568,7 @@ export function VideoPlayer({
     ) {
       return;
     }
-    const decision = pickClientStartupSource(orderedSources, {
+    const decision = decidePlayback(orderedSources, {
       preferredProvider: getPreferredProvider(),
       preferredHeight: 2160,
       fourKStartup: "fast",

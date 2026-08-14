@@ -1,4 +1,8 @@
 import type { PlaybackSource, SourceProbeMetrics } from "./types";
+import {
+  isEnglishPreferredSource,
+  sourceAudioLanguageRank,
+} from "./source-facts";
 import { supportsAv1, supportsHevc } from "./decode-capability";
 import { DEFAULT_SOURCE_KEY } from "@/lib/player-preferences";
 import {
@@ -12,6 +16,11 @@ import {
   type ReleaseContainer,
 } from "./debrid/torrentio";
 import { unwrapProxyUpstream } from "./source-identity";
+
+export {
+  isEnglishPreferredSource,
+  sourceAudioLanguageRank,
+} from "./source-facts";
 
 /**
  * Live-transcode target cap (task: transcode-target policy). 4K live
@@ -1050,34 +1059,6 @@ export function isFasterSource(current: PlaybackSource, candidate: PlaybackSourc
   }
   if (candidate.probe?.ok && !current.probe?.ok) return true;
   return isSlowCdnSource(current) && isFastCdnSource(candidate);
-}
-
-/**
- * Household default is English. CinemaOS (and a few other hosts) ship one
- * row per language; after remux-avoidance treated *any* direct 1080 as a
- * valid start, Hindi/Arabic 1080 MP4s beat Luna/Kronos and blocked 4K remux.
- *
- * 2 = English or unlabeled mainstream (debrid, Luna, Quasar, "Cinema")
- * 1 = unknown locale (Cinema XX)
- * 0 = explicit non-English
- */
-const FOREIGN_AUDIO_NAME =
-  /\b(hindi|arabic|french|spanish|german|portuguese|tamil|telugu|malayalam|bengali|italian|russian|turkish|indonesian|thai|vietnamese|dutch|polish|urdu|punjabi|marathi|kannada|mandarin|cantonese|korean|japanese|hebrew|persian|farsi)\b/i;
-const FOREIGN_CINEMA_CODE =
-  /\bcinema[ ._-]?(hi|ar|fr|es|de|pt|ta|te|ml|bn|it|ru|tr|id|th|vi|nl|pl|ur|pa|mr|kn|zh|ko|ja|he|fa|xx)\b/i;
-const ENGLISH_AUDIO_NAME =
-  /\benglish\b|\bcinema en\b|\bcinema-en\b|\(en\)/i;
-
-export function sourceAudioLanguageRank(source: PlaybackSource): number {
-  const text = `${source.label} ${source.provider}`;
-  if (ENGLISH_AUDIO_NAME.test(text)) return 2;
-  if (/\bcinema[ ._-]?xx\b/i.test(text)) return 1;
-  if (FOREIGN_CINEMA_CODE.test(text) || FOREIGN_AUDIO_NAME.test(text)) return 0;
-  return 2;
-}
-
-export function isEnglishPreferredSource(source: PlaybackSource): boolean {
-  return sourceAudioLanguageRank(source) >= 2;
 }
 
 /**
