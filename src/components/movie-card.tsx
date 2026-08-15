@@ -57,7 +57,6 @@ export function MovieCard({
   const detailHref = `/${mediaType}/${movie.id}`;
   const playHref =
     mediaType === "tv" ? `/watch/tv/${movie.id}` : `/watch/movie/${movie.id}`;
-  const href = isPoster ? playHref : detailHref;
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const posterImg = isPoster ? posterSrcSet(movie.poster_path) : null;
@@ -116,9 +115,9 @@ export function MovieCard({
         )}
       >
         <Link
-          href={href}
+          href={detailHref}
           className="absolute inset-0 z-0 block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0f]"
-          aria-label={isPoster ? `Play ${title}` : `Open details for ${title}`}
+          aria-label={`Open details for ${title}`}
         >
           {imgUrl ? (
              
@@ -146,12 +145,20 @@ export function MovieCard({
         </Link>
 
         {isPoster ? (
-          <div className="pointer-events-none absolute inset-0 z-[5]" aria-hidden>
-            <div className="absolute inset-0 bg-black/0 transition-colors duration-[180ms] group-hover:bg-black/35 group-focus-within:bg-black/35" />
-            <div className="absolute inset-0 m-auto flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-black opacity-0 transition-opacity duration-[180ms] group-hover:opacity-100 group-focus-within:opacity-100">
+          <>
+            <div
+              className="pointer-events-none absolute inset-0 z-[5] bg-black/0 transition-colors duration-[180ms] group-hover:bg-black/35 group-focus-within:bg-black/35"
+              aria-hidden
+            />
+            <Link
+              href={playHref}
+              tabIndex={-1}
+              aria-label={`Play ${title}`}
+              className="absolute left-1/2 top-1/2 z-[6] flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-black opacity-0 pointer-events-none transition-opacity duration-[180ms] group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+            >
               <Play className="h-4 w-4 translate-x-0.5 fill-current" />
-            </div>
-          </div>
+            </Link>
+          </>
         ) : null}
 
         {/* Sibling over link — not inside the <a>. Hidden when parent owns top-right actions. */}
@@ -168,8 +175,8 @@ export function MovieCard({
         ) : null}
       </div>
 
-      {/* Title goes to detail so the poster Play path stays exclusive.
-          Out of the tab order — one stop per card on TV. */}
+      {/* Poster + title open the info page. Only the center Play chip starts
+          watch. Out of the tab order — one stop per card on TV. */}
       {!hideMeta ? (
         <Link
           href={detailHref}

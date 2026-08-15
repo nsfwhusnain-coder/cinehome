@@ -232,7 +232,10 @@ export function PlayerControls({
         {onTitleClick ? (
           <button
             type="button"
-            onClick={onTitleClick}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTitleClick();
+            }}
             className="min-w-0 flex-1 truncate text-center text-[15px] font-medium text-white transition hover:text-white/80"
           >
             {title}

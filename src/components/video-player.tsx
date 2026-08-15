@@ -4992,6 +4992,11 @@ export function VideoPlayer({
             setAutoplayHint(null);
             return;
           }
+          if (!isPlaying) {
+            setShowControls(true);
+            resetControlsTimer();
+            return;
+          }
           togglePlay();
         }}
         onDoubleClick={toggleFullscreen}
@@ -5155,34 +5160,52 @@ export function VideoPlayer({
         />
       )}
 
-      {/* Pause: white circle play (LordFlix) — no helper text under the button */}
+      {/* Pause: only the small center chip starts playback — the title opens info. */}
       {hasStream && !isPlaying && !buffering && !error && !showHunting && (
-        <button
-          type="button"
-          onClick={() => {
-            if (dockOpen) closeDock();
-            togglePlay();
-          }}
-          className="absolute inset-0 z-[5] flex items-center justify-center bg-black/25"
-          aria-label="Play"
-        >
-          <span className="flex h-16 w-16 items-center justify-center rounded-full border-0 bg-white/95 shadow-lg transition-all duration-150 hover:scale-[1.08] hover:bg-white">
+        <>
+          <div className="pointer-events-none absolute inset-0 z-[5] bg-black/25" />
+          <button
+            type="button"
+            onClick={() => {
+              if (dockOpen) closeDock();
+              togglePlay();
+            }}
+            className="absolute left-1/2 top-1/2 z-[6] flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-0 bg-white/95 shadow-lg transition-all duration-150 hover:scale-[1.08] hover:bg-white"
+            aria-label="Play"
+          >
             <Play className="ml-[3px] h-6 w-6 fill-[#111] text-[#111]" aria-hidden />
-          </span>
-        </button>
+          </button>
+        </>
       )}
 
       {/* Title + Paused overlaid on video (LordFlix) — stays while paused, above controls */}
       {!isPlaying && hasStream && !showHunting && !error && (
-        <div
-          className="pointer-events-none absolute z-10 max-w-md animate-in fade-in duration-300"
-          style={{ bottom: 72, left: 24 }}
-        >
-          <h3 className="m-0 text-base font-semibold text-white drop-shadow-md">{title}</h3>
-          <p className="m-0 mt-0.5 text-[0.8rem] leading-relaxed text-white/50 drop-shadow">
-            {autoplayHint === SLEEP_TIMER_PAUSED_MSG ? autoplayHint : "Paused"}
-          </p>
-        </div>
+        onTitleClick ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onTitleClick();
+            }}
+            className="absolute z-10 max-w-md animate-in fade-in duration-300 text-left"
+            style={{ bottom: 72, left: 24 }}
+          >
+            <h3 className="m-0 text-base font-semibold text-white drop-shadow-md">{title}</h3>
+            <p className="m-0 mt-0.5 text-[0.8rem] leading-relaxed text-white/50 drop-shadow">
+              {autoplayHint === SLEEP_TIMER_PAUSED_MSG ? autoplayHint : "Paused"}
+            </p>
+          </button>
+        ) : (
+          <div
+            className="pointer-events-none absolute z-10 max-w-md animate-in fade-in duration-300"
+            style={{ bottom: 72, left: 24 }}
+          >
+            <h3 className="m-0 text-base font-semibold text-white drop-shadow-md">{title}</h3>
+            <p className="m-0 mt-0.5 text-[0.8rem] leading-relaxed text-white/50 drop-shadow">
+              {autoplayHint === SLEEP_TIMER_PAUSED_MSG ? autoplayHint : "Paused"}
+            </p>
+          </div>
+        )
       )}
 
       {swipeHint !== "hidden" && (
