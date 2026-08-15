@@ -127,6 +127,7 @@ import { usePlayerStore, type MediaTrack, type QualityLevel } from "@/stores/pla
 import { PlayerControls } from "@/components/player-controls";
 import { LoadingScreen } from "@/components/player/LoadingScreen";
 import { premiumSourceCount } from "@/lib/playback/bloom-visuals";
+import { useHoverPreview } from "@/hooks/use-hover-preview";
 import { PlayerErrorCard, type PlayerErrorAction } from "@/components/player/PlayerErrorCard";
 import { SkipIntroButton } from "@/components/player/SkipIntroButton";
 import type { DockSection } from "@/components/player-dock";
@@ -424,6 +425,8 @@ interface Props {
   nextEpisodeTarget?: { season: number; episode: number } | null;
   /** Lordflix top-bar back */
   onBack?: () => void;
+  /** Click the player title to open the movie/show info page. */
+  onTitleClick?: () => void;
   /** TV episode picker (optional) */
   tvId?: number;
   tvSeasons?: { season_number: number; name?: string; episode_count?: number }[];
@@ -847,6 +850,7 @@ export function VideoPlayer({
   hasNextEpisode,
   fallbackDurationS = 0,
   onNextEpisode,
+  onTitleClick,
   nextEpisodeTarget = null,
   onBack,
   tvId,
@@ -973,6 +977,8 @@ export function VideoPlayer({
   const userPausedRef = useRef(false);
   /** Mid-watch source switch / failover — compact chip only, keep last frame. */
   const [isSwitchingServer, setIsSwitchingServer] = useState(false);
+  const [remuxPacking, setRemuxPacking] = useState(false);
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
   /** One-shot status after hard-error auto-failover (not silent stalls). */
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
   const failoverNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1088,6 +1094,16 @@ export function VideoPlayer({
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const { previewSrc, scoutRef } = useHoverPreview({
+    videoRef,
+    hoverTime,
+    remux: needsRemux,
+    poster: artwork || poster,
+  });
+
+  useEffect(() => {
+    containerRef.current?.focus({ preventScroll: true });
+  }, []);
   const hlsRef = useRef<Hls | null>(null);
   const dashRef = useRef<MediaPlayerClass | null>(null);
   const playbackEngineRef = useRef<"hlsjs" | "native_hls" | "native_file" | "dash">(
@@ -1133,9 +1149,7 @@ export function VideoPlayer({
    * parsed, no frame yet) used to drop the card and flash a black video.
    */
   const showHunting =
-    !error &&
-    !sourcesError &&
-    !everPlayed;
+    (!error && !sourcesError && !everPlayed) || remuxPacking;
   /**
    * Staged, honest status text for the overlay above. `undefined` while
    * still hunting (no source picked yet) lets LoadingScreen's own
@@ -1183,7 +1197,11 @@ export function VideoPlayer({
     return Math.min(1, ahead / BLOOM_TARGET_BUFFER_S);
   })();
 
-  const loadingStatus: string | null = !hasStream
+  const loadingStatus: string | null = remuxPacking
+    ? activeSource && sourceMaxHeight(activeSource) >= 2160
+      ? "Buffering 4K…"
+      : "Buffering…"
+    : !hasStream
     ? totalSourceCount > 0
       ? `Found ${totalSourceCount} source${totalSourceCount === 1 ? "" : "s"} — choosing the best…`
       : null // no sources yet: let LoadingScreen run its "Finding sources…" rotation
@@ -1402,6 +1420,7 @@ export function VideoPlayer({
     everPlayedRef.current = true;
     setEverPlayed(true);
     setIsSwitchingServer(false);
+    setRemuxPacking(false);
   }, [playbackSession]);
 
   const requestAutomaticRosterRefresh = useCallback((): boolean => {
@@ -1502,6 +1521,7 @@ export function VideoPlayer({
     durationProvisionalRef.current = false;
     setDurationProvisional(false);
     setIsSwitchingServer(false);
+    setRemuxPacking(false);
     setActiveSource(null);
     lastStallFeedbackAtRef.current = 0;
     setError(null);
@@ -2061,6 +2081,7 @@ export function VideoPlayer({
           .catch(() => {
             if (controller.signal.aborted) return;
             setIsSwitchingServer(false);
+            setRemuxPacking(false);
             setBuffering(false);
             showStatusNotice("Couldn’t open that server", 2_500);
           });
@@ -3746,6 +3767,7 @@ export function VideoPlayer({
               remuxRollbackRef.current = null;
               pendingRemuxSeekTargetRef.current = null;
               setIsSwitchingServer(false);
+              setRemuxPacking(false);
               setBuffering(false);
             } else if (remuxRollbackRef.current === rollback) {
               rollback.confirming = false;
@@ -3856,7 +3878,10 @@ export function VideoPlayer({
         if (sid) recordDetectedHeight(sid, decodedTier);
       }
       setBuffering(false);
-      if (!remuxRollbackRef.current) setIsSwitchingServer(false);
+      if (!remuxRollbackRef.current) {
+        setIsSwitchingServer(false);
+        setRemuxPacking(false);
+      }
       if (video.readyState >= 2 && (video.currentTime > 0.25 || video.duration > 0)) {
         markEverPlayed();
       }
@@ -4175,7 +4200,7 @@ export function VideoPlayer({
       pendingRemuxSeekTargetRef.current = target;
       setCurrentTime(target);
       freezeLastVideoFrame(video);
-      showStatusNotice("Opening that position…", REMUX_SEEK_NOTICE_MS);
+      setRemuxPacking(true);
 
       remuxSeekTimerRef.current = setTimeout(() => {
         remuxSeekTimerRef.current = null;
@@ -4211,7 +4236,6 @@ export function VideoPlayer({
       setBuffering,
       setCurrentTime,
       setRemuxStart,
-      showStatusNotice,
       tmdbId,
     ]
   );
@@ -4691,9 +4715,19 @@ export function VideoPlayer({
       }
 
       if (isEditable) return;
+      // Only sliders/fields own the arrows. A focused Play button used to
+      // swallow skip/volume until the video itself was clicked.
+      const arrowOwnedByField =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.getAttribute("role") === "slider";
       if (
-        (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") &&
-        isInteractivePlayerTarget(target)
+        (e.key === "ArrowLeft" ||
+          e.key === "ArrowRight" ||
+          e.key === "ArrowUp" ||
+          e.key === "ArrowDown") &&
+        arrowOwnedByField
       ) {
         return;
       }
@@ -4751,8 +4785,8 @@ export function VideoPlayer({
       resetControlsTimer();
     };
 
-    window.addEventListener("keydown", onWindowKeyDown);
-    return () => window.removeEventListener("keydown", onWindowKeyDown);
+    window.addEventListener("keydown", onWindowKeyDown, true);
+    return () => window.removeEventListener("keydown", onWindowKeyDown, true);
   }, [
     hasStream,
     togglePlay,
@@ -4919,6 +4953,14 @@ export function VideoPlayer({
       onTouchEnd={onTouchEnd}
       tabIndex={0}
     >
+      <video
+        ref={scoutRef}
+        muted
+        playsInline
+        preload="none"
+        className="pointer-events-none hidden"
+        aria-hidden
+      />
       <video
         ref={videoRef}
         data-playback-source-id={activeSource?.id || undefined}
@@ -5207,6 +5249,9 @@ export function VideoPlayer({
         isDiscoveringSources={isDiscoveringSources}
         failedSourceIds={failedSourceIds}
         onBack={onBack}
+        onTitleClick={onTitleClick}
+        previewSrc={previewSrc}
+        onHoverTime={setHoverTime}
         tvId={tvId}
         tvSeasons={tvSeasons}
         tvSeason={tvSeason}

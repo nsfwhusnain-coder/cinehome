@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Crown,
-  Info,
   Keyboard,
   Loader2,
   X,
@@ -700,20 +699,6 @@ export function PlayerDock({
                 <div className="min-w-0 flex-1 text-[13px] font-semibold tracking-tight text-white">
                   Playback
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onExpandedSectionChange("info")}
-                  className={cn(
-                    "rounded-full p-1.5 transition",
-                    activeSection === "info"
-                      ? "bg-white/20 text-white"
-                      : "text-white/55 hover:bg-white/15 hover:text-white"
-                  )}
-                  aria-label="Stream info"
-                  aria-pressed={activeSection === "info"}
-                >
-                  <Info className="h-4 w-4" />
-                </button>
                 <button
                   type="button"
                   onClick={onClose}

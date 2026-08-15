@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { tmdbImageUrl, posterSrcSet } from "@/lib/tmdb";
 import { cn } from "@/lib/utils";
-import { Film, Info, Play } from "lucide-react";
+import { Film, Play } from "lucide-react";
 import { CardOverflowMenu } from "@/components/card-overflow-menu";
 import {
   preresolvePlayback,
@@ -152,27 +152,6 @@ export function MovieCard({
               <Play className="h-4 w-4 translate-x-0.5 fill-current" />
             </div>
           </div>
-        ) : null}
-
-        {isPoster ? (
-          <Link
-            href={detailHref}
-            tabIndex={-1}
-            className="absolute left-1 top-1 z-30 flex h-11 w-11 items-center justify-center opacity-0 transition-opacity duration-[180ms] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
-            aria-label={`Details for ${title}`}
-          >
-            <span
-              className="flex h-8 w-8 items-center justify-center rounded-full border border-white/40 text-white"
-              style={{
-                background: "rgba(255,255,255,0.16)",
-                WebkitBackdropFilter: "blur(12px) saturate(170%) brightness(1.2)",
-                backdropFilter: "blur(12px) saturate(170%) brightness(1.2)",
-                boxShadow: "inset 0 1px 1px rgba(255,255,255,0.5)",
-              }}
-            >
-              <Info className="h-3.5 w-3.5" aria-hidden />
-            </span>
-          </Link>
         ) : null}
 
         {/* Sibling over link — not inside the <a>. Hidden when parent owns top-right actions. */}

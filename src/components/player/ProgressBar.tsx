@@ -13,6 +13,8 @@ export interface ProgressBarProps {
   duration: number;
   buffered: number;
   onSeek: (time: number) => void;
+  previewSrc?: string | null;
+  onHoverTime?: (time: number | null) => void;
 }
 
 function formatTime(seconds: number): string {
@@ -41,6 +43,8 @@ export function ProgressBar({
   duration,
   buffered,
   onSeek,
+  previewSrc,
+  onHoverTime,
 }: ProgressBarProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hovering, setHovering] = useState(false);
@@ -71,8 +75,9 @@ export function ProgressBar({
     (e: ReactPointerEvent<HTMLDivElement>) => {
       const ratio = ratioFromClientX(e.clientX);
       setHoverRatio(ratio);
+      if (safeDuration > 0) onHoverTime?.(ratio * safeDuration);
     },
-    [ratioFromClientX]
+    [onHoverTime, ratioFromClientX, safeDuration]
   );
 
   const onPointerDown = useCallback(
@@ -127,6 +132,7 @@ export function ProgressBar({
       onPointerEnter={() => setHovering(true)}
       onPointerLeave={() => {
         if (!dragging) setHovering(false);
+        onHoverTime?.(null);
       }}
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}
@@ -143,13 +149,28 @@ export function ProgressBar({
         }
       }}
     >
-      {/* Hover timestamp tooltip */}
       {showChrome && safeDuration > 0 && (
         <div
-          className="pointer-events-none absolute bottom-full z-20 mb-2 -translate-x-1/2 rounded bg-black/90 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white shadow-md"
-          style={{ left: `${tooltipRatio * 100}%` }}
+          className="pointer-events-none absolute bottom-full z-20 mb-2 flex -translate-x-1/2 flex-col items-center gap-1.5"
+          style={{
+            left: `${Math.min(92, Math.max(8, tooltipRatio * 100))}%`,
+          }}
         >
-          {formatTime(tooltipTime)}
+          {previewSrc ? (
+            <div className="overflow-hidden rounded-md border border-white/25 bg-black shadow-[0_12px_32px_rgba(0,0,0,0.55)]">
+              <img
+                src={previewSrc}
+                alt=""
+                width={176}
+                height={99}
+                className="block h-[99px] w-[176px] object-cover"
+                draggable={false}
+              />
+            </div>
+          ) : null}
+          <div className="rounded bg-black/90 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white shadow-md">
+            {formatTime(tooltipTime)}
+          </div>
         </div>
       )}
 

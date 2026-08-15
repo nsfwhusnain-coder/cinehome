@@ -5,7 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/hooks/use-navigate";
 import { tmdbImageUrl, pickTitleLogoUrl, backdropSrcSet, type TmdbImages } from "@/lib/tmdb";
-import { Play, Info, Plus, Star, Calendar, Heart } from "lucide-react";
+import { Play, Plus, Star, Calendar, Heart } from "lucide-react";
 import { MovieCardData } from "@/components/movie-card";
 import { EASE_OUT_EXPO, transitionHero } from "@/lib/motion";
 import { COMMON_GENRES, COMMON_TV_GENRES } from "@/lib/tmdb";
@@ -91,7 +91,15 @@ function resumeTvEpisode(
   return { season: Number(best.season), episode: Number(best.episode) };
 }
 
-function HeroTitle({ item, mediaType }: { item: FeaturedItem; mediaType: string }) {
+function HeroTitle({
+  item,
+  mediaType,
+  onOpenInfo,
+}: {
+  item: FeaturedItem;
+  mediaType: string;
+  onOpenInfo: () => void;
+}) {
   const { data } = useQuery({
     queryKey: ["tmdb", mediaType, "images", item.id],
     queryFn: async () => {
@@ -115,7 +123,11 @@ function HeroTitle({ item, mediaType }: { item: FeaturedItem; mediaType: string 
   const showLogo = Boolean(logoUrl) && logoReady && !logoFailed;
 
   return (
-    <>
+    <button
+      type="button"
+      onClick={onOpenInfo}
+      className={`block max-w-full text-left ${HERO_FOCUS_RING} rounded-md`}
+    >
       <h1
         className={
           showLogo
@@ -146,22 +158,22 @@ function HeroTitle({ item, mediaType }: { item: FeaturedItem; mediaType: string 
           onError={() => setLogoFailed(true)}
         />
       ) : null}
-    </>
+    </button>
   );
 }
 
 function GlassSegmentedActions({
   onAdd,
-  onInfo,
   inList,
 }: {
   onAdd: () => void;
-  onInfo: () => void;
   inList: boolean;
 }) {
   return (
-    <div
-      className="inline-flex h-11 items-center overflow-hidden rounded-full border border-white/40"
+    <button
+      type="button"
+      onClick={onAdd}
+      className={`inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/40 text-white transition-colors hover:bg-white/10 ${HERO_FOCUS_RING}`}
       style={{
         background: "rgba(255,255,255,0.16)",
         WebkitBackdropFilter: "blur(12px) saturate(170%) brightness(1.2)",
@@ -169,33 +181,14 @@ function GlassSegmentedActions({
         boxShadow:
           "inset 0 1px 1px rgba(255,255,255,0.5), 0 4px 14px rgba(0,0,0,0.4)",
       }}
+      aria-label={inList ? "In watchlist" : "Add to list"}
     >
-      <button
-        type="button"
-        onClick={onAdd}
-        className={`flex h-11 w-11 items-center justify-center text-white transition-colors hover:bg-white/10 ${HERO_FOCUS_RING}`}
-        aria-label={inList ? "In watchlist" : "Add to list"}
-      >
-        {inList ? (
-          <span className="text-sm font-semibold">✓</span>
-        ) : (
-          <Plus className="h-5 w-5" aria-hidden />
-        )}
-      </button>
-      <span
-        className="h-5 w-px shrink-0 self-center"
-        style={{ background: "rgba(255,255,255,0.3)" }}
-        aria-hidden
-      />
-      <button
-        type="button"
-        onClick={onInfo}
-        className={`flex h-11 w-11 items-center justify-center text-white transition-colors hover:bg-white/10 ${HERO_FOCUS_RING}`}
-        aria-label="More info"
-      >
-        <Info className="h-5 w-5" aria-hidden />
-      </button>
-    </div>
+      {inList ? (
+        <span className="text-sm font-semibold">✓</span>
+      ) : (
+        <Plus className="h-5 w-5" aria-hidden />
+      )}
+    </button>
   );
 }
 
@@ -333,9 +326,9 @@ export function HeroCarousel({ items }: Props) {
                   ease: EASE_OUT_EXPO,
                 },
               }}
-              className="absolute inset-0 h-full w-full object-contain"
+              className="absolute inset-0 h-full w-full object-cover"
               style={{
-                objectPosition: "center center",
+                objectPosition: "center 18%",
               }}
             />
           ) : (
@@ -363,7 +356,11 @@ export function HeroCarousel({ items }: Props) {
             exit={{ opacity: 0, y: -10 }}
             transition={transitionHero}
           >
-            <HeroTitle item={current} mediaType={mediaType} />
+            <HeroTitle
+              item={current}
+              mediaType={mediaType}
+              onOpenInfo={() => navigate(`/${mediaType}/${current.id}`)}
+            />
 
             <div
               className="hero-meta mt-5 flex flex-wrap items-center gap-x-3 gap-y-1"
@@ -443,7 +440,6 @@ export function HeroCarousel({ items }: Props) {
 
               <GlassSegmentedActions
                 inList={inList}
-                onInfo={() => navigate(`/${mediaType}/${current.id}`)}
                 onAdd={() => {
                   if (!session?.user?.id) {
                     navigate(`/${mediaType}/${current.id}`);

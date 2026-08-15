@@ -724,6 +724,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
             onNextEpisode={goToNextEpisode}
             nextEpisodeTarget={nextEpisodeTarget}
             onBack={leaveWatch}
+            onTitleClick={() => navigate(`/${mediaType}/${id}`)}
             tvId={mediaType === "tv" ? id : undefined}
             tmdbId={id}
             tvSeasons={

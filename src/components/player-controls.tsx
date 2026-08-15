@@ -99,6 +99,9 @@ interface Props {
   /** TMDB runtime used to label a live-growing remux honestly. */
   expectedDurationS?: number;
   tmdbId?: number;
+  previewSrc?: string | null;
+  onHoverTime?: (time: number | null) => void;
+  onTitleClick?: () => void;
 }
 
 export function PlayerControls({
@@ -142,6 +145,9 @@ export function PlayerControls({
   onSleepMinutesChange,
   expectedDurationS = 0,
   tmdbId,
+  previewSrc,
+  onHoverTime,
+  onTitleClick,
 }: Props) {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const currentTime = usePlayerStore((s) => s.currentTime);
@@ -223,9 +229,19 @@ export function PlayerControls({
         >
           <ArrowLeft className="h-7 w-7" strokeWidth={1.5} />
         </button>
-        <div className="min-w-0 flex-1 truncate text-center text-[15px] font-medium text-white">
-          {title}
-        </div>
+        {onTitleClick ? (
+          <button
+            type="button"
+            onClick={onTitleClick}
+            className="min-w-0 flex-1 truncate text-center text-[15px] font-medium text-white transition hover:text-white/80"
+          >
+            {title}
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1 truncate text-center text-[15px] font-medium text-white">
+            {title}
+          </div>
+        )}
         <button
           type="button"
           className="flex h-9 w-9 items-center justify-center text-white transition hover:opacity-70"
@@ -295,6 +311,8 @@ export function PlayerControls({
             duration={timelineDuration || 0}
             buffered={buffered}
             onSeek={onSeekTo}
+            previewSrc={previewSrc}
+            onHoverTime={onHoverTime}
           />
         </div>
 

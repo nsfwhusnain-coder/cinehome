@@ -342,7 +342,7 @@ function DetailContent({
             alt=""
             // Primary LCP candidate on this route — never lazy.
             fetchPriority="high"
-            className="h-full w-full object-contain"
+            className="h-full w-full object-cover"
           />
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-background from-0% via-background/55 via-35% to-background/15 to-80%" />
