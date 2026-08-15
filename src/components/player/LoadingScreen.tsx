@@ -140,6 +140,10 @@ export function LoadingScreen({
     const raw = posterUrl || backdropUrl;
     return deviceClass === "tv" ? tmdbUrlAtSize(raw, TV_POSTER_RENDITION) : raw;
   }, [deviceClass, posterUrl, backdropUrl]);
+  const previewSrc = useMemo(
+    () => (posterSrc ? tmdbUrlAtSize(posterSrc, "w780") : null),
+    [posterSrc]
+  );
 
   useEffect(() => {
     setArtReady(false);
@@ -185,6 +189,15 @@ export function LoadingScreen({
         {posterSrc ? (
           <div className="bloom-card" data-art={artReady ? "ready" : "loading"}>
             <span className="bloom-card-sheen" aria-hidden />
+            {previewSrc && previewSrc !== posterSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={previewSrc}
+                alt=""
+                className="bloom-poster bloom-poster--preview bloom-poster--ready"
+                draggable={false}
+              />
+            ) : null}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={posterSrc}

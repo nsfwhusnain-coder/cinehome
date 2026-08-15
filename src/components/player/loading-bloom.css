@@ -116,17 +116,27 @@
 }
 
 .bloom-poster {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
   background: transparent;
   opacity: 0;
   transition: opacity 480ms var(--ease);
-  animation: bloom-still 18s ease-in-out infinite alternate;
+}
+
+.bloom-poster--preview {
+  z-index: 0;
 }
 
 .bloom-poster--ready {
   opacity: 1;
+  z-index: 1;
+}
+
+.bloom-card[data-art="ready"] {
+  animation: bloom-glow 4.8s ease-in-out infinite, bloom-still 18s ease-in-out infinite alternate;
 }
 
 .bloom-mark {
