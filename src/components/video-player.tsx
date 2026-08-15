@@ -4958,16 +4958,18 @@ export function VideoPlayer({
         sourceCount={Math.max(sourceCount, healthySourceCount)}
         discovering={Boolean(isDiscoveringSources)}
         status={resumeNotice ?? loadingStatus}
-        /* Bloom visuals: the roster carries stage and tier in light, so the
-           chips need the same facts the Servers panel already has. */
         premiumCount={premiumSourceCount(orderedSources)}
         chosenIndex={activeSourceIndex - 1}
         bufferFill={bloomBufferFill}
-        /* Honest Ultra/fast remux line — bloom phase copy is generic
-           (Searching / Preparing / Opening). Prefer the measured status. */
-        waitHint={loadingStatus}
-        /* Stable per-title seed so each film keeps its own orbital geometry
-           across reopens, and episodes of a series differ slightly. */
+        waitingForFourK={
+          qualityTarget === 2160 &&
+          !orderedSources.some((source) => sourceMaxHeight(source) >= 2160)
+        }
+        waitHint={
+          needsRemux && hasStream
+            ? loadingStatus
+            : resumeNotice ?? null
+        }
         signatureSeed={`${mediaType}:${tmdbId}`}
       />
 
@@ -5032,15 +5034,17 @@ export function VideoPlayer({
           now lives inside the unified LoadingScreen overlay's status text above. */}
       {showBufferingChip && !newSourceNotice && (
         <div
-          className="pointer-events-none absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
+          className="pointer-events-none absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/12 bg-black/60 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
           role="status"
           aria-live="polite"
         >
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-white/80" />
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inset-0 animate-ping rounded-full bg-white/50" />
+            <span className="relative m-auto h-1.5 w-1.5 rounded-full bg-white" />
+          </span>
           <span>
-            Buffering
-            {/* Resolution is actionable to the viewer; the CDN's name is not. */}
-            {playingHeight > 0 ? ` — ${formatResolutionLabel(playingHeight)}` : ""}
+            Catching up
+            {playingHeight > 0 ? ` · ${formatResolutionLabel(playingHeight)}` : ""}
           </span>
         </div>
       )}

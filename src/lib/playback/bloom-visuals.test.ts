@@ -5,6 +5,7 @@ import {
   bloomPhase,
   bloomPhaseCopy,
   bloomRosterCopy,
+  bloomStepIndex,
   hexToHue,
   MAX_CHIPS,
   premiumSourceCount,
@@ -86,11 +87,11 @@ describe("bloomPhase", () => {
 
 describe("bloomMeterProgress", () => {
   it("grows with sources while searching and never invents a full bar", () => {
-    expect(bloomMeterProgress("searching", 0, 0)).toBeCloseTo(0.08);
+    expect(bloomMeterProgress("searching", 0, 0)).toBeCloseTo(0.1);
     expect(bloomMeterProgress("searching", 4, 0)).toBeGreaterThan(
       bloomMeterProgress("searching", 1, 0)
     );
-    expect(bloomMeterProgress("searching", 40, 1)).toBeLessThanOrEqual(0.28);
+    expect(bloomMeterProgress("searching", 40, 1)).toBeLessThanOrEqual(0.36);
   });
 
   it("steps forward through connecting and opening", () => {
@@ -106,9 +107,30 @@ describe("bloomMeterProgress", () => {
 
 describe("bloomPhaseCopy / bloomRosterCopy", () => {
   it("maps each phase to a short title-card line", () => {
-    expect(bloomPhaseCopy("searching")).toBe("Searching");
-    expect(bloomPhaseCopy("connecting")).toBe("Preparing");
+    expect(bloomPhaseCopy("searching")).toBe("Finding a stream");
+    expect(bloomPhaseCopy("connecting")).toBe("Getting ready");
     expect(bloomPhaseCopy("buffering")).toBe("Opening");
+  });
+
+  it("names the 4K wait instead of a generic search", () => {
+    expect(bloomPhaseCopy("searching", { waitingForFourK: true })).toBe(
+      "Finding 4K"
+    );
+    expect(
+      bloomPhaseCopy("searching", { waitingForFourK: true, elapsedMs: 12_000 })
+    ).toBe("Still looking for 4K");
+    expect(bloomPhaseCopy("connecting", { waitingForFourK: true })).toBe(
+      "Preparing 4K"
+    );
+    expect(bloomPhaseCopy("buffering", { waitingForFourK: true })).toBe(
+      "Opening 4K"
+    );
+  });
+
+  it("walks Find → Prepare → Open", () => {
+    expect(bloomStepIndex("searching")).toBe(0);
+    expect(bloomStepIndex("connecting")).toBe(1);
+    expect(bloomStepIndex("buffering")).toBe(2);
   });
 
   it("hides the roster until a source exists", () => {

@@ -1,4 +1,4 @@
-/* Title card loader — poster, a dark room, one honest meter. */
+/* Title card loader — poster, a dark room, honest stages, living light. */
 
 .bloom-stage {
   --bloom-hue: 280;
@@ -6,7 +6,7 @@
   --crimson: 8 86% 56%;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   opacity: 1;
-  transition: opacity 360ms var(--ease);
+  transition: opacity 400ms var(--ease);
 }
 
 .bloom-stage--out {
@@ -15,13 +15,32 @@
 
 .bloom-wash {
   position: absolute;
-  inset: -8%;
-  width: 116%;
-  height: 116%;
+  inset: -10%;
+  width: 120%;
+  height: 120%;
   object-fit: cover;
-  filter: blur(48px) saturate(1.05) brightness(0.38);
-  opacity: 0.55;
-  transform: scale(1.08);
+  filter: blur(52px) saturate(1.2) brightness(0.42);
+  opacity: 0.62;
+  transform: scale(1.1);
+  animation: bloom-wash-drift 28s ease-in-out infinite alternate;
+}
+
+.bloom-aurora {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      42% 36% at 50% 38%,
+      hsl(var(--bloom-hue) 80% 58% / 0.28) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      28% 22% at 28% 72%,
+      hsl(var(--crimson) / 0.16) 0%,
+      transparent 70%
+    );
+  animation: bloom-aurora 7.5s ease-in-out infinite alternate;
 }
 
 .bloom-room {
@@ -30,40 +49,58 @@
   background:
     radial-gradient(
       70% 55% at 50% 42%,
-      hsl(var(--bloom-hue) 40% 18% / 0.35) 0%,
+      hsl(var(--bloom-hue) 40% 18% / 0.28) 0%,
       transparent 62%
     ),
     linear-gradient(
       180deg,
-      rgba(0, 0, 0, 0.28) 0%,
-      transparent 30%,
-      transparent 62%,
-      rgba(0, 0, 0, 0.72) 100%
+      rgba(0, 0, 0, 0.34) 0%,
+      transparent 28%,
+      transparent 58%,
+      rgba(0, 0, 0, 0.78) 100%
     );
 }
 
 .bloom-card-wrap {
   position: relative;
   z-index: 2;
-  animation: bloom-enter 900ms var(--ease) both;
+  animation: bloom-enter 820ms var(--ease) both;
 }
 
 .bloom-card {
-  width: min(42vw, 220px);
+  position: relative;
+  width: min(42vw, 228px);
   aspect-ratio: 2 / 3;
-  border-radius: 14px;
+  border-radius: 16px;
   overflow: hidden;
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.1),
-    0 24px 60px rgba(0, 0, 0, 0.55),
-    0 0 80px hsl(var(--bloom-hue) 60% 40% / 0.22);
+    0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 28px 70px rgba(0, 0, 0, 0.58),
+    0 0 90px hsl(var(--bloom-hue) 70% 48% / 0.28);
+  animation: bloom-glow 4.8s ease-in-out infinite;
+}
+
+.bloom-card-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 32%,
+    rgba(255, 255, 255, 0.18) 48%,
+    transparent 64%
+  );
+  transform: translateX(-130%);
+  animation: bloom-card-sheen 4.6s var(--ease) 900ms infinite;
 }
 
 .bloom-poster {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  animation: bloom-still 22s ease-in-out infinite alternate;
+  object-fit: contain;
+  background: #0a0a0f;
+  animation: bloom-still 18s ease-in-out infinite alternate;
 }
 
 .bloom-mark {
@@ -75,15 +112,15 @@
 .bloom-copy {
   position: relative;
   z-index: 2;
-  margin-top: 1.75rem;
+  margin-top: 1.65rem;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.62rem;
   padding: 0 1.5rem;
-  max-width: 36rem;
+  max-width: 38rem;
   text-align: center;
-  animation: bloom-enter 900ms var(--ease) 80ms both;
+  animation: bloom-enter 820ms var(--ease) 70ms both;
 }
 
 .bloom-wordmark {
@@ -103,20 +140,82 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-display), Montserrat, ui-sans-serif, sans-serif;
-  font-size: clamp(1.25rem, 3vw, 1.85rem);
+  font-size: clamp(1.3rem, 3.1vw, 1.95rem);
   font-weight: 650;
   letter-spacing: -0.03em;
   color: #fff;
   text-shadow: 0 2px 24px rgba(0, 0, 0, 0.7);
 }
 
-.bloom-meter {
-  width: min(12rem, 48vw);
-  height: 2px;
-  margin-top: 0.35rem;
+.bloom-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bloom-step {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  color: rgba(255, 255, 255, 0.28);
+  transition: color 360ms var(--ease);
+}
+
+.bloom-step[data-state="now"] {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.bloom-step[data-state="done"] {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.bloom-step-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.12);
+  background: currentColor;
+  box-shadow: none;
+}
+
+.bloom-step[data-state="now"] .bloom-step-dot {
+  background: hsl(var(--crimson));
+  box-shadow: 0 0 10px hsl(var(--crimson) / 0.7);
+  animation: bloom-dot-breathe 1.6s ease-in-out infinite;
+}
+
+.bloom-step-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.bloom-meter {
+  position: relative;
+  width: min(14.5rem, 56vw);
+  height: 3px;
+  margin-top: 0.2rem;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.1);
   overflow: hidden;
+}
+
+.bloom-meter-pulse {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.22),
+    transparent
+  );
+  animation: bloom-indeterminate 1.85s ease-in-out infinite;
 }
 
 .bloom-meter-fill {
@@ -128,10 +227,12 @@
   background: linear-gradient(
     90deg,
     hsl(var(--crimson)),
-    hsl(var(--bloom-hue) 80% 72%)
+    hsl(var(--bloom-hue) 82% 72%)
   );
-  transition: width 520ms var(--ease);
+  box-shadow: 0 0 12px hsl(var(--crimson) / 0.45);
+  transition: width 560ms var(--ease);
   overflow: hidden;
+  z-index: 1;
 }
 
 .bloom-meter-fill::after {
@@ -141,52 +242,128 @@
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 255, 255, 0.45) 50%,
+    rgba(255, 255, 255, 0.5) 50%,
     transparent 100%
   );
   transform: translateX(-120%);
-  animation: bloom-sheen 2.4s var(--ease) infinite;
+  animation: bloom-sheen 2.1s var(--ease) infinite;
+}
+
+.bloom-chips {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 8px;
+  margin-top: 0.05rem;
+}
+
+.bloom-chip {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.28);
+  transform: scale(0.7);
+  animation: bloom-chip-in 380ms var(--ease) both;
+}
+
+.bloom-chip[data-premium="true"] {
+  width: 9px;
+  height: 9px;
+  background: hsl(var(--bloom-hue) 80% 68%);
+  box-shadow: 0 0 8px hsl(var(--bloom-hue) 80% 60% / 0.55);
+}
+
+.bloom-chip[data-chosen="true"] {
+  background: #fff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
+}
+
+.bloom-chip--ghost {
+  background: rgba(255, 255, 255, 0.1);
+  animation: bloom-ghost 1.5s ease-in-out infinite;
+}
+
+.bloom-chip--ghost:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.bloom-chip--ghost:nth-child(3) {
+  animation-delay: 0.36s;
 }
 
 .bloom-phase {
-  margin: 0.15rem 0 0;
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.2em;
+  margin: 0.2rem 0 0;
+  font-size: 0.7rem;
+  font-weight: 550;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.62);
+  transition: color 280ms var(--ease);
 }
 
 .bloom-roster {
   margin-left: 0.55rem;
   padding-left: 0.55rem;
   border-left: 1px solid rgba(255, 255, 255, 0.16);
-  letter-spacing: 0.14em;
-  color: rgba(255, 255, 255, 0.34);
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.38);
 }
 
 .bloom-dither {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  opacity: 0.04;
+  opacity: 0.035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 @keyframes bloom-enter {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(12px) scale(0.985);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
 @keyframes bloom-still {
   from { transform: scale(1); }
-  to { transform: scale(1.045); }
+  to { transform: scale(1.05); }
+}
+
+@keyframes bloom-wash-drift {
+  from { transform: scale(1.1) translate3d(-1.2%, 0, 0); }
+  to { transform: scale(1.18) translate3d(1.4%, -1%, 0); }
+}
+
+@keyframes bloom-aurora {
+  from { opacity: 0.7; transform: scale(1) translate3d(0, 0, 0); }
+  to { opacity: 1; transform: scale(1.08) translate3d(0, -1.5%, 0); }
+}
+
+@keyframes bloom-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.1),
+      0 28px 70px rgba(0, 0, 0, 0.58),
+      0 0 70px hsl(var(--bloom-hue) 70% 48% / 0.18);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.16),
+      0 32px 80px rgba(0, 0, 0, 0.6),
+      0 0 110px hsl(var(--bloom-hue) 75% 52% / 0.38);
+  }
+}
+
+@keyframes bloom-card-sheen {
+  0% { transform: translateX(-130%); }
+  35%,
+  100% { transform: translateX(130%); }
 }
 
 @keyframes bloom-sheen {
@@ -195,14 +372,48 @@
   100% { transform: translateX(160%); }
 }
 
+@keyframes bloom-indeterminate {
+  0% { transform: translateX(-80%); }
+  100% { transform: translateX(260%); }
+}
+
+@keyframes bloom-dot-breathe {
+  0%,
+  100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.8; }
+}
+
+@keyframes bloom-chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes bloom-ghost {
+  0%,
+  100% { opacity: 0.35; }
+  50% { opacity: 0.8; }
+}
+
 .bloom-stage[data-device="tv"] .bloom-wash {
   filter: none;
   opacity: 0.28;
+  animation: none;
 }
 
+.bloom-stage[data-device="tv"] .bloom-aurora,
 .bloom-stage[data-device="tv"] .bloom-poster,
 .bloom-stage[data-device="tv"] .bloom-card-wrap,
-.bloom-stage[data-device="tv"] .bloom-copy {
+.bloom-stage[data-device="tv"] .bloom-copy,
+.bloom-stage[data-device="tv"] .bloom-card,
+.bloom-stage[data-device="tv"] .bloom-card-sheen,
+.bloom-stage[data-device="tv"] .bloom-meter-pulse,
+.bloom-stage[data-device="tv"] .bloom-step-dot {
   animation: none;
 }
 
@@ -214,8 +425,16 @@
   .bloom-poster,
   .bloom-card-wrap,
   .bloom-copy,
+  .bloom-card,
+  .bloom-card-sheen,
+  .bloom-wash,
+  .bloom-aurora,
   .bloom-meter-fill,
-  .bloom-meter-fill::after {
+  .bloom-meter-fill::after,
+  .bloom-meter-pulse,
+  .bloom-step-dot,
+  .bloom-chip,
+  .bloom-chip--ghost {
     animation: none;
   }
 }

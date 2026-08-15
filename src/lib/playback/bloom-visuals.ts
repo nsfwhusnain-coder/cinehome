@@ -94,11 +94,34 @@ export function bloomPhase(status: string | null, sourceCount: number): BloomPha
   return "searching";
 }
 
+export interface BloomCopyContext {
+  /** Ultra is holding for a 4K source. */
+  waitingForFourK?: boolean;
+  /** Visible time on the title card. Copy may soften; fill never uses this. */
+  elapsedMs?: number;
+}
+
+export const BLOOM_LONG_WAIT_MS = 8_000;
+
+export const BLOOM_STEPS = ["Find", "Prepare", "Open"] as const;
+
+export function bloomStepIndex(phase: BloomPhase): 0 | 1 | 2 {
+  if (phase === "buffering") return 2;
+  if (phase === "connecting") return 1;
+  return 0;
+}
+
 /** Honest, short title-card copy. Never a fake percent. */
-export function bloomPhaseCopy(phase: BloomPhase): string {
-  if (phase === "buffering") return "Opening";
-  if (phase === "connecting") return "Preparing";
-  return "Searching";
+export function bloomPhaseCopy(
+  phase: BloomPhase,
+  ctx: BloomCopyContext = {}
+): string {
+  const fourK = Boolean(ctx.waitingForFourK);
+  const longWait = (ctx.elapsedMs ?? 0) >= BLOOM_LONG_WAIT_MS;
+  if (phase === "buffering") return fourK ? "Opening 4K" : "Opening";
+  if (phase === "connecting") return fourK ? "Preparing 4K" : "Getting ready";
+  if (fourK) return longWait ? "Still looking for 4K" : "Finding 4K";
+  return longWait ? "Still looking" : "Finding a stream";
 }
 
 /**
@@ -113,12 +136,12 @@ export function bloomMeterProgress(
   const sources = Math.max(0, Math.floor(sourceCount));
   const buffer = Math.min(1, Math.max(0, bufferFill));
   if (phase === "searching") {
-    return Math.min(0.28, 0.08 + sources * 0.035);
+    return Math.min(0.36, 0.1 + sources * 0.04);
   }
   if (phase === "connecting") {
-    return Math.min(0.68, 0.34 + buffer * 0.28);
+    return Math.min(0.72, 0.4 + buffer * 0.28);
   }
-  return Math.min(1, 0.62 + buffer * 0.38);
+  return Math.min(1, 0.68 + buffer * 0.32);
 }
 
 /** Roster line — omitted entirely until a real source exists. */
