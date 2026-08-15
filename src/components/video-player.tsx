@@ -345,6 +345,16 @@ const RESUME_NOTICE_MS = 4_000;
 const BG_HEALTH_PROBE_CONCURRENCY = 2;
 const BG_HEALTH_PROBE_TIMEOUT_MS = 4_000;
 const BG_HEALTH_PROBE_CACHE_TTL_MS = 3 * 60 * 1000;
+
+/** Prefer the decoded raster over a source/manifest 4K label. */
+function pictureHeightFromElement(
+  video: HTMLVideoElement | null,
+  fallback = 0
+): number {
+  if (!video) return fallback;
+  const decoded = decodedQualityHeight(video.videoWidth, video.videoHeight);
+  return decoded > 0 ? decoded : fallback;
+}
 /** Queue depth cap per pass — a large roster still only ever has
  * BG_HEALTH_PROBE_CONCURRENCY requests in flight at once. */
 const BG_HEALTH_PROBE_MAX_PER_PASS = 8;
@@ -2734,7 +2744,12 @@ export function VideoPlayer({
             if (data.mediaType !== "video") return;
             const list = mapDashLevels(player);
             const lvl = list.find((l) => l.index === data.newQuality);
-            setPlayingHeight(lvl ? effectiveLevelHeight(lvl) : 0);
+            setPlayingHeight(
+              pictureHeightFromElement(
+                video,
+                lvl ? effectiveLevelHeight(lvl) : 0
+              )
+            );
           });
 
           player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => {
@@ -2999,7 +3014,11 @@ export function VideoPlayer({
                 : hls.startLevel;
           if (seedIdx >= 0) {
             const seedLevel = levelList.find((l) => l.index === seedIdx);
-            if (seedLevel) setPlayingHeight(effectiveLevelHeight(seedLevel));
+            if (seedLevel) {
+              setPlayingHeight(
+                pictureHeightFromElement(video, effectiveLevelHeight(seedLevel))
+              );
+            }
           }
           const savedSpeed = getSavedPlaybackSpeed();
           if (savedSpeed !== 1) video.playbackRate = savedSpeed;
@@ -3153,8 +3172,10 @@ export function VideoPlayer({
           const list = levelsFromHls(hls);
           const level = list.find((l) => l.index === data.level);
           const h = level ? effectiveLevelHeight(level) : 0;
-          setPlayingHeight(h);
-          setPlayingWidth(level?.width ?? videoRef.current?.videoWidth ?? 0);
+          setPlayingHeight(pictureHeightFromElement(videoRef.current, h));
+          setPlayingWidth(
+            videoRef.current?.videoWidth || level?.width || 0
+          );
           setPlayingBitrate(level?.bitrate ?? 0);
           setPlayingFps(level?.frameRate ?? 0);
           if (h > 0 && h < HLS_MIN_HEIGHT * 0.95 && videoRef.current) {
@@ -4915,6 +4936,7 @@ export function VideoPlayer({
         selected: qualityTarget,
         failedIds: new Set(failedSourceIds),
         discovering: Boolean(isDiscoveringSources),
+        playingHeight,
       }),
     [
       displaySources,
@@ -4923,6 +4945,7 @@ export function VideoPlayer({
       qualityTarget,
       failedSourceIds,
       isDiscoveringSources,
+      playingHeight,
     ]
   );
 

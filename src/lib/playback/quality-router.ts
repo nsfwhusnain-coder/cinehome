@@ -134,7 +134,7 @@ function discoveredSourceForQuality(
   return [...candidates].sort((a, b) => a.id.localeCompare(b.id))[0] ?? null;
 }
 
-/** True when this source (or the decoded frame) already is the requested rung. */
+/** True only when the decoded picture is already that rung. A 4K *label* is not enough. */
 export function alreadyAtQualityTarget(
   target: PlayerQualityTarget,
   args: {
@@ -143,10 +143,7 @@ export function alreadyAtQualityTarget(
   }
 ): boolean {
   if (target === "auto") return false;
-  if (normalizePlayerQualityHeight(args.playingHeight ?? 0) === target) {
-    return true;
-  }
-  return args.source ? sourceOffersHeight(args.source, target) : false;
+  return normalizePlayerQualityHeight(args.playingHeight ?? 0) === target;
 }
 
 export function selectSourceForQuality(
@@ -167,8 +164,10 @@ export function buildPlayerQualityOptions(args: {
   selected: PlayerQualityTarget;
   failedIds?: ReadonlySet<string>;
   discovering?: boolean;
+  playingHeight?: number;
 }): PlayerQualityOption[] {
   const failedIds = args.failedIds ?? new Set<string>();
+  const playingTier = normalizePlayerQualityHeight(args.playingHeight ?? 0);
   const options: PlayerQualityOption[] = [
     {
       value: "auto",
@@ -187,11 +186,12 @@ export function buildPlayerQualityOptions(args: {
     const unavailableReason = discoveredSource
       ? sourceUnavailableReason(discoveredSource)
       : null;
+    const pictureIsThisRung = playingTier === height;
     options.push({
       value: height,
       label: qualityLabel(height),
       status:
-        args.selected === height && available
+        pictureIsThisRung
           ? "active"
           : available
             ? "available"

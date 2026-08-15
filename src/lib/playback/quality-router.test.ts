@@ -80,21 +80,31 @@ describe("quality router", () => {
     expect(options.find((option) => option.value === 360)?.status).toBe("unavailable");
   });
 
-  it("does not treat an already-playing 4K source as a new 4K pick", () => {
+  it("only treats decoded 4K as already-4K — a 4K label on 1080 is a lie", () => {
     const quasar = source("quasar", 2160);
     expect(
       alreadyAtQualityTarget(2160, { playingHeight: 2160, source: quasar })
     ).toBe(true);
     expect(
-      alreadyAtQualityTarget(2160, { playingHeight: 1600, source: quasar })
-    ).toBe(true);
-    expect(
-      alreadyAtQualityTarget(2160, {
-        playingHeight: 1080,
-        source: source("luna", 1080),
-      })
+      alreadyAtQualityTarget(2160, { playingHeight: 1080, source: quasar })
     ).toBe(false);
     expect(alreadyAtQualityTarget("auto", { playingHeight: 2160 })).toBe(false);
+  });
+
+  it("does not mark 4K active just because Ultra is selected", () => {
+    const options = buildPlayerQualityOptions({
+      sources: [source("luna", 1080), source("hades", 2160)],
+      activeSourceId: "luna",
+      activeLevels: [{ index: 0, height: 1080 }],
+      selected: 2160,
+      playingHeight: 1080,
+    });
+    expect(options.find((option) => option.value === 2160)?.status).toBe(
+      "available"
+    );
+    expect(options.find((option) => option.value === 1080)?.status).toBe(
+      "active"
+    );
   });
 
   it("removes failed and probe-dead sources from quality routing", () => {

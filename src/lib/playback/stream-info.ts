@@ -107,16 +107,19 @@ function bufferLine(seconds: number): string | null {
 
 /** TV-style stats. Rows are omitted when we have no honest value. */
 export function buildStreamInfoRows(input: StreamInfoInput): StreamInfoRow[] {
-  const liveBitrate =
-    formatBitrateMbps(input.playingBitrate) ??
-    formatBitrateMbps(input.source?.bitrateBps ?? 0);
-  const resolution =
-    formatResolution(input.playingWidth, input.playingHeight) ??
-    (input.source?.maxHeight
-      ? formatResolutionLabel(input.source.maxHeight)
-      : null);
+  const liveBitrate = formatBitrateMbps(input.playingBitrate);
+  const output = formatResolution(input.playingWidth, input.playingHeight);
+  const listedHeight = input.source?.maxHeight ?? 0;
+  const outputTier =
+    decodedQualityHeight(input.playingWidth, input.playingHeight) ||
+    input.playingHeight;
+  const listedDisagrees =
+    Boolean(output) &&
+    listedHeight >= 1080 &&
+    Math.abs(listedHeight - outputTier) >= 400;
   const rows: Array<[string, string | null]> = [
-    ["Resolution", resolution],
+    ["Output", output],
+    ["Listed as", listedDisagrees ? formatResolutionLabel(listedHeight) : null],
     ["Bitrate", liveBitrate],
     ["Video", formatVideoCodec(input.source, input.levels)],
     ["Frame rate", formatFrameRate(input.playingFps)],

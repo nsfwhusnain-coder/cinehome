@@ -59,6 +59,25 @@ describe("stream info formatters", () => {
 });
 
 describe("buildStreamInfoRows", () => {
+  it("never invents 4K from a source label when the picture is 1080", () => {
+    const rows = buildStreamInfoRows({
+      source: source({ maxHeight: 2160, quality: "2160p" }),
+      serverName: "Quasar",
+      playingWidth: 1920,
+      playingHeight: 1080,
+      playingBitrate: 4_100_000,
+      playingFps: 24,
+      levels: [],
+      audioTracks: [],
+      activeAudioId: 0,
+      bufferAheadS: 12,
+    });
+    const byLabel = Object.fromEntries(rows.map((row) => [row.label, row.value]));
+    expect(byLabel.Output).toBe("1920 × 1080 · 1080p");
+    expect(byLabel["Listed as"]).toBe("4K");
+    expect(byLabel.Bitrate).toBe("4.10 Mbps");
+  });
+
   it("omits empty rows and prefers live picture over source metadata", () => {
     const rows = buildStreamInfoRows({
       source: source(),
@@ -73,7 +92,8 @@ describe("buildStreamInfoRows", () => {
       bufferAheadS: 34,
     });
     const byLabel = Object.fromEntries(rows.map((row) => [row.label, row.value]));
-    expect(byLabel.Resolution).toBe("1920 × 800 · 1080p");
+    expect(byLabel.Output).toBe("1920 × 800 · 1080p");
+    expect(byLabel["Listed as"]).toBe("4K");
     expect(byLabel.Bitrate).toBe("6.20 Mbps");
     expect(byLabel.Video).toBe("H.264");
     expect(byLabel["Frame rate"]).toBe("23.98 fps");

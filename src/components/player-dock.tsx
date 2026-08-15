@@ -431,6 +431,14 @@ export function PlayerDock({
                     {" "}· now {formatResolutionLabel(playingHeight)}
                   </span>
                 )}
+                {typeof option.value === "number" &&
+                  activeQualityTarget === option.value &&
+                  playingHeight > 0 &&
+                  playingHeight + 200 < option.value && (
+                    <span className="text-white/40">
+                      {" "}· playing {formatResolutionLabel(playingHeight)}
+                    </span>
+                  )}
               </OptionRow>
             );
           })}
