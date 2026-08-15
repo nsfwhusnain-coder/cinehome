@@ -18,6 +18,7 @@ import {
 } from "./source-quality";
 
 export const ROSTER_HEIGHT_UPGRADE_PX = 100;
+const STARTUP_UHD = 2160;
 
 export interface SelectActiveSourceInput {
   roster: readonly PlaybackSource[];
@@ -64,15 +65,25 @@ export function shouldAdoptRosterUpgrade(options: {
   fourKStartup: FourKStartupPreference;
   userPicked: boolean;
   contentClass?: string | null;
+  preferredHeight?: "auto" | number | null;
 }): boolean {
-  const { current, candidate, everPlayed, fourKStartup, userPicked, contentClass } =
-    options;
+  const {
+    current,
+    candidate,
+    everPlayed,
+    fourKStartup,
+    userPicked,
+    contentClass,
+    preferredHeight,
+  } = options;
   if (candidate.id === current.id) return false;
   if (userPicked) return false;
 
   const currentLang = sourceAudioLanguageRank(current, contentClass);
   const candidateLang = sourceAudioLanguageRank(candidate, contentClass);
-  if (candidateLang < currentLang) return false;
+  if (candidateLang < currentLang && sourceMaxHeight(candidate) < STARTUP_UHD) {
+    return false;
+  }
 
   const candidateRemux = sourceDelivery(candidate) === "remux";
   const currentEnglishDirect =
@@ -85,8 +96,18 @@ export function shouldAdoptRosterUpgrade(options: {
 
   if (candidateLang > currentLang) return true;
 
-  // After first frame, never remount for a taller/richer source. Ultra waits
-  // for 4K up front. A mid-play swap reloads the player and flashes the loader.
+  const wantsUhd =
+    preferredHeight === 2160 ||
+    preferredHeight === "auto" ||
+    preferredHeight == null;
+  const candidateIsDirectUhd =
+    sourceMaxHeight(candidate) >= STARTUP_UHD &&
+    sourceDelivery(candidate) === "direct";
+  if (wantsUhd && candidateIsDirectUhd && sourceMaxHeight(current) < STARTUP_UHD) {
+    return true;
+  }
+
+  // After first frame, never remount for a same-tier richer encode.
   if (everPlayed) return false;
 
   const betterMulti = isMultiRendition(candidate) && !isMultiRendition(current);
@@ -183,6 +204,7 @@ export function selectActiveSource(
         fourKStartup: input.fourKStartup,
         userPicked: input.userPicked,
         contentClass: input.contentClass,
+        preferredHeight: input.preferredHeight,
       })
     ) {
       return {

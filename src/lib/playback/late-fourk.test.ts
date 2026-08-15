@@ -52,13 +52,17 @@ describe("findLateFourKSource", () => {
     ).toBe("uhd");
   });
 
-  it("does not steal a working 1080p for an unproven 4K row", () => {
-    const unproven = source({ id: "maybe-4k", maxHeight: 2160 });
+  it("adopts an unprobed direct 4K when Ultra is the preset", () => {
+    const unproven = source({
+      id: "maybe-4k",
+      maxHeight: 2160,
+      type: "hls",
+    });
     expect(
       findLateFourKSource(playing1080, [playing1080, unproven], {
-        preferredHeight: "auto",
-      })
-    ).toBeNull();
+        preferredHeight: 2160,
+      })?.id
+    ).toBe("maybe-4k");
   });
 
   it("leaves remux 4K to the prewarm path", () => {

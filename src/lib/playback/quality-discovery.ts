@@ -13,7 +13,7 @@ export interface MaximumStartupGate {
   released: boolean;
 }
 
-function hasPlayablePreferredQuality(response: PlaybackResponse): boolean {
+export function hasPlayablePreferredQuality(response: PlaybackResponse): boolean {
   const preferred = response.preferences?.playbackQuality;
   if (typeof preferred !== "number") return true;
   return (response.sources ?? []).some((source) => {
@@ -42,9 +42,6 @@ export function shouldWaitForMaximumFourK(
 ): boolean {
   if (!response || !discoveryOpen || startupReleased) return false;
   if (response.preferences?.playbackQuality !== 2160) return false;
-  // A remembered complete roster is already the answer — do not hide 1080
-  // and hunt again just because Ultra is the profile default.
-  if (!response.partial && (response.sources?.length ?? 0) > 0) return false;
   return !hasPlayablePreferredQuality(response);
 }
 

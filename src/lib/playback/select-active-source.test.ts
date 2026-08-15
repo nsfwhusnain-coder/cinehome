@@ -104,6 +104,38 @@ describe("selectActiveSource", () => {
     expect(upgrade.next?.id).toBe("lean-luna");
   });
 
+  it("switches a playing 1080 stream to direct 4K when Ultra is the preset", () => {
+    const quasar = src("quasar-4k", 2160, {
+      origin: "embed",
+      provider: "Videasy",
+      label: "Quasar",
+      type: "hls",
+      container: undefined,
+    });
+    expect(
+      shouldAdoptRosterUpgrade({
+        current: direct1080,
+        candidate: quasar,
+        everPlayed: true,
+        fourKStartup: "maximum",
+        userPicked: false,
+        preferredHeight: 2160,
+      })
+    ).toBe(true);
+
+    const switched = selectActiveSource({
+      roster: [direct1080, quasar],
+      active: direct1080,
+      userPicked: false,
+      everPlayed: true,
+      autoUpgraded: false,
+      fourKStartup: "maximum",
+      preferredHeight: 2160,
+    });
+    expect(switched.replace).toBe(true);
+    expect(switched.next?.id).toBe("quasar-4k");
+  });
+
   it("does not remount a playing remux 4K onto late Quasar", () => {
     const quasar = src("quasar-4k", 2160, {
       origin: "embed",

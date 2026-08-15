@@ -24,6 +24,7 @@ import {
 } from "@/lib/playback/request-error";
 import {
   advanceMaximumStartupGate,
+  hasPlayablePreferredQuality,
   preferredQualityDiscoveryPending,
   shouldWaitForMaximumFourK,
   ULTRA_STARTUP_HOLD_MS,
@@ -188,6 +189,7 @@ function mergePlaybackResponses(
   }
   const defaultSource = decideImmediateSource(mergedSources, {
     preferredHeight: heightPref,
+    fourKStartup: profilePreferences?.fourKStartup,
   });
 
   // Once full has returned, prefer its partial flag so fast's soft-miss partial doesn't stick forever.
@@ -425,11 +427,15 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const gateReleased =
     maximumGate.target === wallTarget && maximumGate.released;
   const wantsLockedFourK = mergedData?.preferences?.playbackQuality === 2160;
+  const fullSettled = Boolean(full.data) && !full.isFetching;
+  const missingDirectFourK =
+    Boolean(wantsLockedFourK && mergedData && !hasPlayablePreferredQuality(mergedData));
   const maximumDiscoveryOpen =
     !discoveryWallHit &&
     (initialFullResolveOpen ||
       fullStillOpen ||
-      preferredQualityDiscoveryPending(mergedData));
+      preferredQualityDiscoveryPending(mergedData) ||
+      (missingDirectFourK && !fullSettled));
   const holdMaximumStartup = shouldWaitForMaximumFourK(
     mergedData,
     maximumDiscoveryOpen,

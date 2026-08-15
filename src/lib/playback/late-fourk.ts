@@ -1,5 +1,4 @@
 import type { PlaybackSource } from "./types";
-import { autoLanguagePool } from "./decide-playback";
 import {
   isSourcePlayableHere,
   pickDefaultSource,
@@ -44,12 +43,13 @@ export function findLateFourKSource(
     if (!isSourcePlayableHere(source)) return false;
     if (sourceMaxHeight(source) < UHD_HEIGHT) return false;
     if (source.probe?.ok === false) return false;
-    return source.probe?.ok === true || source.origin === "debrid";
+    if (sourceDelivery(source) === "remux") return false;
+    return true;
   });
   if (!pool.length) return null;
 
   const best = pickDefaultSource(
-    autoLanguagePool(pool),
+    pool,
     options.preferredProvider,
     UHD_HEIGHT
   );

@@ -4364,12 +4364,12 @@ export function VideoPlayer({
     }
   }, []);
 
-  // Never remount after first frame to "upgrade" 1080 → 4K. Ultra waits
-  // for 4K up front. Late switches reload the player and flash the loader.
+  // Preset 4K: if we started on 1080 (fast debrid / remembered Luna) and a
+  // direct 4K source arrives, switch once. Remux 4K stays picker-only.
 
   useEffect(() => {
-    if (qualityTargetRef.current === 2160) return;
-    if (!everPlayed || !activeSource || userSelectedSourceRef.current) return;
+    if (!wantsFourKDiscovery(qualityTargetRef.current)) return;
+    if (!activeSource || userSelectedSourceRef.current) return;
     const candidate = findLateFourKSource(activeSource, orderedSources, {
       preferredProvider: getPreferredProvider(),
       preferredHeight: qualityTargetRef.current,

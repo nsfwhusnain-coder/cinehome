@@ -214,13 +214,16 @@ export function decidePlayback(
     fourKStartup === "maximum" || options.preferredHeight === STARTUP_UHD_HEIGHT;
 
   if (lockFourK) {
-    // Only auto-start *direct* 4K (Quasar / Poseidon). Remux 4K (Hades)
-    // stays in the list — starting it first is what 404s the player.
+    // Ultra searches the identity pool, not the English-only auto pool.
+    // Unlabeled Quasar/Solstice 4K used to be dropped the moment Kronos
+    // (stamped English 1080) appeared — preset 4K then started at 1080.
+    const identity = autoIdentityPool(live);
     const fourKDirect = pickFrom(
-      roster.filter(
+      identity.filter(
         (source) =>
           sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT &&
-          sourceDelivery(source) === "direct"
+          sourceDelivery(source) === "direct" &&
+          isHouseholdStartLanguage(source)
       ),
       options,
       STARTUP_UHD_HEIGHT

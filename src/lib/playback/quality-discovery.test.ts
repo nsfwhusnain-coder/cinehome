@@ -68,9 +68,11 @@ describe("preferred quality discovery", () => {
     expect(shouldWaitForMaximumFourK(ultra, true, true)).toBe(false);
   });
 
-  it("plays a remembered 1080 roster immediately instead of hunting 4K again", () => {
+  it("still waits on a remembered 1080 roster when Ultra is on and discovery is open", () => {
     const remembered = response([source("luna", 1080)]);
     remembered.partial = undefined;
+    expect(shouldWaitForMaximumFourK(remembered, true)).toBe(true);
+    remembered.sources = [source("luna", 1080), source("quasar", 2160)];
     expect(shouldWaitForMaximumFourK(remembered, true)).toBe(false);
   });
 

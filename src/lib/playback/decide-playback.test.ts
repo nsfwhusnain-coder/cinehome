@@ -127,6 +127,23 @@ describe("decidePlayback contract", () => {
     expect(decision.immediate?.id).toBe("luna");
   });
 
+  it("Ultra starts unlabeled Solstice 4K over English Kronos 1080", () => {
+    const solstice = src({
+      id: "solstice",
+      provider: "Vidking",
+      label: "Solstice",
+      audioLanguage: "und",
+      type: "hls",
+      maxHeight: 2160,
+    });
+    const decision = decidePlayback([kronos, solstice, luna], {
+      preferredHeight: 2160,
+      fourKStartup: "maximum",
+    });
+    expect(decision.immediate?.id).toBe("solstice");
+    expect(decision.deferredFourK).toBeNull();
+  });
+
   it("starts native 4K immediately and does not defer remux", () => {
     const decision = decidePlayback([poseidon, kronos, hades], {
       preferredHeight: 2160,
