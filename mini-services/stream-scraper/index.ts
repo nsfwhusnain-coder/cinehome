@@ -109,6 +109,17 @@ import {
 } from "./roster-health";
 import { appendNewSourceIdentities } from "./progressive-merge";
 import { parseContentClassParam, resultCacheKey } from "./result-cache-key";
+import {
+  hydrateWarmRosters,
+  loadWarmRoster,
+  persistWarmRoster,
+  providersToSkip,
+  readTitleCatalog,
+  rememberTitleHits,
+  rememberTitleMiss,
+  titleMemoryId,
+  titleMemoryIdFromCacheKey,
+} from "./source-memory";
 import { capRosterWithQualityReserve } from "./quality-roster-cap";
 import { mergeDistinctStreamEntries } from "./source-entry-merge";
 import {
@@ -1432,8 +1443,14 @@ function setCachedResult(key: string, result: ScrapeResult): void {
   if (ttl <= 0) return;
 
   if (resultCache.has(key)) removeFromResultCacheOrder(key);
-  resultCache.set(key, { result, expiresAt: Date.now() + ttl });
+  const expiresAt = Date.now() + ttl;
+  resultCache.set(key, { result, expiresAt });
   resultCacheOrder.push(key);
+  persistWarmRoster(key, result, expiresAt);
+  const titleId = titleMemoryIdFromCacheKey(key);
+  if (titleId && result.sources.length) {
+    rememberTitleHits(titleId, result.sources);
+  }
   while (resultCacheOrder.length > MAX_RESULT_CACHE) {
     const oldest = resultCacheOrder.shift();
     if (oldest) resultCache.delete(oldest);
@@ -1446,6 +1463,12 @@ function getCached(key: string): ScrapeResult | null {
     if (entry) {
       resultCache.delete(key);
       removeFromResultCacheOrder(key);
+    }
+    const disk = loadWarmRoster<ScrapeResult>(key);
+    if (disk) {
+      resultCache.set(key, { result: disk.result, expiresAt: disk.expiresAt });
+      resultCacheOrder.push(key);
+      return disk.result;
     }
     return null;
   }
@@ -2379,8 +2402,9 @@ async function resolveFastApiSources(
   // back on the race — the old enc-dec.app Videasy path is still dead.
   // CinePro uses the shorter fast budget so timeout can record circuit failure
   // instead of hanging past FAST_MAX_WAIT as a silent late-only arm.
-  const race = await raceProviderArms<SourceEntry>(
-    [
+  const memoryId = titleMemoryId(mediaType, tmdbId, season, episode);
+  const skip = new Set(providersToSkip(readTitleCatalog(memoryId)));
+  const arms = [
       { provider: "vixsrc", run: () => resolveVixsrcFast(tmdbId, mediaType, season, episode) },
       {
         provider: "notorrent",
@@ -2410,6 +2434,14 @@ async function resolveFastApiSources(
         provider: "vidrock",
         run: () => resolveVidrockEntries(tmdbId, mediaType, season, episode),
       },
+    ].filter((arm) => !skip.has(arm.provider));
+  const race = await raceProviderArms<SourceEntry>(
+    arms.length ? arms : [
+      { provider: "vixsrc", run: () => resolveVixsrcFast(tmdbId, mediaType, season, episode) },
+      {
+        provider: "videasy",
+        run: () => resolveVideasyEntries(tmdbId, mediaType, season, episode),
+      },
     ],
     {
       firstHitGraceMs: FAST_FIRST_GRACE_MS,
@@ -2420,6 +2452,9 @@ async function resolveFastApiSources(
           outcome.status === "error" ? "warn" : "info",
           `[provider] fast request provider=${outcome.provider} status=${outcome.status} count=${outcome.count} ms=${outcome.ms} late=${outcome.late}${outcome.error ? ` error=${outcome.error}` : ""}`
         );
+        if (outcome.status === "empty") {
+          rememberTitleMiss(memoryId, outcome.provider);
+        }
       },
     }
   );
@@ -3447,6 +3482,15 @@ function logCineproBootState(): void {
 warmBrowsers();
 server.listen(PORT, () => {
   console.log(`[stream-scraper] listening on http://localhost:${PORT}`);
+  const warm = hydrateWarmRosters<ScrapeResult>();
+  for (const row of warm) {
+    if (resultCache.has(row.key)) continue;
+    resultCache.set(row.key, { result: row.result, expiresAt: row.expiresAt });
+    resultCacheOrder.push(row.key);
+  }
+  if (warm.length) {
+    logAt("info", `[memory] restored ${warm.length} warm title roster(s) from disk`);
+  }
   logCineproBootState();
   // Pre-warm cinepro-core's cache for popular titles so the CinePro arm returns
   // instant sources instead of timing out on cold builds (see cinepro-warmer.ts).

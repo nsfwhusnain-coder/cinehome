@@ -75,3 +75,6 @@ db-backups/
 # Remuxed/transcoded HLS output — regenerable, and a single 4K remux is
 # tens of GB. Bind-mounted into the container; never versioned.
 transcode-cache/
+
+# Title/server memory — signed URLs + catalog, regenerable
+data/source-memory/

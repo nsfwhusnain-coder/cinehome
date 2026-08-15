@@ -51,6 +51,9 @@ services:
       # Transcoded HLS segment cache (pre-transcoded 4K ladders + live 1080p).
       # Persisted so popular titles stay cached across restarts.
       - ./transcode-cache:/app/transcode-cache
+      # Which servers already had this title at 4K/1080, plus warm scrape
+      # rosters. Survives deploys so Play does not cold-scrape every time.
+      - ./data/source-memory:/app/data/source-memory
     # AMD iGPU render node ONLY (h264_vaapi hardware encode).
     # renderD128 is the sole render node on the host and is amdgpu (PCI 1002:1636).
     # The host's NVIDIA card has NO /dev/dri node (driver deliberately unloaded),

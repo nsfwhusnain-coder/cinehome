@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-mkdir -p /app/db /app/transcode-cache
+mkdir -p /app/db /app/transcode-cache /app/data/source-memory
 
 bunx prisma db push --skip-generate
 
