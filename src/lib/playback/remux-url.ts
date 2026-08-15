@@ -20,6 +20,9 @@ export function buildRemuxUrl(options: {
     sourceId: options.source.id,
     mode: "remux",
     audioPreference: options.audio.preference,
+    maxHeight: String(
+      Math.max(2160, options.source.maxHeight ?? 0) || 2160
+    ),
   });
   const originalLanguage = normalizeTrackLanguage(options.audio.originalLanguage);
   const preferredLanguage = normalizeTrackLanguage(options.audio.preferredLanguage);

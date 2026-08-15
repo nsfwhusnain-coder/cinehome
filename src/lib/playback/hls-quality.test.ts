@@ -12,6 +12,7 @@ import {
   hlsPromotionTargetHeight,
   isQualityMismatch,
   pickDefaultQualityIndex,
+  pickHighestLevelIndex,
   pickStartLevelIndex,
   levelsFromQualityRungs,
 } from "./hls-quality";
@@ -331,9 +332,22 @@ describe("ABR floor guard (findMinLevelIndexForHeight / findBestLevelForTarget)"
 
 describe("deriveHeightFromBitrate", () => {
   it("classifies common re-encode bitrate bands", () => {
+    expect(deriveHeightFromBitrate(8_000_000)).toBe(2160);
     expect(deriveHeightFromBitrate(4_000_000)).toBe(1080);
     expect(deriveHeightFromBitrate(1_500_000)).toBe(720);
     expect(deriveHeightFromBitrate(800_000)).toBe(480);
+  });
+});
+
+describe("pickHighestLevelIndex", () => {
+  it("locks Ultra onto the richest 4K rung", () => {
+    const levels: QualityLevel[] = [
+      { index: 0, height: 1080, bitrate: 8_000_000 },
+      { index: 1, height: 2160, bitrate: 12_000_000 },
+      { index: 2, height: 2160, bitrate: 22_000_000 },
+    ];
+    expect(pickHighestLevelIndex(levels)).toBe(2);
+    expect(pickStartLevelIndex(levels, 2160)).toBe(2);
   });
 });
 

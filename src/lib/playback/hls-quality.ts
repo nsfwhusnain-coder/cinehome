@@ -20,8 +20,8 @@ export interface QualityOption {
  * when the ladder only exposes bitrate (common on proxy playlists).
  */
 export function deriveHeightFromBitrate(bitrate: number): number {
-  if (bitrate >= 12_000_000) return 2160;
-  if (bitrate >= 6_000_000) return 1440;
+  if (bitrate >= 8_000_000) return 2160;
+  if (bitrate >= 5_500_000) return 1440;
   // Many 1080p ladders sit ~2.5–5 Mbps after re-encode — do not classify as 720.
   if (bitrate >= 2_500_000) return 1080;
   if (bitrate >= 1_200_000) return 720;
@@ -337,6 +337,17 @@ export function findFloorBitrateKbps(
  * Shared here so the picker's "Auto (up to Xp)" hint and the player's
  * initial level selection can never disagree.
  */
+/** Highest raster, then richest bitrate — Ultra's 4K lock. */
+export function pickHighestLevelIndex(levels: QualityLevel[]): number {
+  if (!levels.length) return -1;
+  return levels.reduce((best, level) => {
+    const height = effectiveLevelHeight(level);
+    const bestHeight = effectiveLevelHeight(best);
+    if (height !== bestHeight) return height > bestHeight ? level : best;
+    return (level.bitrate ?? 0) > (best.bitrate ?? 0) ? level : best;
+  }).index;
+}
+
 export function pickDefaultQualityIndex(levels: QualityLevel[]): number {
   if (!levels.length) return -1;
   const withHeights = levels.map((l) => ({ ...l, height: effectiveLevelHeight(l) }));
@@ -370,6 +381,9 @@ export function pickStartLevelIndex(
   target: "auto" | number
 ): number {
   if (!levels.length) return -1;
+  if (typeof target === "number" && target >= 2160) {
+    return pickHighestLevelIndex(levels);
+  }
   if (target !== "auto") return findBestLevelForTarget(levels, target);
   const floorIdx = pickDefaultQualityIndex(levels);
   if (floorIdx >= 0) return floorIdx;

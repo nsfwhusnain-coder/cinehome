@@ -25,5 +25,6 @@ describe("buildRemuxUrl", () => {
     expect(parsed.searchParams.get("ticket")).toBe("opaque-ticket");
     expect(parsed.searchParams.get("sourceId")).toBe("hades");
     expect(parsed.searchParams.get("mode")).toBe("remux");
+    expect(parsed.searchParams.get("maxHeight")).toBe("2160");
   });
 });

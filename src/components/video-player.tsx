@@ -98,6 +98,7 @@ import {
   hlsPromotionTargetHeight,
   maxLevelHeight,
   pickDefaultQualityIndex,
+  pickHighestLevelIndex,
   pickStartLevelIndex,
   levelsFromQualityRungs,
 } from "@/lib/playback/hls-quality";
@@ -727,6 +728,10 @@ function applyPreferredHlsQuality(
     return -1;
   }
 
+  if (typeof prefRaw === "number" && prefRaw >= 2160) {
+    return forceHlsLevel(hls, pickHighestLevelIndex(levels));
+  }
+
   const targetH = prefHeight;
   let idx = findBestLevelForTarget(levels, targetH);
   // Sub-HD-only ladder (pickDefaultQualityIndex = -1): still force best available.
@@ -1148,8 +1153,9 @@ export function VideoPlayer({
    * Stay up until `everPlayed` — a picked source with buffering=false (manifest
    * parsed, no frame yet) used to drop the card and flash a black video.
    */
-  const showHunting =
-    (!error && !sourcesError && !everPlayed) || remuxPacking;
+  const showHunting = !error && !sourcesError && !everPlayed;
+  /** Mid-play remux skip: last frame + spinner. Never the first-load title card. */
+  const showSeekSpinner = remuxPacking && everPlayed;
   /**
    * Staged, honest status text for the overlay above. `undefined` while
    * still hunting (no source picked yet) lets LoadingScreen's own
@@ -1416,11 +1422,11 @@ export function VideoPlayer({
         engine: playbackEngineRef.current,
       });
     }
+    setRemuxPacking(false);
     if (everPlayedRef.current) return;
     everPlayedRef.current = true;
     setEverPlayed(true);
     setIsSwitchingServer(false);
-    setRemuxPacking(false);
   }, [playbackSession]);
 
   const requestAutomaticRosterRefresh = useCallback((): boolean => {
@@ -4226,20 +4232,48 @@ export function VideoPlayer({
         resumeAtRef.current = target;
         initialTimeAppliedRef.current = false;
         setBuffering(true);
-        setIsSwitchingServer(true);
-        if (remuxStartAtRef.current === startAtSeconds) {
-          setSourceReloadGeneration((value) => value + 1);
-        } else {
-          setRemuxStart(startAtSeconds);
+        const remount = () => {
+          if (generation !== remuxSeekGenerationRef.current) return;
+          if (remuxStartAtRef.current === startAtSeconds) {
+            setSourceReloadGeneration((value) => value + 1);
+          } else {
+            setRemuxStart(startAtSeconds);
+          }
+        };
+        if (!tmdbId) {
+          remount();
+          return;
         }
+        const prewarmUrl = buildRemuxUrl({
+          source,
+          mediaType: mediaType ?? "movie",
+          tmdbId,
+          season: tvSeason,
+          episode: tvEpisode,
+          audio: audioSelectionRef.current,
+          prewarm: true,
+          startAtSeconds,
+        });
+        remuxSeekAbortRef.current?.abort();
+        const controller = new AbortController();
+        remuxSeekAbortRef.current = controller;
+        void prewarmRemuxPosition(prewarmUrl, { signal: controller.signal })
+          .catch(() => undefined)
+          .then(() => {
+            if (controller.signal.aborted) return;
+            remount();
+          });
       }, REMUX_SEEK_DEBOUNCE_MS);
     },
     [
       logicalPlayhead,
+      mediaType,
       setBuffering,
       setCurrentTime,
       setRemuxStart,
       tmdbId,
+      tvEpisode,
+      tvSeason,
     ]
   );
 
@@ -5003,6 +5037,19 @@ export function VideoPlayer({
         playsInline
       />
 
+      {showSeekSpinner ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center"
+          role="status"
+          aria-live="polite"
+          aria-label="Buffering"
+        >
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-black/45 backdrop-blur-sm">
+            <Loader2 className="h-9 w-9 animate-spin text-white" />
+          </span>
+        </div>
+      ) : null}
+
       <LoadingScreen
         visible={showHunting}
         serverName={huntingName}
@@ -5086,7 +5133,7 @@ export function VideoPlayer({
 
       {/* Post-first-frame mid-watch stall only — the pre-first-frame equivalent
           now lives inside the unified LoadingScreen overlay's status text above. */}
-      {showBufferingChip && !newSourceNotice && (
+      {showBufferingChip && !newSourceNotice && !showSeekSpinner && (
         <div
           className="pointer-events-none absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/12 bg-black/60 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-lg backdrop-blur-md"
           role="status"
