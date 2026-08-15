@@ -84,13 +84,13 @@ const pack4k = src({
 });
 
 describe("decidePlayback contract", () => {
-  it("starts direct 4K once when Ultra is selected, never remux-then-reload", () => {
+  it("starts remux 4K when Ultra is selected and no direct 4K exists", () => {
     const decision = decidePlayback([hindi1080, hades, luna], {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(decision.immediate?.id).toBe("luna");
-    expect(decision.deferredFourK?.id).toBe("hades");
+    expect(decision.immediate?.id).toBe("hades");
+    expect(decision.deferredFourK).toBeNull();
   });
 
   it("starts Kronos over Hindi, remux, and Arabic", () => {
@@ -177,13 +177,13 @@ describe("decidePlayback contract", () => {
     expect(decision.immediate?.id).toBe("kronos");
   });
 
-  it("starts direct HD when Ultra has remux 4K but no Quasar/Poseidon", () => {
+  it("starts remux 4K when Ultra has Hades but no Quasar/Poseidon", () => {
     const decision = decidePlayback([luna, hades], {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(decision.immediate?.id).toBe("luna");
-    expect(decision.deferredFourK?.id).toBe("hades");
+    expect(decision.immediate?.id).toBe("hades");
+    expect(decision.deferredFourK).toBeNull();
   });
 
   it("auto may still fast-start HD while remux 4K is deferred", () => {

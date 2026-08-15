@@ -20,8 +20,6 @@ export function hasPlayablePreferredQuality(response: PlaybackResponse): boolean
     if (source.verified === false || source.probe?.ok === false) return false;
     if (!isSourcePlayableHere(source)) return false;
     if (sourceMaxHeight(source) < preferred) return false;
-    // Remux 4K is not a reason to keep the title card up — it packs later.
-    if (preferred >= 2160 && sourceDelivery(source) !== "direct") return false;
     return true;
   });
 }

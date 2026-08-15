@@ -231,6 +231,21 @@ export function decidePlayback(
     if (fourKDirect) {
       return { immediate: fourKDirect, deferredFourK: null, reason: "ranked_best" };
     }
+    // No Poseidon/Quasar — remux 4K (Hades) is still 4K. Starting 1080 here
+    // is what left Ultra titles on "4K · playing 1080p".
+    const fourKRemux = pickFrom(
+      identity.filter(
+        (source) =>
+          sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT &&
+          sourceDelivery(source) === "remux" &&
+          isHouseholdStartLanguage(source)
+      ),
+      options,
+      STARTUP_UHD_HEIGHT
+    );
+    if (fourKRemux) {
+      return { immediate: fourKRemux, deferredFourK: null, reason: "ranked_best" };
+    }
     const fallback = pickFrom(
       roster.filter((source) => sourceDelivery(source) !== "remux"),
       options,
@@ -242,11 +257,8 @@ export function decidePlayback(
     }
     return {
       immediate: start,
-      deferredFourK:
-        remuxFourK && remuxFourK.id !== start.id ? remuxFourK : null,
-      reason: remuxFourK && remuxFourK.id !== start.id
-        ? "fast_start_direct_hd"
-        : "ranked_best",
+      deferredFourK: null,
+      reason: "ranked_best",
     };
   }
 

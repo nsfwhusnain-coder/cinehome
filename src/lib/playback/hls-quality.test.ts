@@ -332,7 +332,7 @@ describe("ABR floor guard (findMinLevelIndexForHeight / findBestLevelForTarget)"
 
 describe("deriveHeightFromBitrate", () => {
   it("classifies common re-encode bitrate bands", () => {
-    expect(deriveHeightFromBitrate(8_000_000)).toBe(2160);
+    expect(deriveHeightFromBitrate(8_000_000)).toBe(1080);
     expect(deriveHeightFromBitrate(4_000_000)).toBe(1080);
     expect(deriveHeightFromBitrate(1_500_000)).toBe(720);
     expect(deriveHeightFromBitrate(800_000)).toBe(480);

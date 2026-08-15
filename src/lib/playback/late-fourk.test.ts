@@ -65,7 +65,7 @@ describe("findLateFourKSource", () => {
     ).toBe("maybe-4k");
   });
 
-  it("leaves remux 4K to the prewarm path", () => {
+  it("adopts remux 4K when Ultra is on and no direct 4K exists", () => {
     const remux4k = source({
       id: "remux-4k",
       maxHeight: 2160,
@@ -79,8 +79,8 @@ describe("findLateFourKSource", () => {
     expect(
       findLateFourKSource(playing1080, [playing1080, remux4k], {
         preferredHeight: 2160,
-      })
-    ).toBeNull();
+      })?.id
+    ).toBe("remux-4k");
   });
 
   it("does not upgrade when the profile is locked to 1080p", () => {

@@ -20,8 +20,9 @@ export interface QualityOption {
  * when the ladder only exposes bitrate (common on proxy playlists).
  */
 export function deriveHeightFromBitrate(bitrate: number): number {
-  if (bitrate >= 8_000_000) return 2160;
-  if (bitrate >= 5_500_000) return 1440;
+  // Never invent 4K from bitrate. 8–20 Mbps is a normal 1080p encode
+  // (Whiplash Luna looked like 4K and the rail said "playing 1080p").
+  if (bitrate >= 5_500_000) return 1080;
   // Many 1080p ladders sit ~2.5–5 Mbps after re-encode — do not classify as 720.
   if (bitrate >= 2_500_000) return 1080;
   if (bitrate >= 1_200_000) return 720;

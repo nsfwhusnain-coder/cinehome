@@ -43,18 +43,17 @@ export function findLateFourKSource(
     if (!isSourcePlayableHere(source)) return false;
     if (sourceMaxHeight(source) < UHD_HEIGHT) return false;
     if (source.probe?.ok === false) return false;
-    if (sourceDelivery(source) === "remux") return false;
-    return true;
+    return sourceDelivery(source) !== "unavailable";
   });
   if (!pool.length) return null;
 
-  const best = pickDefaultSource(
-    pool,
+  const direct = pool.filter((source) => sourceDelivery(source) === "direct");
+  const ranked = pickDefaultSource(
+    direct.length ? direct : pool,
     options.preferredProvider,
     UHD_HEIGHT
   );
-  if (!best || best.id === current.id) return null;
-  if (sourceMaxHeight(best) < UHD_HEIGHT) return null;
-  if (sourceDelivery(best) === "remux") return null;
-  return best;
+  if (!ranked || ranked.id === current.id) return null;
+  if (sourceMaxHeight(ranked) < UHD_HEIGHT) return null;
+  return ranked;
 }

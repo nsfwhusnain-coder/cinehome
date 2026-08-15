@@ -90,20 +90,25 @@ export function shouldAdoptRosterUpgrade(options: {
     sourceDelivery(current) === "direct" &&
     sourceMaxHeight(current) >= HD_FLOOR_HEIGHT &&
     isEnglishPreferredSource(current, contentClass);
-  if (candidateRemux && currentEnglishDirect && fourKStartup !== "maximum") {
+  if (
+    candidateRemux &&
+    currentEnglishDirect &&
+    fourKStartup !== "maximum" &&
+    preferredHeight !== 2160
+  ) {
     return false;
   }
 
   if (candidateLang > currentLang) return true;
 
-  const wantsUhd =
-    preferredHeight === 2160 ||
-    preferredHeight === "auto" ||
-    preferredHeight == null;
-  const candidateIsDirectUhd =
+  const lockFourK =
+    fourKStartup === "maximum" || preferredHeight === 2160;
+  if (
+    lockFourK &&
     sourceMaxHeight(candidate) >= STARTUP_UHD &&
-    sourceDelivery(candidate) === "direct";
-  if (wantsUhd && candidateIsDirectUhd && sourceMaxHeight(current) < STARTUP_UHD) {
+    sourceMaxHeight(current) < STARTUP_UHD &&
+    sourceDelivery(candidate) !== "unavailable"
+  ) {
     return true;
   }
 
