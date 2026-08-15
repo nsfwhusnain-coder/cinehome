@@ -26,6 +26,7 @@ import {
   advanceMaximumStartupGate,
   preferredQualityDiscoveryPending,
   shouldWaitForMaximumFourK,
+  ULTRA_STARTUP_HOLD_MS,
 } from "@/lib/playback/quality-discovery";
 import { tvQueryIndex } from "@/lib/playback/tv-index";
 import {
@@ -66,7 +67,7 @@ export function playbackQueryKey(
 
 /** Match server scraper budgets — never hang UX on Playwright. */
 const CLIENT_FAST_TIMEOUT_MS = 8_000;
-const CLIENT_FULL_TIMEOUT_MS = 30_000;
+const CLIENT_FULL_TIMEOUT_MS = 45_000;
 
 async function fetchPlayback(
   mediaType: MediaType,
@@ -397,6 +398,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   // Force re-renders when discovery walls elapse so "searching for more" clears.
   const [discoveryWallHit, setDiscoveryWallHit] = useState(false);
   const [softMissWallHit, setSoftMissWallHit] = useState(false);
+  const [ultraHoldExpired, setUltraHoldExpired] = useState(false);
 
   /**
    * Walls belong to one target. Clearing them during render off a key rather
@@ -413,6 +415,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     setWallsFor(wallTarget);
     if (discoveryWallHit) setDiscoveryWallHit(false);
     if (softMissWallHit) setSoftMissWallHit(false);
+    if (ultraHoldExpired) setUltraHoldExpired(false);
   }
 
   const [maximumGate, setMaximumGate] = useState({
@@ -421,13 +424,16 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   });
   const gateReleased =
     maximumGate.target === wallTarget && maximumGate.released;
+  const wantsLockedFourK = mergedData?.preferences?.playbackQuality === 2160;
   const maximumDiscoveryOpen =
-    !discoveryWallHit &&
-    (initialFullResolveOpen || preferredQualityDiscoveryPending(mergedData));
+    (wantsLockedFourK || !discoveryWallHit) &&
+    (initialFullResolveOpen ||
+      fullStillOpen ||
+      preferredQualityDiscoveryPending(mergedData));
   const holdMaximumStartup = shouldWaitForMaximumFourK(
     mergedData,
     maximumDiscoveryOpen,
-    gateReleased
+    wantsLockedFourK ? ultraHoldExpired : gateReleased
   );
   const data = holdMaximumStartup ? undefined : mergedData;
   const hasSources = hasPlayableSources(data);
@@ -459,12 +465,18 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     const started = pollStartedAtRef.current;
     const t1 = window.setTimeout(() => setDiscoveryWallHit(true), Math.max(0, DISCOVERY_UI_WALL_MS - (Date.now() - started)));
     const t2 = window.setTimeout(() => setSoftMissWallHit(true), Math.max(0, SOFT_MISS_WALL_MS - (Date.now() - started)));
+    const t3 = window.setTimeout(
+      () => setUltraHoldExpired(true),
+      Math.max(0, ULTRA_STARTUP_HOLD_MS - (Date.now() - started))
+    );
     // If already past wall (strict mode remount), apply immediately.
     if (Date.now() - started >= DISCOVERY_UI_WALL_MS) setDiscoveryWallHit(true);
     if (Date.now() - started >= SOFT_MISS_WALL_MS) setSoftMissWallHit(true);
+    if (Date.now() - started >= ULTRA_STARTUP_HOLD_MS) setUltraHoldExpired(true);
     return () => {
       window.clearTimeout(t1);
       window.clearTimeout(t2);
+      window.clearTimeout(t3);
     };
   }, [
     canFetch,
@@ -539,6 +551,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     pollStartedAtRef.current = null;
     setDiscoveryWallHit(false);
     setSoftMissWallHit(false);
+    setUltraHoldExpired(false);
     await qc.resetQueries({
       queryKey: playbackQueryKey(
         args.mediaType,

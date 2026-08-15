@@ -134,6 +134,10 @@ const VIXSRC_TIMEOUT_MS = 10000;
 /** VidLink/secondary may need a bit longer after parallel verifies. */
 const BACKGROUND_API_TIMEOUT_MS = 18000;
 const HLS_CACHE_TTL_MS = 3 * 60 * 1000;
+/** Keep a proven 4K roster warm so the next play is not a coin-flip race. */
+const FOUR_K_ROSTER_TTL_MS = 15 * 60 * 1000;
+/** Ultra miss — retry soon instead of locking a 1080-only roster for 30 min. */
+const ULTRA_MISS_TTL_MS = 75_000;
 /** Hard cap returned to clients — higher for TV multi-server switching. */
 const MAX_SOURCES = 20;
 const QUALITY_DISCOVERY_RESERVED_SLOTS = 4;
@@ -1410,8 +1414,21 @@ function removeFromResultCacheOrder(key: string): void {
   if (idx >= 0) resultCacheOrder.splice(idx, 1);
 }
 
+function cacheTtlForResult(result: ScrapeResult): number {
+  const preferred = currentQualityHintHeight();
+  const url = result.streamUrl ?? "";
+  const base = url ? cacheTtlFor(url) : CACHE_TTL_MS;
+  if (preferred > 1080 && !rosterHasPlayableHeight(result.sources, preferred)) {
+    return Math.min(Math.max(base, 1_000), ULTRA_MISS_TTL_MS);
+  }
+  if (rosterHasPlayableHeight(result.sources, 2160)) {
+    return Math.max(base, FOUR_K_ROSTER_TTL_MS);
+  }
+  return base;
+}
+
 function setCachedResult(key: string, result: ScrapeResult): void {
-  const ttl = result.streamUrl ? cacheTtlFor(result.streamUrl) : CACHE_TTL_MS;
+  const ttl = cacheTtlForResult(result);
   if (ttl <= 0) return;
 
   if (resultCache.has(key)) removeFromResultCacheOrder(key);
@@ -3167,9 +3184,18 @@ async function scrapeStream(
     "info",
     `[scrape] full API race -> ${fullRace.entries.length} source(s) in ${fullRace.totalMs}ms (first@${fullRace.firstHitMs ?? "-"}ms)`
   );
+  const settledArms = await Promise.all([
+    cineproPromise,
+    lunaPromise,
+    cinemaosPromise,
+    vidlinkPromise,
+    videasyPromise,
+    vidrockPromise,
+    notorrentPromise,
+  ]);
   const expectedDurationS =
     (await withTimeout(expectedDurationPromise, 1_000)) ?? 0;
-  let collected = fullRace.entries;
+  let collected = mergeSourceEntries([...fullRace.entries, ...settledArms.flat()]);
   let merged = buildMergedResult(collected);
 
   if (merged.streamUrl) {

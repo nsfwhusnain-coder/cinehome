@@ -85,15 +85,9 @@ export function shouldAdoptRosterUpgrade(options: {
 
   if (candidateLang > currentLang) return true;
 
-  // After first frame, remux is never an upgrade — it makes small skips wait
-  // for ffmpeg to prepare the next offset. Native height/bitrate upgrades may.
-  if (everPlayed) {
-    if (candidateRemux || sourceDelivery(candidate) !== "direct") return false;
-    const betterHeight =
-      sourceMaxHeight(candidate) >
-      sourceMaxHeight(current) + ROSTER_HEIGHT_UPGRADE_PX;
-    return betterHeight || isMeaningfullyRicherSource(current, candidate);
-  }
+  // After first frame, never remount for a taller/richer source. Ultra waits
+  // for 4K up front. A mid-play swap reloads the player and flashes the loader.
+  if (everPlayed) return false;
 
   const betterMulti = isMultiRendition(candidate) && !isMultiRendition(current);
   const betterHeight =

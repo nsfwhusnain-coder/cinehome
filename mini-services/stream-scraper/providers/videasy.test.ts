@@ -13,6 +13,8 @@ import {
   videasyStreamLabel,
   VIDEASY_SERVERS,
   VIDEASY_MAX_STREAMS,
+  VIDEASY_OUTER_TIMEOUT_MS,
+  VIDEASY_TIMEOUT_MS,
 } from "./videasy";
 
 const originalFetch = globalThis.fetch;
@@ -92,6 +94,11 @@ describe("videasy helpers", () => {
   it("caps the exported ladder size", () => {
     expect(VIDEASY_MAX_STREAMS).toBe(6);
     expect(VIDEASY_SERVERS.map((s) => s.name)).toEqual(["Cypher", "Yoru"]);
+  });
+
+  it("gives Yoru time to finish after seed + meta instead of aborting at 14s", () => {
+    expect(VIDEASY_OUTER_TIMEOUT_MS).toBeGreaterThanOrEqual(28_000);
+    expect(VIDEASY_OUTER_TIMEOUT_MS).toBeGreaterThan(VIDEASY_TIMEOUT_MS + 8_000);
   });
 });
 
@@ -201,6 +208,59 @@ describe("resolveVideasy", () => {
     expect(streams[0]?.type).toBe("hls");
     expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).toContain(2160);
     expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).not.toContain(4);
+  });
+
+  it("retries Yoru when the first pass only has Cypher 1080", async () => {
+    const seed = "59556143.vB6Gja40kUFU91w_z_KVWX";
+    const mediaId = 550;
+    const cypher = encryptVideasyPayload(
+      JSON.stringify({
+        sources: [{ url: "https://cdn.example/fc-1080.mp4", quality: "1080p" }],
+      }),
+      seed,
+      mediaId
+    );
+    const yoru = encryptVideasyPayload(
+      JSON.stringify({
+        sources: [{ url: "https://cdn.example/fc-4k.m3u8", quality: "4K", type: "hls" }],
+      }),
+      seed,
+      mediaId
+    );
+    let yoruHits = 0;
+
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const href = String(input);
+      if (href.includes("/seed?")) {
+        return new Response(JSON.stringify({ seed }), { status: 200 });
+      }
+      if (href.includes("db.speedracelight.com")) {
+        return new Response(
+          JSON.stringify({
+            title: "Fight Club",
+            release_date: "1999-10-15",
+            external_ids: { imdb_id: "tt0137523" },
+          }),
+          { status: 200 }
+        );
+      }
+      if (href.includes("downloader2/sources-with-title")) {
+        return new Response(cypher, { status: 200 });
+      }
+      if (href.includes("cdn/sources-with-title")) {
+        yoruHits += 1;
+        if (yoruHits === 1) {
+          return new Response(JSON.stringify({ error: "none" }), { status: 500 });
+        }
+        return new Response(yoru, { status: 200 });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const streams = await resolveVideasy(550, "movie");
+    expect(yoruHits).toBe(2);
+    expect(streams[0]?.quality).toBe("2160p");
+    expect(streams[0]?.url).toContain("fc-4k.m3u8");
   });
 
   it("returns empty on a 404 seed miss instead of throwing", async () => {

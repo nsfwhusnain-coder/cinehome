@@ -1,6 +1,9 @@
 import { isSourcePlayableHere, sourceMaxHeight } from "./source-quality";
 import type { PlaybackResponse } from "./types";
 
+/** Ultra may wait this long for 4K. After this, start the best source once. */
+export const ULTRA_STARTUP_HOLD_MS = 45_000;
+
 export interface MaximumStartupGate {
   target: string;
   released: boolean;
@@ -33,11 +36,8 @@ export function shouldWaitForMaximumFourK(
   startupReleased = false
 ): boolean {
   if (!response || !discoveryOpen || startupReleased) return false;
-  return (
-    response.preferences?.playbackQuality === 2160 &&
-    response.preferences.fourKStartup === "maximum" &&
-    !hasPlayablePreferredQuality(response)
-  );
+  if (response.preferences?.playbackQuality !== 2160) return false;
+  return !hasPlayablePreferredQuality(response);
 }
 
 export function advanceMaximumStartupGate(

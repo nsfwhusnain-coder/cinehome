@@ -176,6 +176,9 @@ const REMUX_MAX_START_AT_S = 24 * 60 * 60;
 const activeRemuxes = new Set<string>();
 /** Jobs admitted but still opening/probing their input count against capacity. */
 const remuxReservations = new Set<string>();
+/** startAt seconds for each remux key — the from-zero grower must never be killed. */
+const remuxStartAtByKey = new Map<string, number>();
+
 /** Running process and per-viewer source family, used for seek supersession. */
 const remuxProcesses = new Map<string, ChildProcess>();
 const remuxSessionFamilyByKey = new Map<string, string>();
@@ -280,7 +283,9 @@ async function supersedeOlderRemuxForSeek(
   const siblingKey = [...activeRemuxes]
     .filter(
       (candidate) =>
-        candidate !== key && remuxSessionFamilyByKey.get(candidate) === familyKey
+        candidate !== key &&
+        remuxSessionFamilyByKey.get(candidate) === familyKey &&
+        (remuxStartAtByKey.get(candidate) ?? 0) > 0
     )
     .sort(
       (a, b) => (lastAccess.get(a) ?? 0) - (lastAccess.get(b) ?? 0)
@@ -790,6 +795,7 @@ async function getOrBuild(
     }
     remuxReservations.add(key);
     remuxSessionFamilyByKey.set(key, familyKey);
+    remuxStartAtByKey.set(key, startAtSeconds);
     /**
      * Start from an empty directory, always.
      *

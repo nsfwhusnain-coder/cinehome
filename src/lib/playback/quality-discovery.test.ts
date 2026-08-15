@@ -4,6 +4,7 @@ import {
   advanceMaximumStartupGate,
   preferredQualityDiscoveryPending,
   shouldWaitForMaximumFourK,
+  ULTRA_STARTUP_HOLD_MS,
 } from "./quality-discovery";
 import type { PlaybackResponse, PlaybackSource } from "./types";
 
@@ -52,14 +53,19 @@ describe("preferred quality discovery", () => {
     ).toBe(false);
   });
 
-  it("holds explicit Maximum startup for the full 4K result", () => {
-    const maximum = response([source("fast-hd", 1080)]);
-    maximum.preferences!.fourKStartup = "maximum";
+  it("holds Ultra startup until a 4K source exists", () => {
+    const ultra = response([source("fast-hd", 1080)]);
 
-    expect(shouldWaitForMaximumFourK(maximum, true)).toBe(true);
-    expect(shouldWaitForMaximumFourK(maximum, false)).toBe(false);
-    maximum.sources = [source("ultra", 2160)];
-    expect(shouldWaitForMaximumFourK(maximum, true)).toBe(false);
+    expect(shouldWaitForMaximumFourK(ultra, true)).toBe(true);
+    expect(shouldWaitForMaximumFourK(ultra, false)).toBe(false);
+    ultra.sources = [source("ultra", 2160)];
+    expect(shouldWaitForMaximumFourK(ultra, true)).toBe(false);
+  });
+
+  it("releases Ultra hold after the startup budget so titles without 4K still play", () => {
+    const ultra = response([source("fast-hd", 1080)]);
+    expect(ULTRA_STARTUP_HOLD_MS).toBeGreaterThanOrEqual(45_000);
+    expect(shouldWaitForMaximumFourK(ultra, true, true)).toBe(false);
   });
 
   it("does not hide an established 1080 roster during background polling", () => {

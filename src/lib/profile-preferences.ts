@@ -26,7 +26,7 @@ export const DEFAULT_PROFILE_PLAYBACK_PREFERENCES: ProfilePlaybackPreferences = 
   audioLanguage: "en",
   audioPreference: "original",
   subtitlePreference: "english",
-  fourKStartup: "fast",
+  fourKStartup: "maximum",
 };
 
 const PLAYBACK_QUALITY_SET = new Set<number>(PLAYBACK_QUALITY_HEIGHTS);

@@ -4171,6 +4171,7 @@ export function VideoPlayer({
 
       pendingRemuxSeekTargetRef.current = target;
       setCurrentTime(target);
+      freezeLastVideoFrame(video);
       showStatusNotice("Opening that position…", REMUX_SEEK_NOTICE_MS);
 
       remuxSeekTimerRef.current = setTimeout(() => {
@@ -4277,11 +4278,11 @@ export function VideoPlayer({
     }
   }, []);
 
-  // Remux 4K stays in the server list. Auto-switching to it after first
-  // frame is what made a small skip wait for ffmpeg to "prepare" the next
-  // offset. Native 4K can still arrive through findLateFourKSource below.
+  // Never remount after first frame to "upgrade" 1080 → 4K. Ultra waits
+  // for 4K up front. Late switches reload the player and flash the loader.
 
   useEffect(() => {
+    if (qualityTargetRef.current === 2160) return;
     if (!everPlayed || !activeSource || userSelectedSourceRef.current) return;
     const candidate = findLateFourKSource(activeSource, orderedSources, {
       preferredProvider: getPreferredProvider(),

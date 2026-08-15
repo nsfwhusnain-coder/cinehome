@@ -344,11 +344,7 @@ export function PlayerControls({
                   ? `~${formatTime(expectedRuntime)}`
                   : formatTime(timelineDuration)}
               </span>
-              {expectedRuntime > 0 && (
-                <span className="ml-1.5 text-[11px] font-medium text-white/55">
-                  · preparing
-                </span>
-              )}
+
             </div>
             {showNextEpisode && (
               <IconBtn onClick={onNextEpisode} label="Next episode">

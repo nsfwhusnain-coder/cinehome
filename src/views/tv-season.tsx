@@ -46,7 +46,7 @@ export function TvSeasonView({ tvId, season }: Props) {
     },
   });
 
-  const poster = tmdbImageUrl(seasonData?.poster_path, "w300");
+  const poster = tmdbImageUrl(seasonData?.poster_path, "original");
 
   // Show itself failed to load — nothing else on the page can render meaningfully.
   if (showFailed && !showLoading) {

@@ -32,40 +32,38 @@ export interface ResponsiveTmdbImage {
 }
 
 /**
- * Right-sized poster srcset for rail/grid cards (150-190px display width).
- * w185 covers 1x on the smallest rails, w342 covers 2x/retina — never `original`.
+ * Full-resolution poster. Quality first — never a downsized TMDB rung.
  */
 export function posterSrcSet(path: string | null | undefined): ResponsiveTmdbImage | null {
   if (!path) return null;
-  const w185 = tmdbImageUrl(path, "w185");
-  const w342 = tmdbImageUrl(path, "w342");
-  if (!w185 || !w342) return null;
+  const original = tmdbImageUrl(path, "original");
+  if (!original) return null;
   return {
-    src: w342,
-    srcSet: `${w185} 185w, ${w342} 342w`,
-    sizes: "(max-width: 639px) 150px, (max-width: 767px) 170px, 190px",
+    src: original,
+    srcSet: original,
+    sizes: "100vw",
   };
 }
 
 /**
- * Right-sized backdrop srcset for hero/detail LCP images.
- * TMDB's largest non-`original` backdrop size is w1280 — there is no w1920;
- * w780 covers mobile, w1280 covers desktop, never `original` (multi-MB).
+ * Full-resolution backdrop. Quality first — never a downsized TMDB rung.
  */
 export function backdropSrcSet(path: string | null | undefined): ResponsiveTmdbImage | null {
   if (!path) return null;
-  const w780 = tmdbImageUrl(path, "w780");
-  const w1280 = tmdbImageUrl(path, "w1280");
-  if (!w780 || !w1280) return null;
+  const original = tmdbImageUrl(path, "original");
+  if (!original) return null;
   return {
-    src: w1280,
-    srcSet: `${w780} 780w, ${w1280} 1280w`,
+    src: original,
+    srcSet: original,
     sizes: "100vw",
   };
 }
 
 /** Pick the best title-logo asset from a TMDB images response: English first, then language-agnostic, then whatever's first. */
-export function pickTitleLogoUrl(images: TmdbImages | null | undefined, size: "w300" | "w500" = "w500"): string | null {
+export function pickTitleLogoUrl(
+  images: TmdbImages | null | undefined,
+  size: "w300" | "w500" | "original" = "original"
+): string | null {
   if (!images?.logos?.length) return null;
   const english = images.logos.find((l) => l.iso_639_1 === "en");
   const languageless = images.logos.find((l) => l.iso_639_1 === null);

@@ -31,14 +31,13 @@ describe("client startup ranking", () => {
   const direct1080 = source("direct-1080", 1080, "mp4");
   const direct4k = source("direct-4k", 2160, "mp4");
 
-  test("fast mode starts direct HD while exposing cold 4K for prewarm", () => {
+  test("Ultra starts 4K once even if startup is labelled fast", () => {
     const decision = pickClientStartupSource([remux4k, direct1080], {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(decision.immediate?.id).toBe("direct-1080");
-    expect(decision.deferredFourK?.id).toBe("remux-4k");
-    expect(decision.reason).toBe("fast_start_direct_hd");
+    expect(decision.immediate?.id).toBe("remux-4k");
+    expect(decision.deferredFourK).toBeNull();
   });
 
   test("maximum mode waits for the ranked 4K remux", () => {
@@ -128,12 +127,19 @@ describe("client startup ranking", () => {
       type: "hls",
       codec: "h264",
     };
-    const decision = pickClientStartupSource([hindi1080, remux4k, luna], {
+    const ultra = pickClientStartupSource([hindi1080, remux4k, luna], {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(decision.immediate?.id).toBe("luna");
-    expect(decision.deferredFourK?.id).toBe("remux-4k");
+    expect(ultra.immediate?.id).toBe("remux-4k");
+    expect(ultra.deferredFourK).toBeNull();
+
+    const auto = pickClientStartupSource([hindi1080, remux4k, luna], {
+      preferredHeight: "auto",
+      fourKStartup: "fast",
+    });
+    expect(auto.immediate?.id).toBe("luna");
+    expect(auto.deferredFourK?.id).toBe("remux-4k");
   });
 });
 

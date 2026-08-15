@@ -107,7 +107,7 @@ const REMUX_READ_RATE = 4;
 /** AAC bitrate for the remux's stereo downmix. */
 const REMUX_AUDIO_BITRATE_K = 192;
 /** Seconds of input read at full speed before the throttle applies. */
-const REMUX_INITIAL_BURST_S = 60;
+const REMUX_INITIAL_BURST_S = 180;
 
 export function buildRemuxArgs(input: {
   inputUrl: string;

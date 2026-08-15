@@ -404,7 +404,7 @@ export function HomeView() {
 
 function ContinueCard({ item }: { item: ProgressItem }) {
   const pct = Math.min(100, Math.max(0, Math.round((item.progress || 0) * 100)));
-  const img = tmdbImageUrl(item.backdrop || item.poster, "w780");
+  const img = tmdbImageUrl(item.backdrop || item.poster, "original");
   const left = formatTimeLeft(item.position, item.duration, item.progress);
   const line2 = formatEpMeta(item, left);
   const title = item.title ?? "Untitled";
@@ -459,7 +459,7 @@ function ContinueCard({ item }: { item: ProgressItem }) {
             <img
               src={img}
               alt=""
-              className="h-full w-full object-cover"
+              className="h-full w-full object-contain"
               loading="lazy"
               width={320}
               height={180}

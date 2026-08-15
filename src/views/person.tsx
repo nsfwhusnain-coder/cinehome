@@ -208,7 +208,7 @@ export function PersonView({ id, initialPerson, initialCredits }: Props) {
     );
   }
 
-  const photo = tmdbImageUrl(person.profile_path, "w342");
+  const photo = tmdbImageUrl(person.profile_path, "original");
   const years = lifespan(person);
   const bio = person.biography?.trim() ?? "";
   const bioLong = bio.length > BIO_CLAMP;
@@ -249,7 +249,7 @@ export function PersonView({ id, initialPerson, initialCredits }: Props) {
         >
           <div className="relative h-40 w-40 shrink-0 overflow-hidden rounded-full bg-muted ring-1 ring-white/15">
             {photo ? (
-              <img src={photo} alt="" className="h-full w-full object-cover" />
+              <img src={photo} alt="" className="h-full w-full object-contain" />
             ) : (
               <div className="flex h-full w-full items-center justify-center text-3xl font-semibold text-muted-foreground">
                 {initials}

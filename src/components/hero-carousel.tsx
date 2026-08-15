@@ -102,7 +102,7 @@ function HeroTitle({ item, mediaType }: { item: FeaturedItem; mediaType: string 
     staleTime: 60 * 60 * 1000,
   });
 
-  const logoUrl = pickTitleLogoUrl(data, "w500");
+  const logoUrl = pickTitleLogoUrl(data, "original");
   const title = item.title || item.name || "";
   const [logoReady, setLogoReady] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
@@ -253,8 +253,8 @@ export function HeroCarousel({ items }: Props) {
   const current = items[safeIndex];
   // Display image: NO crossOrigin — that was breaking the visible load (black void).
   // Color extraction uses a separate Image() with crossOrigin / API fallback.
-  // Right-sized (w780/w1280) — never `original` (multi-MB, kills LCP).
-  const bgResponsive = backdropSrcSet(current.backdrop_path) ?? backdropSrcSet(current.poster_path);
+  const bgResponsive =
+    backdropSrcSet(current.backdrop_path) ?? backdropSrcSet(current.poster_path);
   const bg = bgResponsive?.src ?? null;
   const year =
     current.release_date || current.first_air_date
@@ -333,18 +333,9 @@ export function HeroCarousel({ items }: Props) {
                   ease: EASE_OUT_EXPO,
                 },
               }}
-              className="hero-ken absolute inset-0 h-full w-full object-cover"
+              className="absolute inset-0 h-full w-full object-contain"
               style={{
-                objectPosition: "center 18%",
-                animationName: staticHero
-                  ? "none"
-                  : index % 2 === 0
-                    ? "hero-drift-a"
-                    : "hero-drift-b",
-                animationDuration: `${SLIDE_INTERVAL_MS}ms`,
-                animationTimingFunction: "linear",
-                animationFillMode: "forwards",
-                animationPlayState: paused ? "paused" : "running",
+                objectPosition: "center center",
               }}
             />
           ) : (

@@ -84,13 +84,13 @@ const pack4k = src({
 });
 
 describe("decidePlayback contract", () => {
-  it("starts Luna, not Hindi, and defers remux 4K", () => {
+  it("starts 4K once when Ultra is selected, never 1080-then-switch", () => {
     const decision = decidePlayback([hindi1080, hades, luna], {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(decision.immediate?.id).toBe("luna");
-    expect(decision.deferredFourK?.id).toBe("hades");
+    expect(decision.immediate?.id).toBe("hades");
+    expect(decision.deferredFourK).toBeNull();
   });
 
   it("starts Kronos over Hindi, remux, and Arabic", () => {
@@ -152,9 +152,18 @@ describe("decidePlayback contract", () => {
     expect(decision.immediate?.id).toBe("kronos");
   });
 
-  it("keeps unlabeled Luna as first frame when the only stamped English is remux 4K", () => {
+  it("starts remux 4K when Ultra is selected and no native 4K exists", () => {
     const decision = decidePlayback([luna, hades], {
       preferredHeight: 2160,
+      fourKStartup: "fast",
+    });
+    expect(decision.immediate?.id).toBe("hades");
+    expect(decision.deferredFourK).toBeNull();
+  });
+
+  it("auto may still fast-start HD while remux 4K is deferred", () => {
+    const decision = decidePlayback([luna, hades], {
+      preferredHeight: "auto",
       fourKStartup: "fast",
     });
     expect(decision.immediate?.id).toBe("luna");
@@ -175,8 +184,8 @@ describe("decidePlayback contract", () => {
       ...kronos,
       bitrateBps: 12_000_000,
     });
-    const decision = decidePlayback([leanLuna, richKronos, hades], {
-      preferredHeight: 2160,
+    const decision = decidePlayback([leanLuna, richKronos], {
+      preferredHeight: "auto",
       fourKStartup: "fast",
     });
     expect(decision.immediate?.id).toBe("kronos");

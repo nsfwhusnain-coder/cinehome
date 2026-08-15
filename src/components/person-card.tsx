@@ -11,7 +11,7 @@ interface Props {
 }
 
 export function PersonCard({ id, name, character, profilePath }: Props) {
-  const img = tmdbImageUrl(profilePath, "w200");
+  const img = tmdbImageUrl(profilePath, "original");
   const initials = name
     .split(" ")
     .map((p) => p[0])

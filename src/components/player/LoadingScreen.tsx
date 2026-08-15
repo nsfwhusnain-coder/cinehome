@@ -18,7 +18,7 @@ import "./loading-bloom.css";
 
 const EXIT_MS = 380;
 
-const TV_POSTER_RENDITION = "w342";
+const TV_POSTER_RENDITION = "original";
 
 export interface LoadingScreenProps {
   backdropUrl?: string | null;

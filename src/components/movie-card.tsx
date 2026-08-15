@@ -61,9 +61,12 @@ export function MovieCard({
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const posterImg = isPoster ? posterSrcSet(movie.poster_path) : null;
-  const imgUrl = isPoster ? posterImg?.src ?? null : tmdbImageUrl(movie.backdrop_path, "w780");
+  const imgUrl = isPoster
+    ? posterImg?.src ?? null
+    : tmdbImageUrl(movie.backdrop_path, "original");
   const fallbackUrl =
-    tmdbImageUrl(movie.poster_path, "w342") || tmdbImageUrl(movie.backdrop_path, "w780");
+    tmdbImageUrl(movie.poster_path, "original") ||
+    tmdbImageUrl(movie.backdrop_path, "original");
 
   const line2Parts: string[] = [];
   if (year) line2Parts.push(String(year));
@@ -127,7 +130,7 @@ export function MovieCard({
               loading="lazy"
               width={isPoster ? 190 : 320}
               height={isPoster ? 285 : 180}
-              className="h-full w-full object-cover"
+              className="h-full w-full object-contain"
               onError={(e) => {
                 if (fallbackUrl && e.currentTarget.src !== fallbackUrl) {
                   e.currentTarget.src = fallbackUrl;

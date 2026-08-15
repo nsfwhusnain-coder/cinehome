@@ -75,7 +75,7 @@ export function ContinueWatchingView() {
                 rawPct < 1 && (p.position ?? 0) > 1
                   ? 1
                   : rawPct;
-              const img = tmdbImageUrl(p.backdrop || p.poster, "w780");
+              const img = tmdbImageUrl(p.backdrop || p.poster, "original");
               const epLine =
                 p.mediaType === "tv" && p.season != null && p.episode != null
                   ? `Continue S${p.season} E${p.episode} · ${pct}% · ${minutesLeft(p.position ?? 0, p.duration ?? 0)}`
@@ -93,7 +93,7 @@ export function ContinueWatchingView() {
                     className="relative block aspect-video bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                     aria-label={`Continue ${p.title}`}
                   >
-                    {img && <img src={img} alt="" className="h-full w-full object-cover" loading="lazy" />}
+                    {img && <img src={img} alt="" className="h-full w-full object-contain" loading="lazy" />}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent" />
                     <div className="absolute bottom-0 inset-x-0 p-3">
                       <div className="text-sm font-semibold text-white line-clamp-1">{p.title}</div>

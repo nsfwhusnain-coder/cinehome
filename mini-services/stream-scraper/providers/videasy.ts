@@ -22,9 +22,16 @@ const TIMEOUT_MS = 12_000;
 const MAX_STREAMS = 6;
 const LABEL_BASE = "Quasar";
 const PROVIDER_NAME = "Videasy";
+const UHD_RANK = 5;
 
 export const VIDEASY_TIMEOUT_MS = TIMEOUT_MS;
-export const VIDEASY_OUTER_TIMEOUT_MS = 14_000;
+/**
+ * Seed + meta + both servers can legitimately take longer than one 12s
+ * fetch. The old 14s outer cap aborted Yoru mid-flight and dropped the
+ * only native 4K ladder — same title, same browser, sometimes 4K,
+ * sometimes not.
+ */
+export const VIDEASY_OUTER_TIMEOUT_MS = 28_000;
 export const VIDEASY_MAX_STREAMS = MAX_STREAMS;
 
 export interface VideasyServer {
@@ -75,7 +82,7 @@ export function parseVideasyQuality(quality: string): string {
 export function videasyQualityRank(quality: string): number {
   const n = parseInt(parseVideasyQuality(quality), 10);
   if (!Number.isFinite(n)) return -1;
-  if (n >= 2160) return 5;
+  if (n >= 2160) return UHD_RANK;
   if (n >= 1080) return 4;
   if (n >= 720) return 3;
   if (n >= 480) return 2;
@@ -289,8 +296,48 @@ function mergeServerSources(
   return [...current, ...next];
 }
 
+function sourcesHaveUhd(sources: VideasyRawSource[]): boolean {
+  return sources.some(
+    (item) => videasyQualityRank(String(item.quality ?? "")) >= UHD_RANK
+  );
+}
+
+async function collectServerSources(
+  servers: readonly VideasyServer[],
+  seed: string,
+  meta: VideasyMeta,
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  season?: number,
+  episode?: number
+): Promise<{ picked: VideasyRawSource[]; sawSuccess: boolean; outage: unknown }> {
+  const settled = await Promise.allSettled(
+    servers.map((server) =>
+      fetchServerSources(server, seed, meta, tmdbId, mediaType, season, episode)
+    )
+  );
+  let picked: VideasyRawSource[] = [];
+  let sawSuccess = false;
+  let outage: unknown = null;
+  for (const item of settled) {
+    if (item.status === "fulfilled") {
+      sawSuccess = true;
+      if (item.value.length) picked = mergeServerSources(picked, item.value);
+      continue;
+    }
+    try {
+      rethrowIfProviderOutage(item.reason, "videasy");
+    } catch (err) {
+      outage = err;
+    }
+  }
+  return { picked, sawSuccess, outage };
+}
+
 /**
  * Resolve Videasy/Vidking sources. Empty = title miss, not an outage.
+ * Cypher is the 1080 MP4 ladder. Yoru is the native 4K HLS. If the first
+ * pass only sees Cypher, retry Yoru once before giving up on 4K.
  */
 export async function resolveVideasy(
   tmdbId: number,
@@ -303,24 +350,32 @@ export async function resolveVideasy(
     const seed = await fetchVideasySeed(tmdbId);
     if (!seed) return [];
     const meta = await fetchVideasyMeta(tmdbId, mediaType);
-    const settled = await Promise.allSettled(
-      VIDEASY_SERVERS.map((server) =>
-        fetchServerSources(server, seed, meta, tmdbId, mediaType, season, episode)
-      )
+    let { picked, sawSuccess, outage } = await collectServerSources(
+      VIDEASY_SERVERS,
+      seed,
+      meta,
+      tmdbId,
+      mediaType,
+      season,
+      episode
     );
-    let picked: VideasyRawSource[] = [];
-    let sawSuccess = false;
-    let outage: unknown = null;
-    for (const item of settled) {
-      if (item.status === "fulfilled") {
-        sawSuccess = true;
-        if (item.value.length) picked = mergeServerSources(picked, item.value);
-        continue;
-      }
-      try {
-        rethrowIfProviderOutage(item.reason, "videasy");
-      } catch (err) {
-        outage = err;
+    if (!sourcesHaveUhd(picked)) {
+      const yoru = VIDEASY_SERVERS.filter((server) =>
+        server.endpoint.startsWith("cdn/")
+      );
+      if (yoru.length) {
+        const retry = await collectServerSources(
+          yoru,
+          seed,
+          meta,
+          tmdbId,
+          mediaType,
+          season,
+          episode
+        );
+        sawSuccess = sawSuccess || retry.sawSuccess;
+        if (retry.outage) outage = retry.outage;
+        picked = mergeServerSources(picked, retry.picked);
       }
     }
     if (picked.length) return mapStreams(picked);

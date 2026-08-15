@@ -7,9 +7,9 @@ export const MAX_SOURCE_POLL_REFETCHES = 5;
 /** Aggressive 2s polls only while below this empty-hunt count. */
 export const SOURCE_POLL_AGGRESSIVE_UNTIL = 3;
 /** Wall-clock budget for empty-roster hunting / preferred-quality follow-up. */
-export const POLL_WALL_MS = 30_000;
-/** At most this many extra full fetches after we already have something playable. */
-export const PREFERRED_QUALITY_POLL_MAX = 2;
+export const POLL_WALL_MS = 45_000;
+/** Extra full fetches after HD exists while still hunting the Ultra 4K source. */
+export const PREFERRED_QUALITY_POLL_MAX = 4;
 
 export function playbackPollRefetchCount(
   dataUpdateCount: number,

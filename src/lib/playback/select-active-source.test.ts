@@ -39,7 +39,7 @@ const hindi1080 = src("cinema-hi", 1080, {
 });
 
 describe("selectActiveSource", () => {
-  it("starts English HD and holds after first frame", () => {
+  it("Ultra starts 4K once and does not remount after first frame", () => {
     const started = selectActiveSource({
       roster: [remux4k, direct1080],
       active: null,
@@ -49,12 +49,12 @@ describe("selectActiveSource", () => {
       fourKStartup: "fast",
       preferredHeight: 2160,
     });
-    expect(started.next?.id).toBe("direct-1080");
+    expect(started.next?.id).toBe("remux-4k");
     expect(started.replace).toBe(true);
 
     const held = selectActiveSource({
       roster: [remux4k, direct1080],
-      active: direct1080,
+      active: remux4k,
       userPicked: false,
       everPlayed: true,
       autoUpgraded: true,
@@ -62,7 +62,7 @@ describe("selectActiveSource", () => {
       preferredHeight: 2160,
     });
     expect(held.replace).toBe(false);
-    expect(held.next?.id).toBe("direct-1080");
+    expect(held.next?.id).toBe("remux-4k");
   });
 
   it("rescues a Hindi start to English remux after first frame", () => {
@@ -80,7 +80,7 @@ describe("selectActiveSource", () => {
     expect(rescue.reason).toBe("language_rescue");
   });
 
-  it("upgrades a lean native start to a richer native encode", () => {
+  it("does not remount a playing source to a richer encode", () => {
     const lean = src("lean-luna", 1080, {
       origin: "embed",
       provider: "Vixsrc",
@@ -100,9 +100,39 @@ describe("selectActiveSource", () => {
       fourKStartup: "fast",
       preferredHeight: 2160,
     });
-    expect(upgrade.replace).toBe(true);
-    expect(upgrade.next?.id).toBe("rich-kronos");
-    expect(upgrade.reason).toBe("roster_upgrade");
+    expect(upgrade.replace).toBe(false);
+    expect(upgrade.next?.id).toBe("lean-luna");
+  });
+
+  it("does not remount a playing remux 4K onto late Quasar", () => {
+    const quasar = src("quasar-4k", 2160, {
+      origin: "embed",
+      provider: "Videasy",
+      label: "Quasar",
+      type: "hls",
+      container: undefined,
+    });
+    expect(
+      shouldAdoptRosterUpgrade({
+        current: remux4k,
+        candidate: quasar,
+        everPlayed: true,
+        fourKStartup: "fast",
+        userPicked: false,
+      })
+    ).toBe(false);
+
+    const switched = selectActiveSource({
+      roster: [remux4k, quasar],
+      active: remux4k,
+      userPicked: false,
+      everPlayed: true,
+      autoUpgraded: true,
+      fourKStartup: "fast",
+      preferredHeight: 2160,
+    });
+    expect(switched.replace).toBe(false);
+    expect(switched.next?.id).toBe("remux-4k");
   });
 
   it("does not switch a playing native HD stream to remux 4K", () => {

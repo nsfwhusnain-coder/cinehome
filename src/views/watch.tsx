@@ -620,7 +620,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
     }
   };
 
-  const backdrop = tmdbImageUrl(meta?.backdrop_path ?? playback?.poster, "w1280");
+  const backdrop = tmdbImageUrl(meta?.backdrop_path ?? playback?.poster, "original");
 
   // Full-bleed inside watch/layout — no max-width shell; bars only from object-fit:contain
   return (

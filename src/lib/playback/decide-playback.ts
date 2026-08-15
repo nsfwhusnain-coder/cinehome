@@ -208,7 +208,12 @@ export function decidePlayback(
     STARTUP_UHD_HEIGHT
   );
 
-  if (fourKStartup === "maximum") {
+  // Ultra (2160) and Maximum both start on 4K once. Never open 1080 and
+  // remount when 4K arrives — that reload is the UX the household rejected.
+  const lockFourK =
+    fourKStartup === "maximum" || options.preferredHeight === STARTUP_UHD_HEIGHT;
+
+  if (lockFourK) {
     const fourK = pickFrom(
       roster.filter((source) => sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT),
       options,

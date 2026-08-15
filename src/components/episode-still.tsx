@@ -33,13 +33,13 @@ export function EpisodeStill({
 }: EpisodeStillProps) {
   const candidates = useMemo(() => {
     const urls: string[] = [];
-    const still = tmdbImageUrl(stillPath, "w300");
+    const still = tmdbImageUrl(stillPath, "original");
     if (still) urls.push(still);
-    const season = tmdbImageUrl(seasonPosterPath, "w300");
+    const season = tmdbImageUrl(seasonPosterPath, "original");
     if (season) urls.push(season);
-    const backdrop = tmdbImageUrl(seriesBackdropPath, "w780");
+    const backdrop = tmdbImageUrl(seriesBackdropPath, "original");
     if (backdrop) urls.push(backdrop);
-    const poster = tmdbImageUrl(seriesPosterPath, "w500");
+    const poster = tmdbImageUrl(seriesPosterPath, "original");
     if (poster) urls.push(poster);
     return urls;
   }, [stillPath, seasonPosterPath, seriesBackdropPath, seriesPosterPath]);
@@ -74,7 +74,7 @@ export function EpisodeStill({
       src={src}
       alt=""
       loading="lazy"
-      className={cn("h-full w-full object-cover", className)}
+      className={cn("h-full w-full object-contain", className)}
       onError={() => {
         setIndex((i) => (i + 1 < candidates.length ? i + 1 : candidates.length));
       }}

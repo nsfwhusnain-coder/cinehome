@@ -641,11 +641,11 @@ function PlaybackPreferencesSection() {
         <CardTitle className="font-display text-base">Playback preferences</CardTitle>
         <CardDescription className="space-y-1.5">
           <span className="block">
-            Auto starts at 1080p and climbs to 4K if the line and a 4K source exist.
+            Auto starts at 1080p and may climb to 4K on the same stream.
           </span>
           <span className="block">
-            Ultra prefers 4K sources in the roster. It still fast-starts HD while remux
-            4K prepares, unless you pick Maximum below.
+            Ultra waits for a 4K source and plays that once. It will not start at
+            1080p and reload.
           </span>
         </CardDescription>
       </CardHeader>
@@ -661,7 +661,7 @@ function PlaybackPreferencesSection() {
                 Auto — start 1080p, climb to 4K if the line and a 4K source exist
               </SelectItem>
               <SelectItem value="2160">
-                Ultra — prefer 4K in the roster (HD first unless Maximum)
+                Ultra — wait for 4K and play that once
               </SelectItem>
               <SelectItem value="1080">High — 1080p</SelectItem>
               <SelectItem value="720">Balanced — 720p</SelectItem>
@@ -731,14 +731,8 @@ function PlaybackPreferencesSection() {
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Native 4K always starts immediately. Only 4K files that need server repackaging
-            use this choice.
+            Ultra already waits for 4K. Maximum is the same rule for remux-only titles.
           </p>
-          {quality === "2160" && fourKStartup === "fast" ? (
-            <p className="text-sm text-foreground">
-              Starts at 1080p, then switches to 4K when ready. Choose Maximum to wait for 4K.
-            </p>
-          ) : null}
         </div>
         <Button
           type="button"
