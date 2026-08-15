@@ -18,7 +18,7 @@
  * switch panel and the settings-dock "Server" section) — one constant so
  * they can never drift apart on how many rows show before "Show N more".
  */
-export const STABLE_SERVER_CAP = 10;
+export const STABLE_SERVER_CAP = 12;
 
 /**
  * Free-CDN / embed roster pool. One entry per raw "cosmic" token this app
@@ -42,13 +42,15 @@ export const GREEK_POOL = [
 export const PREMIUM_NAMES = {
   /** RD native-compat (browser-safe H.264) 4K slot — the rare, best pick. */
   rdNative4k: "Poseidon",
-  /** RD Safari-only (HEVC/HDR) 4K slot. */
+  /** RD remux 4K (HEVC/MKV) — the cached Ultra library. */
   rdSafari4k: "Hades",
   /** RD's three native-compat 1080p slots share this base name; the three
    * instances are disambiguated with a Roman numeral (see server-names.ts
    * `debridGreekName`) sourced from that slot's own id suffix — never from
    * sibling order. */
   rdNative1080: "Kronos",
+  /** RD remux 1080p (MKV / lossless audio) — packaged on pick. */
+  rdRemux1080: "Oceanus",
   /** TorBox 4K row (either compat — TorBox only ever ships one row per
    * quality tier per title, so no numeral collision is possible). */
   torbox4k: "Demeter",
@@ -76,9 +78,9 @@ export const SERVER_NAME_THEME: Readonly<Record<string, string>> = {
   horizon: "Atlas",
   vienna: "Helios",
   lion: "Ares",
-  phoenix: "Hermes",
+  phoenix: "Phoenix",
   sakura: "Nyx",
-  luna: "Eos",
+  luna: "Luna",
   flower: "Hera",
   rio: "Iris",
   moscow: "Nike",
@@ -89,21 +91,21 @@ export const SERVER_NAME_THEME: Readonly<Record<string, string>> = {
   flux: "Persephone",
   joy: "Hephaestus",
   astra: "Triton",
-  blaze: "Rhea",
-  quasar: "Pan",
+  blaze: "Boreas",
+  quasar: "Quasar",
   share: "Hecate",
   berlin: "Morpheus",
-  marseille: "Boreas",
-  oslo: "Notus",
-  backrooms: "Chaos",
-  ativa: "Uranus",
-  nebula: "Theia",
-  zephyr: "Hypnos",
-  peach: "Eros",
-  tulip: "Thanatos",
+  marseille: "Notus",
+  oslo: "Chaos",
+  backrooms: "Uranus",
+  ativa: "Theia",
+  nebula: "Hypnos",
+  zephyr: "Eros",
+  peach: "Thanatos",
+  tulip: "Tyche",
   rock: "Nemesis",
-  pop: "Tyche",
-  comet: "Circe",
+  pop: "Circe",
+  comet: "Pan",
   embed: "Orpheus",
 };
 

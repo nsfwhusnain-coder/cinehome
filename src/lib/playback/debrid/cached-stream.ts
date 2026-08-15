@@ -43,9 +43,11 @@ export type DebridQuality = "2160p" | "1080p";
 export type DebridSlot =
   | "native-2160"
   | "safari-2160"
+  | "safari-2160-2"
   | "native-1080-1"
   | "native-1080-2"
   | "native-1080-3"
+  | "safari-1080"
   | "native-720";
 /** "realdebrid" is the original/default tier; "torbox" is the new sibling. */
 export type DebridProvider = "realdebrid" | "torbox";

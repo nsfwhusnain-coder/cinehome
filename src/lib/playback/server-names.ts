@@ -129,7 +129,17 @@ function debridGreekName(lowerProvider: string, lowerLabel: string, id?: string)
     return PREMIUM_NAMES.fallback;
   }
 
-  if (is4k) return isSafari ? PREMIUM_NAMES.rdSafari4k : PREMIUM_NAMES.rdNative4k;
+  if (is4k) {
+    if (isSafari) {
+      const remuxInstance = id?.match(/safari-2160-([2-9])$/)?.[1];
+      return `${PREMIUM_NAMES.rdSafari4k}${toRomanSuffix(remuxInstance ? Number(remuxInstance) : 1)}`;
+    }
+    return PREMIUM_NAMES.rdNative4k;
+  }
+
+  if (id?.includes("safari-1080")) {
+    return PREMIUM_NAMES.rdRemux1080;
+  }
 
   if (is1080) {
     const slotMatch = id?.match(/-1080-([1-9])$/);

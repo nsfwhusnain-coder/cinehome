@@ -35,6 +35,36 @@ describe("getServerDisplayName — Greek theme", () => {
     expect(first).toBe(second);
   });
 
+  it("keeps the household names the owner actually uses", () => {
+    expect(getServerDisplayName("vixsrc", "Luna")).toBe("Luna");
+    expect(getServerDisplayName("videasy", "Quasar")).toBe("Quasar");
+    expect(getServerDisplayName("vidlink", "Phoenix")).toBe("Phoenix");
+    expect(
+      getServerDisplayName("Debrid", "4K • Debrid", "debrid-tt1-movie-0-0-native-2160")
+    ).toBe("Poseidon");
+    expect(
+      getServerDisplayName(
+        "Debrid",
+        "4K • Debrid · Safari",
+        "debrid-tt1-movie-0-0-safari-2160"
+      )
+    ).toBe("Hades");
+    expect(
+      getServerDisplayName(
+        "Debrid",
+        "4K • Debrid · Safari",
+        "debrid-tt1-movie-0-0-safari-2160-2"
+      )
+    ).toBe("Hades II");
+    expect(
+      getServerDisplayName(
+        "Debrid",
+        "1080p • Debrid",
+        "debrid-tt1-movie-0-0-safari-1080"
+      )
+    ).toBe("Oceanus");
+  });
+
   it("maps known embed provider strings to distinct Greek names", () => {
     const solstice = getServerDisplayName("vidking", "hls");
     const phoenix = getServerDisplayName("vidlink", "auto");

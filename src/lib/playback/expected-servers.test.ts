@@ -175,16 +175,17 @@ describe("buildServerSlots — single source of truth for naming", () => {
     );
   });
 
-  it("EXPECTED_SERVERS identity table names are all Greek — no cosmic string leaks through", () => {
-    const oldCosmicNames = new Set([
-      "Aether", "Horizon", "Solstice", "Pulse", "Luna", "Phoenix", "CinePro",
-      "Nova", "Orion", "Nest", "Joy", "Astra", "Blaze", "Comet", "Quasar",
+  it("EXPECTED_SERVERS identity table names stay themed", () => {
+    const retired = new Set([
+      "Aether", "Horizon", "Solstice", "Pulse", "CinePro",
+      "Nova", "Orion", "Nest", "Joy", "Astra", "Blaze", "Comet",
     ]);
+    const household = new Set(["Luna", "Phoenix", "Quasar"]);
     for (const server of EXPECTED_SERVERS) {
-      expect(oldCosmicNames.has(server.name)).toBe(false);
+      expect(retired.has(server.name)).toBe(false);
       const isEmbedGreek = (GREEK_POOL as readonly string[]).includes(server.name);
       const isPremiumGreek = (PREMIUM_GREEK_POOL as readonly string[]).includes(server.name);
-      expect(isEmbedGreek || isPremiumGreek).toBe(true);
+      expect(isEmbedGreek || isPremiumGreek || household.has(server.name)).toBe(true);
     }
   });
 

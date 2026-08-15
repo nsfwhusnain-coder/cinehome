@@ -514,9 +514,9 @@ type CandidateClass =
  */
 const PER_CLASS_CAP: Record<CandidateClass, number> = {
   "native-2160": 5,
-  "safari-2160": 5,
+  "safari-2160": 10,
   "native-1080": 20,
-  "safari-1080": 5,
+  "safari-1080": 8,
   // One RD roster slot consumes this class only when no higher native slot
   // is available. Keep several candidates so validation can fall through.
   "native-720": 5,

@@ -5,7 +5,7 @@ import { parseDebridPlaybackSourceId } from "./debrid-source-id";
 describe("debrid cache policy identity", () => {
   it("versions Real-Debrid roster slots after a ranking-policy change", () => {
     expect(storedQualityForCache("realdebrid", "native-1080-1")).toBe(
-      "rich-v2:native-1080-1"
+      "rich-v3:native-1080-1"
     );
   });
 

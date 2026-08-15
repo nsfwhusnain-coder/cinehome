@@ -8,14 +8,13 @@
  * REAL-DEBRID IS THE FAST, HIGH-VOLUME, PRIMARY ENGINE. A popular title has
  * 150-224 fully RD-cached streams, so instead of caching a single "best"
  * source per resolution (the old 2-row model), RD now caches a small ROSTER
- * of up to 5 distinct sources per title — see `RdSlot`:
- *   - "native-2160"   best browser-safe H.264/MP4 4K (rare: 0-8/title)
- *   - "safari-2160"   best HEVC/MP4 4K, tagged compat:"safari" (60-117/title
- *                      exist, but only in a browser that can decode HEVC)
- *   - "native-1080-1/2/3"  several distinct browser-safe H.264/MP4 1080p
- *                      releases (14-37/title exist)
- *   - "native-720"      one browser-safe availability fallback, considered
- *                      only when no native 4K/1080p source exists
+ * of up to 8 distinct sources per title — see `RdSlot`:
+ *   - "native-2160"   Poseidon — browser-safe H.264/MP4 4K
+ *   - "safari-2160"   Hades — cached HEVC/MKV 4K remux
+ *   - "safari-2160-2" Hades II — second cached 4K remux when one exists
+ *   - "native-1080-1/2/3"  Kronos — browser-safe H.264/MP4 1080p
+ *   - "safari-1080"   Oceanus — cached 1080 remux (MKV / lossless audio)
+ *   - "native-720"    last-resort native fallback when no HD exists
  * "Best native" (the auto-default target) falls out of this for free: the
  * existing (unowned) scoring in source-quality.ts already ranks a native
  * 2160p source above a native 1080p one, so whichever height actually landed
@@ -130,9 +129,11 @@ const QUALITIES: DebridQuality[] = ["2160p", "1080p"];
 const RD_SLOTS: DebridSlot[] = [
   "native-2160",
   "safari-2160",
+  "safari-2160-2",
   "native-1080-1",
   "native-1080-2",
   "native-1080-3",
+  "safari-1080",
   "native-720",
 ];
 
@@ -149,7 +150,7 @@ const RD_SLOTS: DebridSlot[] = [
  */
 const RD_FAST_DEADLINE_MS = 1_500;
 /** Full-resolve path bound — shared across every missing RD slot's resolve attempts (including any per-slot fallback to the next-ranked candidate). */
-const RD_FULL_DEADLINE_MS = 12_000;
+const RD_FULL_DEADLINE_MS = 16_000;
 /** Per-call ceiling for a single `resolveTokenFreeRedirect`, clamped down further by whatever remains of the shared deadline. */
 const RD_RESOLVE_TIMEOUT_CEILING_MS = 8_000;
 /** Range-probe ceiling inside the shared full-resolve budget. */
@@ -293,7 +294,12 @@ function toPlaybackSource(
 
 function slotHeight(slot: DebridSlot): 720 | 1080 | 2160 {
   if (slot === "native-720") return 720;
-  return slot === "native-2160" || slot === "safari-2160" ? 2160 : 1080;
+  if (slot.startsWith("safari-2160") || slot === "native-2160") return 2160;
+  return 1080;
+}
+
+function isNativeSlot(slot: DebridSlot): boolean {
+  return slot.startsWith("native-");
 }
 
 function slotQuality(slot: DebridSlot): RdQuality {
@@ -358,10 +364,21 @@ function nativeCandidatesAt(
   );
 }
 
-function safariCandidatesAt(candidates: DebridCandidate[], height: 1080 | 2160): DebridCandidate[] {
-  // HEVC 4K almost always ships as MKV. The native-slot MP4-only rule must
-  // not apply here or Hades disappears and a TV only sees 1080p.
-  return candidates.filter((c) => c.compat === "safari" && c.resolutionHeight === height);
+function remuxCandidatesAt(
+  candidates: DebridCandidate[],
+  height: 1080 | 2160
+): DebridCandidate[] {
+  // HEVC/MKV/DTS releases are the bulk of RD's cached 4K library. Native
+  // slots stay MP4-only so Poseidon/Kronos start instantly. Remux slots
+  // (Hades / Rhea) take everything else the household already paid to cache.
+  return candidates.filter((c) => {
+    if (c.resolutionHeight !== height) return false;
+    if (c.compat === "safari") return true;
+    return (
+      c.compat === "native" &&
+      !isDirectPlayDebridRelease(c.container, c.audioCodec)
+    );
+  });
 }
 
 /**
@@ -417,10 +434,12 @@ function buildRdSlotOptions(
   };
   const result: Record<DebridSlot, DebridCandidate[]> = {
     "native-2160": available(nativeCandidatesAt(candidates, 2160)),
-    "safari-2160": available(safariCandidatesAt(candidates, 2160)),
+    "safari-2160": [],
+    "safari-2160-2": [],
     "native-1080-1": [],
     "native-1080-2": [],
     "native-1080-3": [],
+    "safari-1080": available(remuxCandidatesAt(candidates, 1080)),
     "native-720": available(nativeCandidatesAt(candidates, 720)),
   };
 
@@ -432,6 +451,11 @@ function buildRdSlotOptions(
   const native1080 = available(nativeCandidatesAt(candidates, 1080));
   nativeSlots.forEach((slot) => {
     result[slot] = native1080;
+  });
+  const remux4kSlots = missing.filter((slot) => slot.startsWith("safari-2160"));
+  const remux4k = available(remuxCandidatesAt(candidates, 2160));
+  remux4kSlots.forEach((slot) => {
+    result[slot] = remux4k;
   });
   return result;
 }
@@ -811,7 +835,10 @@ async function resolveRealDebridSlots(
   preFetchedCandidates?: DebridCandidate[]
 ): Promise<{ sources: PlaybackSource[]; candidates: DebridCandidate[] }> {
   const { hits, missing, occupiedIdentities } = await readCachedRdSlots(keyBase, rdToken);
-  if (!missing.length) return { sources: hits, candidates: preFetchedCandidates ?? [] };
+  const requiredMissing = missing.filter((slot) => slot !== "safari-2160-2");
+  if (!requiredMissing.length) {
+    return { sources: hits, candidates: preFetchedCandidates ?? [] };
+  }
 
   const deadline = Date.now() + RD_FULL_DEADLINE_MS;
   const candidates =
@@ -844,11 +871,29 @@ async function resolveRealDebridSlots(
     resolved,
   }));
 
+  const remux4kSlots = missing.filter((slot) => slot.startsWith("safari-2160"));
+  const rankedRemux4k =
+    remux4kSlots.length > 0
+      ? await resolveRankedCandidatePool(
+          slotOptions[remux4kSlots[0]!] ?? [],
+          remux4kSlots.length,
+          rdToken,
+          deadline,
+          req.mediaType,
+          occupiedIdentities
+        )
+      : [];
+  const remux4kEntries = rankedRemux4k.map((resolved, index) => ({
+    slot: remux4kSlots[index]!,
+    resolved,
+  }));
+
   // A successful native 1080p roster makes the 720p availability fallback
   // redundant. Do not eagerly resolve/cache a sixth, lower-quality source.
   const otherMissing = missing.filter(
     (slot) =>
       !slot.startsWith("native-1080") &&
+      !slot.startsWith("safari-2160") &&
       !(slot === "native-720" && nativeEntries.length > 0)
   );
   const otherEntries = await mapWithConcurrency(otherMissing, RESOLVE_CONCURRENCY, async (slot) => {
@@ -863,7 +908,7 @@ async function resolveRealDebridSlots(
     );
     return resolved ? { slot, resolved } : null;
   });
-  let resolvedPerSlot = [...nativeEntries, ...otherEntries].filter(
+  let resolvedPerSlot = [...nativeEntries, ...remux4kEntries, ...otherEntries].filter(
     (entry): entry is { slot: DebridSlot; resolved: ResolvedCandidate } =>
       entry !== null
   );
@@ -990,6 +1035,7 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
 
   const bestNativeSlots: DebridSlot[] = [
     "native-2160",
+    "safari-2160",
     "native-1080-1",
     "native-720",
   ];
@@ -1004,11 +1050,14 @@ async function resolveFastBestNativeFromCache(req: ResolveDebridSourcesRequest):
       ? effectiveReleaseContainer(safeUrl ?? hit.url, hit.container)
       : undefined;
     const release = hit ? parseReleaseTitle(hit.title) : null;
+    const playable =
+      !isNativeSlot(slot) ||
+      isDirectPlayDebridRelease(effectiveContainer, release?.audioCodec);
     if (
       hit &&
       safeUrl &&
       validation?.acceptable &&
-      isDirectPlayDebridRelease(effectiveContainer, release?.audioCodec)
+      playable
     ) {
       return [
         toRdPlaybackSource(
