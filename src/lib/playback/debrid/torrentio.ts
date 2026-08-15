@@ -37,8 +37,11 @@
  */
 import { tmdb } from "@/lib/tmdb";
 import type { MediaType } from "../types";
+import { isMoviePackRelease } from "../source-facts";
 import { isCaptureRelease, releaseQualityScore } from "../release-scorer";
 import { tvQueryIndex } from "../tv-index";
+
+export { isMoviePackRelease };
 
 const TORRENTIO_BASE = (process.env.TORRENTIO_BASE || "https://torrentio.strem.fun").replace(
   /\/+$/,
@@ -177,13 +180,6 @@ const SIZE_PATTERN = /(\d+(?:\.\d+)?)\s*(GiB|GB|MiB|MB)\b/i;
    (hdtc, and separators inside telesync/telecine/camrip). */
 const MOVIE_NON_FEATURE_PATTERN =
   /\b(?:featurettes?|bonus(?:es)?|extras?|soundtracks?|deleted[ ._-]?scenes?|imdb[ ._-]*top[ ._-]*\d+)\b/i;
-const MOVIE_PACK_RELEASE_PATTERN =
-  /\b(?:season[ ._-]?\d+|s\d{1,2}|complete[ ._-]?(?:series|season|pack)|collection|filmography|duology|trilogy)\b/i;
-
-/** Season packs / collections / complete sets — not a single movie feature. */
-export function isMoviePackRelease(text: string): boolean {
-  return MOVIE_PACK_RELEASE_PATTERN.test(text);
-}
 
 /**
  * Pure title/filename classifier — no network. Exported for unit testing

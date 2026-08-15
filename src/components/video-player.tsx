@@ -3416,6 +3416,9 @@ export function VideoPlayer({
         video.crossOrigin = "use-credentials";
       } else if (isWorkerProxy) {
         video.crossOrigin = "anonymous";
+      } else {
+        // A leftover CORS mode from Luna/HLS makes RD MP4s die instantly.
+        video.removeAttribute("crossorigin");
       }
       const rungs = activeSourceRef.current?.qualityRungs ?? [];
       const rungUrl = activeSourceRef.current

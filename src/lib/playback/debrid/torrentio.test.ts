@@ -615,6 +615,11 @@ describe("isMoviePackRelease", () => {
     expect(isMoviePackRelease("Marvel Collection 2160p")).toBe(true);
     expect(isMoviePackRelease("X-Men Filmography 1080p")).toBe(true);
     expect(isMoviePackRelease("Dark Knight Trilogy 1080p")).toBe(true);
+    expect(
+      isMoviePackRelease(
+        "Trilogia - Se Beber Não Case! (2009-2013) Dual Áudio 1080p"
+      )
+    ).toBe(true);
   });
 
   it("keeps a normal single-feature release name", () => {

@@ -119,6 +119,14 @@ describe("decidePlayback contract", () => {
     expect(decision.immediate?.id).toBe("kronos");
   });
 
+  it("Ultra starts Luna instead of a pack 4K posing as Kronos", () => {
+    const decision = decidePlayback([pack4k, luna], {
+      preferredHeight: 2160,
+      fourKStartup: "maximum",
+    });
+    expect(decision.immediate?.id).toBe("luna");
+  });
+
   it("starts native 4K immediately and does not defer remux", () => {
     const decision = decidePlayback([poseidon, kronos, hades], {
       preferredHeight: 2160,

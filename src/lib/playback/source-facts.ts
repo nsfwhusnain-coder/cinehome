@@ -13,7 +13,11 @@ const ENGLISH_AUDIO_NAME =
   /\benglish\b|\bcinema en\b|\bcinema-en\b|\(en\)/i;
 const CINEMA_XX = /\bcinema[ ._-]?xx\b/i;
 const PACK_NAME =
-  /\b(?:season[ ._-]?\d+|s\d{1,2}|complete[ ._-]?(?:series|season|pack)|collection|filmography|duology|trilogy)\b/i;
+  /\b(?:season[ ._-]?\d+|s\d{1,2}|complete[ ._-]?(?:series|season|pack)|collection|colec(?:ao|ão|cion|ción)|filmography|duology|trilog(?:y|ie|ia|ía)|box[ ._-]?set)\b/i;
+/** `2009-2013` on a movie release is a trilogy/collection dump, not one feature. */
+const YEAR_SPAN_PACK = /\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/;
+const PORTUGUESE_RELEASE =
+  /\b(?:dublado|dual[ ._-]?áudio|nacional)\b/i;
 
 const NAME_TO_CODE: Readonly<Record<string, string>> = {
   english: "en",
@@ -69,6 +73,7 @@ export function inferAudioLanguageFromText(text: string): string {
   const raw = text.trim();
   if (!raw) return "und";
   if (ENGLISH_AUDIO_NAME.test(raw)) return "en";
+  if (PORTUGUESE_RELEASE.test(raw)) return "pt";
   if (CINEMA_XX.test(raw)) return "xx";
   const cinema = raw.match(
     /\bcinema[ ._-]?(hi|ar|fr|es|de|pt|ta|te|ml|bn|it|ru|tr|id|th|vi|nl|pl|ur|pa|mr|kn|zh|ko|ja|he|fa|xx)\b/i
@@ -130,8 +135,12 @@ export function isHouseholdStartLanguage(source: PlaybackSource): boolean {
   return code === "en" || code === "und";
 }
 
+export function isMoviePackRelease(text: string): boolean {
+  return PACK_NAME.test(text) || YEAR_SPAN_PACK.test(text);
+}
+
 export function inferTitleMatchFromText(text: string): TitleMatch {
-  return PACK_NAME.test(text) ? "pack" : "unknown";
+  return isMoviePackRelease(text) ? "pack" : "unknown";
 }
 
 export function sourceTitleMatch(source: PlaybackSource): TitleMatch {

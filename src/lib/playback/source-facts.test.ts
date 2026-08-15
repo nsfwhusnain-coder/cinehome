@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   inferAudioLanguageFromText,
   isEnglishPreferredSource,
+  isMoviePackRelease,
   isPackSource,
   sourceAudioLanguageCode,
   sourceAudioLanguageRank,
@@ -53,5 +54,15 @@ describe("source facts", () => {
       isPackSource(src({ titleMatch: "pack", label: "Complete Collection" }))
     ).toBe(true);
     expect(isPackSource(src({ titleMatch: "exact", origin: "debrid" }))).toBe(false);
+  });
+
+  it("flags Portuguese trilogy dumps that used to steal Kronos", () => {
+    const hangoverPack =
+      "Trilogia - Se Beber Não Case! (2009-2013) 5.1 BluRay Dual Áudio 1080p By-LuaHarp";
+    expect(isMoviePackRelease(hangoverPack)).toBe(true);
+    expect(isMoviePackRelease("The Hangover 2009 Unrated 1080p BluRay")).toBe(
+      false
+    );
+    expect(inferAudioLanguageFromText(hangoverPack)).toBe("pt");
   });
 });
