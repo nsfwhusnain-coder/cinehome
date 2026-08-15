@@ -133,6 +133,7 @@ import { PlayerErrorCard, type PlayerErrorAction } from "@/components/player/Pla
 import { SkipIntroButton } from "@/components/player/SkipIntroButton";
 import type { DockSection } from "@/components/player-dock";
 import {
+  alreadyAtQualityTarget,
   buildPlayerQualityOptions,
   normalizePlayerQualityHeight,
   pickQualityRungUrl,
@@ -4380,6 +4381,15 @@ export function VideoPlayer({
 
   const handleQualityTargetChange = useCallback(
     (target: PlayerQualityTarget, announce = true) => {
+      const playingHeight = usePlayerStore.getState().playingHeight;
+      const alreadyThere = alreadyAtQualityTarget(target, {
+        playingHeight,
+        source: activeSourceRef.current,
+      });
+      if (alreadyThere && qualityTargetRef.current === target) {
+        return;
+      }
+
       qualityTargetRef.current = target;
       setQualityTarget(target);
 
@@ -4433,6 +4443,12 @@ export function VideoPlayer({
       }).find((candidate) => candidate.value === target);
 
       if (option?.levelIndex != null && hls) {
+        const current =
+          hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
+        if (current === option.levelIndex) {
+          setQuality(option.levelIndex);
+          return;
+        }
         const switched = switchHlsLevelSmooth(hls, option.levelIndex);
         setQuality(switched);
         if (announce) {
@@ -4484,10 +4500,16 @@ export function VideoPlayer({
         }
       }
 
+      if (alreadyThere) {
+        return;
+      }
+
       const replacement = option?.sourceId
         ? orderedSourcesRef.current.find((source) => source.id === option.sourceId)
         : undefined;
-      if (!replacement) return;
+      if (!replacement || replacement.id === activeSourceRef.current?.id) {
+        return;
+      }
 
       userSelectedSourceRef.current = true;
       setQuality(-1);

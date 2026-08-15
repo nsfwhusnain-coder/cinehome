@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  alreadyAtQualityTarget,
   buildPlayerQualityOptions,
   normalizePlayerQualityHeight,
   pickQualityRungUrl,
@@ -77,6 +78,23 @@ describe("quality router", () => {
     expect(options.find((option) => option.value === 1080)?.levelIndex).toBe(2);
     expect(options.find((option) => option.value === 2160)?.sourceId).toBe("uhd");
     expect(options.find((option) => option.value === 360)?.status).toBe("unavailable");
+  });
+
+  it("does not treat an already-playing 4K source as a new 4K pick", () => {
+    const quasar = source("quasar", 2160);
+    expect(
+      alreadyAtQualityTarget(2160, { playingHeight: 2160, source: quasar })
+    ).toBe(true);
+    expect(
+      alreadyAtQualityTarget(2160, { playingHeight: 1600, source: quasar })
+    ).toBe(true);
+    expect(
+      alreadyAtQualityTarget(2160, {
+        playingHeight: 1080,
+        source: source("luna", 1080),
+      })
+    ).toBe(false);
+    expect(alreadyAtQualityTarget("auto", { playingHeight: 2160 })).toBe(false);
   });
 
   it("removes failed and probe-dead sources from quality routing", () => {

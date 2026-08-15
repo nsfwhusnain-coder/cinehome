@@ -409,7 +409,10 @@ export function PlayerDock({
                   option.status === "active" && activeQualityTarget === option.value
                 }
                 disabled={disabled}
-                onClick={() => onQualityTargetChange(option.value)}
+                onClick={() => {
+                  if (option.status === "active") return;
+                  onQualityTargetChange(option.value);
+                }}
               >
                 {option.label}
                 {option.status === "searching" && (

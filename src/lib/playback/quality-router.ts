@@ -51,7 +51,7 @@ export function normalizePlayerQualityHeight(
   return null;
 }
 
-function sourceOffersHeight(
+export function sourceOffersHeight(
   source: PlaybackSource,
   height: PlayerQualityHeight
 ): boolean {
@@ -132,6 +132,21 @@ function discoveredSourceForQuality(
   // this inventory-only path must not. Stable id ordering keeps the explanatory
   // reason deterministic when several unsupported releases share a rung.
   return [...candidates].sort((a, b) => a.id.localeCompare(b.id))[0] ?? null;
+}
+
+/** True when this source (or the decoded frame) already is the requested rung. */
+export function alreadyAtQualityTarget(
+  target: PlayerQualityTarget,
+  args: {
+    playingHeight?: number;
+    source?: PlaybackSource | null;
+  }
+): boolean {
+  if (target === "auto") return false;
+  if (normalizePlayerQualityHeight(args.playingHeight ?? 0) === target) {
+    return true;
+  }
+  return args.source ? sourceOffersHeight(args.source, target) : false;
 }
 
 export function selectSourceForQuality(
