@@ -39,7 +39,7 @@ const hindi1080 = src("cinema-hi", 1080, {
 });
 
 describe("selectActiveSource", () => {
-  it("Ultra starts 4K once and does not remount after first frame", () => {
+  it("Ultra starts direct HD once and does not remount after first frame", () => {
     const started = selectActiveSource({
       roster: [remux4k, direct1080],
       active: null,
@@ -49,12 +49,12 @@ describe("selectActiveSource", () => {
       fourKStartup: "fast",
       preferredHeight: 2160,
     });
-    expect(started.next?.id).toBe("remux-4k");
+    expect(started.next?.id).toBe("direct-1080");
     expect(started.replace).toBe(true);
 
     const held = selectActiveSource({
       roster: [remux4k, direct1080],
-      active: remux4k,
+      active: direct1080,
       userPicked: false,
       everPlayed: true,
       autoUpgraded: true,
@@ -62,7 +62,7 @@ describe("selectActiveSource", () => {
       preferredHeight: 2160,
     });
     expect(held.replace).toBe(false);
-    expect(held.next?.id).toBe("remux-4k");
+    expect(held.next?.id).toBe("direct-1080");
   });
 
   it("rescues a Hindi start to English remux after first frame", () => {

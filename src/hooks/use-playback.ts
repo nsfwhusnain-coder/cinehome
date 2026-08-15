@@ -426,14 +426,14 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     maximumGate.target === wallTarget && maximumGate.released;
   const wantsLockedFourK = mergedData?.preferences?.playbackQuality === 2160;
   const maximumDiscoveryOpen =
-    (wantsLockedFourK || !discoveryWallHit) &&
+    !discoveryWallHit &&
     (initialFullResolveOpen ||
       fullStillOpen ||
       preferredQualityDiscoveryPending(mergedData));
   const holdMaximumStartup = shouldWaitForMaximumFourK(
     mergedData,
     maximumDiscoveryOpen,
-    wantsLockedFourK ? ultraHoldExpired : gateReleased
+    gateReleased || ultraHoldExpired
   );
   const data = holdMaximumStartup ? undefined : mergedData;
   const hasSources = hasPlayableSources(data);

@@ -13,6 +13,7 @@ describe("throwIfHttpOutage", () => {
   it("throws on HTTP >= 500 and ignores 4xx / 200", () => {
     expect(() => throwIfHttpOutage(200, "vixsrc")).not.toThrow();
     expect(() => throwIfHttpOutage(404, "vixsrc")).not.toThrow();
+    expect(() => throwIfHttpOutage(429, "videasy")).toThrow(ProviderOutageError);
     expect(() => throwIfHttpOutage(500, "vixsrc")).toThrow(ProviderOutageError);
     try {
       throwIfHttpOutage(502, "videasy");

@@ -48,7 +48,7 @@ export function isNetworkThrow(err: unknown): boolean {
 }
 
 export function throwIfHttpOutage(status: number, provider: string): void {
-  if (status >= PROVIDER_OUTAGE_HTTP_MIN) {
+  if (status === 429 || status >= PROVIDER_OUTAGE_HTTP_MIN) {
     throw new ProviderOutageError(
       `${provider}_http_${status}`,
       "http_5xx",

@@ -31,22 +31,22 @@ describe("client startup ranking", () => {
   const direct1080 = source("direct-1080", 1080, "mp4");
   const direct4k = source("direct-4k", 2160, "mp4");
 
-  test("Ultra starts 4K once even if startup is labelled fast", () => {
+  test("Ultra starts direct HD, not remux 4K, so the player does not 404", () => {
     const decision = pickClientStartupSource([remux4k, direct1080], {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(decision.immediate?.id).toBe("remux-4k");
-    expect(decision.deferredFourK).toBeNull();
+    expect(decision.immediate?.id).toBe("direct-1080");
+    expect(decision.deferredFourK?.id).toBe("remux-4k");
   });
 
-  test("maximum mode waits for the ranked 4K remux", () => {
+  test("maximum mode also starts direct HD and keeps remux 4K deferred", () => {
     const decision = pickClientStartupSource([remux4k, direct1080], {
       preferredHeight: 2160,
       fourKStartup: "maximum",
     });
-    expect(decision.immediate?.id).toBe("remux-4k");
-    expect(decision.deferredFourK).toBeNull();
+    expect(decision.immediate?.id).toBe("direct-1080");
+    expect(decision.deferredFourK?.id).toBe("remux-4k");
   });
 
   test("direct 4K is never delayed", () => {
@@ -131,8 +131,8 @@ describe("client startup ranking", () => {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(ultra.immediate?.id).toBe("remux-4k");
-    expect(ultra.deferredFourK).toBeNull();
+    expect(ultra.immediate?.id).toBe("luna");
+    expect(ultra.deferredFourK?.id).toBe("remux-4k");
 
     const auto = pickClientStartupSource([hindi1080, remux4k, luna], {
       preferredHeight: "auto",

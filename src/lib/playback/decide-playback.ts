@@ -214,18 +214,37 @@ export function decidePlayback(
     fourKStartup === "maximum" || options.preferredHeight === STARTUP_UHD_HEIGHT;
 
   if (lockFourK) {
-    const fourK = pickFrom(
-      roster.filter((source) => sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT),
+    // Only auto-start *direct* 4K (Quasar / Poseidon). Remux 4K (Hades)
+    // stays in the list — starting it first is what 404s the player.
+    const fourKDirect = pickFrom(
+      roster.filter(
+        (source) =>
+          sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT &&
+          sourceDelivery(source) === "direct"
+      ),
       options,
       STARTUP_UHD_HEIGHT
     );
-    if (fourK) {
-      return { immediate: fourK, deferredFourK: null, reason: "ranked_best" };
+    if (fourKDirect) {
+      return { immediate: fourKDirect, deferredFourK: null, reason: "ranked_best" };
     }
-    const fallback = pickFrom(roster, options, options.preferredHeight);
-    return fallback
-      ? { immediate: fallback, deferredFourK: null, reason: "ranked_best" }
-      : { immediate: null, deferredFourK: null, reason: "no_source" };
+    const fallback = pickFrom(
+      roster.filter((source) => sourceDelivery(source) !== "remux"),
+      options,
+      options.preferredHeight
+    );
+    const start = fallback ?? pickFrom(roster, options, options.preferredHeight);
+    if (!start) {
+      return { immediate: null, deferredFourK: null, reason: "no_source" };
+    }
+    return {
+      immediate: start,
+      deferredFourK:
+        remuxFourK && remuxFourK.id !== start.id ? remuxFourK : null,
+      reason: remuxFourK && remuxFourK.id !== start.id
+        ? "fast_start_direct_hd"
+        : "ranked_best",
+    };
   }
 
   const best = pickFrom(roster, options, options.preferredHeight);

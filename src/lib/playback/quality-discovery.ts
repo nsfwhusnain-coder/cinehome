@@ -1,4 +1,8 @@
-import { isSourcePlayableHere, sourceMaxHeight } from "./source-quality";
+import {
+  isSourcePlayableHere,
+  sourceDelivery,
+  sourceMaxHeight,
+} from "./source-quality";
 import type { PlaybackResponse } from "./types";
 
 /** Ultra may wait this long for 4K. After this, start the best source once. */
@@ -12,13 +16,14 @@ export interface MaximumStartupGate {
 function hasPlayablePreferredQuality(response: PlaybackResponse): boolean {
   const preferred = response.preferences?.playbackQuality;
   if (typeof preferred !== "number") return true;
-  return (response.sources ?? []).some(
-    (source) =>
-      source.verified !== false &&
-      source.probe?.ok !== false &&
-      isSourcePlayableHere(source) &&
-      sourceMaxHeight(source) >= preferred
-  );
+  return (response.sources ?? []).some((source) => {
+    if (source.verified === false || source.probe?.ok === false) return false;
+    if (!isSourcePlayableHere(source)) return false;
+    if (sourceMaxHeight(source) < preferred) return false;
+    // Remux 4K is not a reason to keep the title card up — it packs later.
+    if (preferred >= 2160 && sourceDelivery(source) !== "direct") return false;
+    return true;
+  });
 }
 
 export function preferredQualityDiscoveryPending(
