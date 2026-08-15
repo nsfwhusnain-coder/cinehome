@@ -201,11 +201,14 @@ describe("resolveVideasy", () => {
     }) as typeof fetch;
 
     const streams = await resolveVideasy(346698, "movie");
-    expect(streams).toHaveLength(1);
+    expect(streams).toHaveLength(2);
     expect(streams[0]?.quality).toBe("2160p");
     expect(streams[0]?.maxHeight).toBe(2160);
+    expect(streams[0]?.label).toBe("Quasar");
     expect(streams[0]?.url).toContain("barbie-4k.m3u8");
     expect(streams[0]?.type).toBe("hls");
+    expect(streams[1]?.maxHeight).toBe(1080);
+    expect(streams[1]?.label).toBe("Quasar 2");
     expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).toContain(2160);
     expect(streams[0]?.qualityRungs?.map((rung) => rung.height)).not.toContain(4);
   });

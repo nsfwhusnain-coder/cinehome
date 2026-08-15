@@ -1,7 +1,7 @@
 export type CachedProvider = "realdebrid" | "torbox";
 
 /** Bump when RD roster ranking changes so old winners cannot survive the TTL. */
-export const REAL_DEBRID_CACHE_POLICY = "rich-v4";
+export const REAL_DEBRID_CACHE_POLICY = "rich-v5";
 
 export function storedQualityForCache(
   provider: CachedProvider,

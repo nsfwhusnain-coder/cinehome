@@ -180,12 +180,12 @@ describe("buildServerSlots — single source of truth for naming", () => {
       "Aether", "Horizon", "Solstice", "Pulse", "CinePro",
       "Nova", "Orion", "Nest", "Joy", "Astra", "Blaze", "Comet",
     ]);
-    const household = new Set(["Luna", "Phoenix", "Quasar"]);
+    const household = new Set<string>();
     for (const server of EXPECTED_SERVERS) {
       expect(retired.has(server.name)).toBe(false);
-      const isEmbedGreek = (GREEK_POOL as readonly string[]).includes(server.name);
-      const isPremiumGreek = (PREMIUM_GREEK_POOL as readonly string[]).includes(server.name);
-      expect(isEmbedGreek || isPremiumGreek || household.has(server.name)).toBe(true);
+      const isEmbedTheme = (GREEK_POOL as readonly string[]).includes(server.name);
+      const isPremiumTheme = (PREMIUM_GREEK_POOL as readonly string[]).includes(server.name);
+      expect(isEmbedTheme || isPremiumTheme || household.has(server.name)).toBe(true);
     }
   });
 

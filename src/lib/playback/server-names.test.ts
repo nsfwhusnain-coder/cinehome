@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { baseServerToken, getServerDisplayName } from "./server-names";
 import { GREEK_POOL, PREMIUM_GREEK_POOL } from "./server-theme";
 
-describe("getServerDisplayName — Greek theme", () => {
+describe("getServerDisplayName — film exhibition theme", () => {
   it("never includes quality/resolution in the name", () => {
     const names = [
       getServerDisplayName("vidking", "Solstice"),
@@ -36,33 +36,36 @@ describe("getServerDisplayName — Greek theme", () => {
   });
 
   it("keeps the household names the owner actually uses", () => {
-    expect(getServerDisplayName("vixsrc", "Luna")).toBe("Luna");
-    expect(getServerDisplayName("videasy", "Quasar")).toBe("Quasar");
-    expect(getServerDisplayName("vidlink", "Phoenix")).toBe("Phoenix");
+    expect(getServerDisplayName("vixsrc", "Luna")).toBe("Scope");
+    expect(getServerDisplayName("videasy", "Quasar")).toBe("Prism");
+    expect(getServerDisplayName("vidlink", "Phoenix")).toBe("Eastman");
     expect(
       getServerDisplayName("Debrid", "4K • Debrid", "debrid-tt1-movie-0-0-native-2160")
-    ).toBe("Poseidon");
+    ).toBe("IMAX");
+    expect(
+      getServerDisplayName("Debrid", "4K • Debrid", "debrid-tt1-movie-0-0-native-2160-2")
+    ).toBe("IMAX II");
     expect(
       getServerDisplayName(
         "Debrid",
         "4K • Debrid · Safari",
         "debrid-tt1-movie-0-0-safari-2160"
       )
-    ).toBe("Hades");
+    ).toBe("Seventy");
     expect(
       getServerDisplayName(
         "Debrid",
         "4K • Debrid · Safari",
         "debrid-tt1-movie-0-0-safari-2160-2"
       )
-    ).toBe("Hades II");
+    ).toBe("Seventy II");
     expect(
       getServerDisplayName(
         "Debrid",
         "1080p • Debrid",
         "debrid-tt1-movie-0-0-safari-1080"
       )
-    ).toBe("Oceanus");
+    ).toBe("Cinerama");
   });
 
   it("maps known embed provider strings to distinct Greek names", () => {
@@ -73,7 +76,7 @@ describe("getServerDisplayName — Greek theme", () => {
     expect(solstice).not.toBe(phoenix);
     expect(phoenix).not.toBe(luna);
     expect(solstice).not.toBe(luna);
-    expect(rock).toBe("Nemesis");
+    expect(rock).toBe("Mitchell");
   });
 
   it("passes through CinePro/LordFlix-style friendly labels via the theme table (never raw)", () => {
@@ -160,7 +163,7 @@ describe("getServerDisplayName — Greek theme", () => {
     expect(titleA).toBe(titleB);
   });
 
-  it("falls back to a deterministic Greek name (never a raw string) for an unrecognized provider/label", () => {
+  it("falls back to a deterministic film name (never a raw string) for an unrecognized provider/label", () => {
     const pool: readonly string[] = GREEK_POOL;
     const name = getServerDisplayName("totally-new-mystery-provider", "Zephyrine");
     expect(pool).toContain(name.replace(/ (II|III|IV|V|VI|VII|VIII|IX|X)$/, ""));
@@ -168,7 +171,7 @@ describe("getServerDisplayName — Greek theme", () => {
     expect(getServerDisplayName("totally-new-mystery-provider", "Zephyrine")).toBe(name);
   });
 
-  it("premium and free-CDN Greek pools are fully disjoint", () => {
+  it("premium and free-CDN film pools are fully disjoint", () => {
     const overlap = PREMIUM_GREEK_POOL.filter((n) => (GREEK_POOL as readonly string[]).includes(n));
     expect(overlap).toEqual([]);
   });

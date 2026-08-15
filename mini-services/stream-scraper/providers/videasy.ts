@@ -143,9 +143,34 @@ function sortByQuality(sources: VideasyRawSource[]): VideasyRawSource[] {
   );
 }
 
+type VideasyRung = { height: number; url: string; type: "hls" | "mp4" | "dash" };
+
+function streamFromRungs(rungs: VideasyRung[], label: string): ProviderStream | null {
+  const best = rungs[0];
+  if (!best) return null;
+  const qualityRungs = rungs
+    .filter((rung) => rung.height > 0)
+    .map((rung) => ({ height: rung.height, url: rung.url }));
+  const ladder = qualityRungs.map((rung) => rung.height);
+  const quality = best.height > 0 ? `${best.height}p` : "auto";
+  return {
+    url: best.url,
+    quality,
+    label,
+    provider: PROVIDER_NAME,
+    type: best.type,
+    referer: REFERER,
+    origin: ORIGIN,
+    userAgent: DEFAULT_UA,
+    audioLanguage: "en",
+    ...(best.height > 0 ? { maxHeight: best.height } : {}),
+    ...(ladder.length ? { ladder, qualityRungs } : {}),
+  };
+}
+
 function mapStreams(raw: VideasyRawSource[]): ProviderStream[] {
   const seen = new Set<string>();
-  const rungs: { height: number; url: string; type: "hls" | "mp4" | "dash" }[] = [];
+  const rungs: VideasyRung[] = [];
   for (const item of sortByQuality(raw)) {
     const streamUrl = typeof item.url === "string" ? item.url.trim() : "";
     if (!streamUrl || seen.has(streamUrl) || isPoisonStreamUrl(streamUrl)) continue;
@@ -159,28 +184,15 @@ function mapStreams(raw: VideasyRawSource[]): ProviderStream[] {
     });
     if (rungs.length >= MAX_STREAMS) break;
   }
-  const best = rungs[0];
-  if (!best) return [];
-  const qualityRungs = rungs
-    .filter((rung) => rung.height > 0)
-    .map((rung) => ({ height: rung.height, url: rung.url }));
-  const ladder = qualityRungs.map((rung) => rung.height);
-  const quality = best.height > 0 ? `${best.height}p` : "auto";
-  return [
-    {
-      url: best.url,
-      quality,
-      label: LABEL_BASE,
-      provider: PROVIDER_NAME,
-      type: best.type,
-      referer: REFERER,
-      origin: ORIGIN,
-      userAgent: DEFAULT_UA,
-      audioLanguage: "en",
-      ...(best.height > 0 ? { maxHeight: best.height } : {}),
-      ...(ladder.length ? { ladder, qualityRungs } : {}),
-    },
-  ];
+  const uhd = rungs.filter((rung) => rung.height >= 2160);
+  const hd = rungs.filter((rung) => rung.height > 0 && rung.height < 2160);
+  const unknown = rungs.filter((rung) => rung.height <= 0);
+  const fourK = streamFromRungs(uhd, LABEL_BASE);
+  const hdStream = streamFromRungs(
+    hd.length ? hd : fourK ? [] : unknown,
+    fourK ? `${LABEL_BASE} 2` : LABEL_BASE
+  );
+  return [fourK, hdStream].filter((row): row is ProviderStream => row != null);
 }
 
 async function fetchJson(

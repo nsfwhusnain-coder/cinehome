@@ -128,11 +128,13 @@ const QUALITIES: DebridQuality[] = ["2160p", "1080p"];
  */
 const RD_SLOTS: DebridSlot[] = [
   "native-2160",
+  "native-2160-2",
   "safari-2160",
   "safari-2160-2",
   "native-1080-1",
   "native-1080-2",
   "native-1080-3",
+  "native-1080-4",
   "safari-1080",
   "native-720",
 ];
@@ -294,7 +296,7 @@ function toPlaybackSource(
 
 function slotHeight(slot: DebridSlot): 720 | 1080 | 2160 {
   if (slot === "native-720") return 720;
-  if (slot.startsWith("safari-2160") || slot === "native-2160") return 2160;
+  if (slot.startsWith("safari-2160") || slot.startsWith("native-2160")) return 2160;
   return 1080;
 }
 
@@ -433,12 +435,14 @@ function buildRdSlotOptions(
     });
   };
   const result: Record<DebridSlot, DebridCandidate[]> = {
-    "native-2160": available(nativeCandidatesAt(candidates, 2160)),
+    "native-2160": [],
+    "native-2160-2": [],
     "safari-2160": [],
     "safari-2160-2": [],
     "native-1080-1": [],
     "native-1080-2": [],
     "native-1080-3": [],
+    "native-1080-4": [],
     "safari-1080": available(remuxCandidatesAt(candidates, 1080)),
     "native-720": available(nativeCandidatesAt(candidates, 720)),
   };
@@ -447,6 +451,13 @@ function buildRdSlotOptions(
   // duplicates, but when rank 0 failed they promoted rank 3 into slot 1 while
   // ranks 1 and 2 landed in slots 2/3. Ordered batched resolution below keeps
   // parallelism without breaking quality order.
+  const native4kSlots = missing.filter((slot) =>
+    slot.startsWith("native-2160")
+  ) as DebridSlot[];
+  const native4k = available(nativeCandidatesAt(candidates, 2160));
+  native4kSlots.forEach((slot) => {
+    result[slot] = native4k;
+  });
   const nativeSlots = missing.filter((slot) => slot.startsWith("native-1080")) as DebridSlot[];
   const native1080 = available(nativeCandidatesAt(candidates, 1080));
   nativeSlots.forEach((slot) => {
@@ -835,7 +846,12 @@ async function resolveRealDebridSlots(
   preFetchedCandidates?: DebridCandidate[]
 ): Promise<{ sources: PlaybackSource[]; candidates: DebridCandidate[] }> {
   const { hits, missing, occupiedIdentities } = await readCachedRdSlots(keyBase, rdToken);
-  const requiredMissing = missing.filter((slot) => slot !== "safari-2160-2");
+  const requiredMissing = missing.filter(
+    (slot) =>
+      slot !== "safari-2160-2" &&
+      slot !== "native-2160-2" &&
+      slot !== "native-1080-4"
+  );
   if (!requiredMissing.length) {
     return { sources: hits, candidates: preFetchedCandidates ?? [] };
   }
@@ -852,6 +868,22 @@ async function resolveRealDebridSlots(
     }));
 
   const slotOptions = buildRdSlotOptions(candidates, missing, occupiedIdentities);
+  const native4kSlots = missing.filter((slot) => slot.startsWith("native-2160"));
+  const rankedNative4k =
+    native4kSlots.length > 0
+      ? await resolveRankedCandidatePool(
+          slotOptions[native4kSlots[0]!] ?? [],
+          native4kSlots.length,
+          rdToken,
+          deadline,
+          req.mediaType,
+          occupiedIdentities
+        )
+      : [];
+  const native4kEntries = rankedNative4k.map((resolved, index) => ({
+    slot: native4kSlots[index]!,
+    resolved,
+  }));
   const native1080Slots = missing.filter((slot) =>
     slot.startsWith("native-1080")
   );
@@ -893,6 +925,7 @@ async function resolveRealDebridSlots(
   const otherMissing = missing.filter(
     (slot) =>
       !slot.startsWith("native-1080") &&
+      !slot.startsWith("native-2160") &&
       !slot.startsWith("safari-2160") &&
       !(slot === "native-720" && nativeEntries.length > 0)
   );
@@ -908,7 +941,12 @@ async function resolveRealDebridSlots(
     );
     return resolved ? { slot, resolved } : null;
   });
-  let resolvedPerSlot = [...nativeEntries, ...remux4kEntries, ...otherEntries].filter(
+  let resolvedPerSlot = [
+    ...native4kEntries,
+    ...nativeEntries,
+    ...remux4kEntries,
+    ...otherEntries,
+  ].filter(
     (entry): entry is { slot: DebridSlot; resolved: ResolvedCandidate } =>
       entry !== null
   );
@@ -924,7 +962,7 @@ async function resolveRealDebridSlots(
     ) ||
     resolvedPerSlot.some(
       (entry) =>
-        entry.slot === "native-2160" ||
+        entry.slot.startsWith("native-2160") ||
         entry.slot.startsWith("native-1080")
     );
   if (hasHigherNative) {

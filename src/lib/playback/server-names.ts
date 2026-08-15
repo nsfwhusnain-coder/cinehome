@@ -16,7 +16,7 @@
 import {
   PREMIUM_NAMES,
   SERVER_NAME_THEME,
-  hashTokenToGreekName,
+  hashTokenToThemeName,
   toRomanSuffix,
 } from "./server-theme";
 import type { PlaybackSource } from "./types";
@@ -101,7 +101,7 @@ function resolveEmbedToken(provider: string, label?: string): { token: string; i
 }
 
 function greekNameForToken(token: string, instance: number): string {
-  const base = SERVER_NAME_THEME[token] ?? hashTokenToGreekName(token || "stream");
+  const base = SERVER_NAME_THEME[token] ?? hashTokenToThemeName(token || "stream");
   return `${base}${toRomanSuffix(instance)}`;
 }
 
@@ -134,7 +134,8 @@ function debridGreekName(lowerProvider: string, lowerLabel: string, id?: string)
       const remuxInstance = id?.match(/safari-2160-([2-9])$/)?.[1];
       return `${PREMIUM_NAMES.rdSafari4k}${toRomanSuffix(remuxInstance ? Number(remuxInstance) : 1)}`;
     }
-    return PREMIUM_NAMES.rdNative4k;
+    const nativeInstance = id?.match(/native-2160-([2-9])$/)?.[1];
+    return `${PREMIUM_NAMES.rdNative4k}${toRomanSuffix(nativeInstance ? Number(nativeInstance) : 1)}`;
   }
 
   if (id?.includes("safari-1080")) {
