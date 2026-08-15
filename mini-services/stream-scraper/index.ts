@@ -111,13 +111,16 @@ import { appendNewSourceIdentities } from "./progressive-merge";
 import { parseContentClassParam, resultCacheKey } from "./result-cache-key";
 import {
   DISK_ROSTER_TTL_MS,
+  backfillShowCatalogs,
   hydrateWarmRosters,
   loadWarmRoster,
   persistWarmRoster,
+  preferredProvidersForTitle,
   providersToSkip,
   readTitleCatalog,
   rememberTitleHits,
   rememberTitleMiss,
+  showMemoryId,
   titleMemoryId,
   titleMemoryIdFromCacheKey,
 } from "./source-memory";
@@ -1443,6 +1446,12 @@ function rememberTitleRoster(key: string, result: ScrapeResult, ramTtlMs: number
   const titleId = titleMemoryIdFromCacheKey(key);
   if (!titleId || !result.sources.length) return;
   rememberTitleHits(titleId, result.sources);
+  if (titleId.startsWith("tv-")) {
+    const tmdbId = Number(titleId.split("-")[1]);
+    if (Number.isFinite(tmdbId)) {
+      rememberTitleHits(showMemoryId(tmdbId), result.sources);
+    }
+  }
   persistWarmRoster(
     titleId,
     result,
@@ -2417,20 +2426,32 @@ const FULL_API_MAX_WAIT_MS = 7_500;
  * Returns after first hit + grace, but late arms still call onLateSources so the
  * result cache keeps filling (discarding peers after return caused 1-server UI).
  */
+/** Circuit/skip empties return in tens of ms. A real provider miss takes longer. */
+const MIN_GENUINE_EMPTY_MS = 800;
+
 async function resolveFastApiSources(
   tmdbId: number,
   mediaType: "movie" | "tv",
   season?: number,
   episode?: number,
-  options: { onLateSources?: (entries: SourceEntry[]) => void } = {}
+  options: {
+    onLateSources?: (entries: SourceEntry[]) => void;
+    onlyProviders?: string[];
+    recordMisses?: boolean;
+  } = {}
 ): Promise<SourceEntry[]> {
   // Fast race: live providers only. Native Videasy (speedracelight enc=2) is
   // back on the race — the old enc-dec.app Videasy path is still dead.
   // CinePro uses the shorter fast budget so timeout can record circuit failure
   // instead of hanging past FAST_MAX_WAIT as a silent late-only arm.
   const memoryId = titleMemoryId(mediaType, tmdbId, season, episode);
-  const skip = new Set(providersToSkip(readTitleCatalog(memoryId)));
-  const arms = [
+  const showCatalog =
+    mediaType === "tv" ? readTitleCatalog(showMemoryId(tmdbId)) : null;
+  const skip = new Set(providersToSkip(readTitleCatalog(memoryId), showCatalog));
+  const allow = options.onlyProviders?.length
+    ? new Set(options.onlyProviders)
+    : null;
+  const candidateArms = [
       { provider: "vixsrc", run: () => resolveVixsrcFast(tmdbId, mediaType, season, episode) },
       {
         provider: "notorrent",
@@ -2460,15 +2481,26 @@ async function resolveFastApiSources(
         provider: "vidrock",
         run: () => resolveVidrockEntries(tmdbId, mediaType, season, episode),
       },
-    ].filter((arm) => !skip.has(arm.provider));
+    ].filter((arm) => {
+      if (skip.has(arm.provider)) return false;
+      if (allow && !allow.has(arm.provider)) return false;
+      return true;
+    });
+  const arms = candidateArms.length
+    ? candidateArms
+    : allow
+      ? []
+      : [
+          { provider: "vixsrc", run: () => resolveVixsrcFast(tmdbId, mediaType, season, episode) },
+          {
+            provider: "videasy",
+            run: () => resolveVideasyEntries(tmdbId, mediaType, season, episode),
+          },
+        ];
+  if (!arms.length) return [];
+  const recordMisses = options.recordMisses !== false;
   const race = await raceProviderArms<SourceEntry>(
-    arms.length ? arms : [
-      { provider: "vixsrc", run: () => resolveVixsrcFast(tmdbId, mediaType, season, episode) },
-      {
-        provider: "videasy",
-        run: () => resolveVideasyEntries(tmdbId, mediaType, season, episode),
-      },
-    ],
+    arms,
     {
       firstHitGraceMs: FAST_FIRST_GRACE_MS,
       maxWaitMs: FAST_MAX_WAIT_MS,
@@ -2478,7 +2510,11 @@ async function resolveFastApiSources(
           outcome.status === "error" ? "warn" : "info",
           `[provider] fast request provider=${outcome.provider} status=${outcome.status} count=${outcome.count} ms=${outcome.ms} late=${outcome.late}${outcome.error ? ` error=${outcome.error}` : ""}`
         );
-        if (outcome.status === "empty") {
+        if (
+          recordMisses &&
+          outcome.status === "empty" &&
+          outcome.ms >= MIN_GENUINE_EMPTY_MS
+        ) {
           rememberTitleMiss(memoryId, outcome.provider);
         }
       },
@@ -3034,6 +3070,62 @@ function scheduleBackgroundEnrich(
   });
 }
 
+const inflightScrapes = new Map<string, Promise<ScrapeResult>>();
+
+async function refreshRememberedProviders(
+  key: string,
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  season: number | undefined,
+  episode: number | undefined,
+  scrapeStarted: number
+): Promise<ScrapeResult | null> {
+  const episodeCatalog = readTitleCatalog(
+    titleMemoryId(mediaType, tmdbId, season, episode)
+  );
+  const showCatalog =
+    mediaType === "tv" ? readTitleCatalog(showMemoryId(tmdbId)) : null;
+  const preferred = preferredProvidersForTitle(episodeCatalog, showCatalog);
+  if (!preferred.length) return null;
+  logAt(
+    "info",
+    `[memory] refresh ${key} via ${preferred.join(",")} (skip full hunt)`
+  );
+  const collected = await resolveFastApiSources(tmdbId, mediaType, season, episode, {
+    onlyProviders: preferred,
+    recordMisses: false,
+    onLateSources: (entries) => {
+      const merged = mergeIntoCache(key, entries);
+      if (merged) {
+        logAt(
+          "info",
+          `[memory] late known server +${entries.length} → ${merged.sources.length} for ${key}`
+        );
+      }
+    },
+  });
+  const merged = buildMergedResult(collected);
+  if (!merged.streamUrl) {
+    logAt("info", `[memory] known servers missed for ${key} — falling through`);
+    return null;
+  }
+  setCachedResult(key, { ...merged, partial: undefined });
+  captureScrapeTiming(key, true, Date.now() - scrapeStarted);
+  lastScrapeLifecycle = {
+    ...lastScrapeLifecycle,
+    lastFastSources: merged.sources.length,
+    lastReturnedSources: merged.sources.length,
+    lastPartial: false,
+    lastKey: key,
+    lastTotalMs: Date.now() - scrapeStarted,
+  };
+  logAt(
+    "info",
+    `[memory] hit ${merged.sources.length} remembered source(s) for ${key}`
+  );
+  return { ...merged, partial: undefined };
+}
+
 function captureScrapeTiming(
   key: string,
   fast: boolean,
@@ -3088,26 +3180,16 @@ async function scrapeStream(
     currentContentClass()
   );
   const cached = getCached(key);
-  const underCap = cached != null && cached.sources.length < MAX_SOURCES;
   const bypassCache = options.noCache && cached != null;
 
   if (cached && !bypassCache) {
     logAt("info", `[cache] hit for ${key} (${cached.sources.length} source(s))`);
-    // Ghost roster: only soft-kept / probe-failed → force one re-enrich so cold UI can recover.
     const anyAuto =
       cached.sources.some((s) => s.verified !== false && s.probe?.ok !== false);
     if (!anyAuto && cached.sources.length > 0) {
       scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode, { force: true });
-    } else if (underCap) {
-      // One enrich pass max (unless nocache). partial only while that pass is in-flight
-      // and roster is still under the clear floor.
-      scheduleBackgroundEnrich(key, tmdbId, mediaType, season, episode);
     }
-    const discoveryPending = rosterDiscoveryPending(cached.sources);
-    return {
-      ...cached,
-      partial: (enrichmentCoalescer.hasTarget(key) && discoveryPending) || undefined,
-    };
+    return { ...cached, partial: undefined };
   }
 
   if (cached && bypassCache) {
@@ -3118,6 +3200,60 @@ async function scrapeStream(
     resultCache.delete(key);
     removeFromResultCacheOrder(key);
     enrichCompletedKeys.delete(key);
+  }
+
+  const titleId = titleMemoryId(mediaType, tmdbId, season, episode);
+  if (!options.noCache) {
+    const pending = inflightScrapes.get(titleId);
+    if (pending) {
+      const shared = await pending;
+      if (shared.sources.length) {
+        logAt("info", `[cache] coalesced ${key} onto in-flight ${titleId}`);
+        return { ...shared, partial: undefined };
+      }
+    }
+  }
+
+  const unresolved = executeUnresolvedScrape(
+    key,
+    tmdbId,
+    mediaType,
+    season,
+    episode,
+    options,
+    scrapeStarted,
+    expectedDurationPromise
+  );
+  inflightScrapes.set(titleId, unresolved);
+  try {
+    return await unresolved;
+  } finally {
+    if (inflightScrapes.get(titleId) === unresolved) {
+      inflightScrapes.delete(titleId);
+    }
+  }
+}
+
+async function executeUnresolvedScrape(
+  key: string,
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  season: number | undefined,
+  episode: number | undefined,
+  options: { fast?: boolean; noCache?: boolean },
+  scrapeStarted: number,
+  expectedDurationPromise: Promise<number>
+): Promise<ScrapeResult> {
+  if (!options.noCache) {
+    const remembered = await refreshRememberedProviders(
+      key,
+      tmdbId,
+      mediaType,
+      season,
+      episode,
+      scrapeStarted
+    );
+    if (remembered) return remembered;
   }
 
   if (options.fast) {
@@ -3514,8 +3650,13 @@ server.listen(PORT, () => {
     resultCache.set(row.key, { result: row.result, expiresAt: row.expiresAt });
     resultCacheOrder.push(row.key);
   }
-  if (warm.length) {
-    logAt("info", `[memory] restored ${warm.length} warm title roster(s) from disk`);
+  const shows = backfillShowCatalogs();
+  if (warm.length || shows) {
+    logAt(
+      "info",
+      `[memory] restored ${warm.length} warm title roster(s) from disk` +
+        (shows ? `, backfilled ${shows} show catalog(s)` : "")
+    );
   }
   logCineproBootState();
   // Pre-warm cinepro-core's cache for popular titles so the CinePro arm returns

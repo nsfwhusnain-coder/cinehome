@@ -68,6 +68,12 @@ describe("preferred quality discovery", () => {
     expect(shouldWaitForMaximumFourK(ultra, true, true)).toBe(false);
   });
 
+  it("plays a remembered 1080 roster immediately instead of hunting 4K again", () => {
+    const remembered = response([source("luna", 1080)]);
+    remembered.partial = undefined;
+    expect(shouldWaitForMaximumFourK(remembered, true)).toBe(false);
+  });
+
   it("does not hide an established 1080 roster during background polling", () => {
     const maximum = response([source("fallback-hd", 1080)]);
     maximum.preferences!.fourKStartup = "maximum";

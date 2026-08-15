@@ -81,6 +81,49 @@ export function titleMemoryIdFromCacheKey(key: string): string | null {
   return titleMemoryId("movie", tmdbId);
 }
 
+export function showMemoryId(tmdbId: number): string {
+  return `tv-${tmdbId}`;
+}
+
+export function normalizeProviderId(provider: string): string {
+  return provider.trim().toLowerCase();
+}
+
+interface FoldedProvider {
+  ok: number;
+  empty: number;
+  maxHeight: number;
+}
+
+function foldServers(servers: readonly MemoryServer[]): Map<string, FoldedProvider> {
+  const folded = new Map<string, FoldedProvider>();
+  for (const server of servers) {
+    const id = normalizeProviderId(server.provider);
+    const current = folded.get(id) ?? { ok: 0, empty: 0, maxHeight: 0 };
+    current.ok = Math.max(current.ok, server.lastOkAt);
+    current.empty = Math.max(current.empty, server.lastEmptyAt ?? 0);
+    current.maxHeight = Math.max(current.maxHeight, server.maxHeight);
+    folded.set(id, current);
+  }
+  return folded;
+}
+
+export function knownGoodProviders(catalog: TitleCatalog | null): string[] {
+  if (!catalog) return [];
+  return [...foldServers(catalog.servers).entries()]
+    .filter(([, server]) => server.ok > 0 && server.ok >= server.empty)
+    .map(([id]) => id);
+}
+
+export function preferredProvidersForTitle(
+  episodeCatalog: TitleCatalog | null,
+  showCatalog: TitleCatalog | null = null
+): string[] {
+  const episode = knownGoodProviders(episodeCatalog);
+  if (episode.length) return episode;
+  return knownGoodProviders(showCatalog);
+}
+
 export function safeMemoryName(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 180);
 }
@@ -144,19 +187,35 @@ export function rememberTitleHits(
 ): TitleCatalog {
   const current = readTitleCatalog(id) ?? { id, updatedAt: now, servers: [] };
   const byKey = new Map(
-    current.servers.map((server) => [`${server.provider}\0${server.label}`, server])
+    current.servers.map((server) => [
+      `${normalizeProviderId(server.provider)}\0${server.label.trim().toLowerCase()}`,
+      server,
+    ])
   );
+  const hitProviders = new Set<string>();
   for (const source of sources) {
-    const key = `${source.provider}\0${source.label}`;
+    const providerId = normalizeProviderId(source.provider);
+    if (!providerId) continue;
+    hitProviders.add(providerId);
+    const key = `${providerId}\0${source.label.trim().toLowerCase()}`;
     const height = source.maxHeight && source.maxHeight > 0 ? source.maxHeight : 0;
     const prev = byKey.get(key);
     byKey.set(key, {
-      provider: source.provider,
-      label: source.label,
+      provider: providerId,
+      label: source.label.trim() || providerId,
       maxHeight: Math.max(prev?.maxHeight ?? 0, height),
       lastOkAt: now,
-      ...(prev?.lastEmptyAt != null ? { lastEmptyAt: prev.lastEmptyAt } : {}),
     });
+  }
+  for (const [key, server] of [...byKey.entries()]) {
+    if (!hitProviders.has(normalizeProviderId(server.provider))) continue;
+    if (server.lastOkAt >= now) {
+      if (server.lastEmptyAt != null) {
+        byKey.set(key, { ...server, lastEmptyAt: undefined });
+      }
+      continue;
+    }
+    byKey.delete(key);
   }
   const next: TitleCatalog = {
     id,
@@ -173,14 +232,22 @@ export function rememberTitleMiss(
   provider: string,
   now = Date.now()
 ): TitleCatalog {
+  const providerId = normalizeProviderId(provider);
   const current = readTitleCatalog(id) ?? { id, updatedAt: now, servers: [] };
-  const existing = current.servers.find((server) => server.provider === provider);
+  const folded = foldServers(current.servers).get(providerId);
+  if (folded && folded.ok >= folded.empty && folded.ok > 0) {
+    return current;
+  }
+  const existing = current.servers.find(
+    (server) => normalizeProviderId(server.provider) === providerId
+  );
   if (existing) {
     existing.lastEmptyAt = now;
+    existing.provider = providerId;
   } else {
     current.servers.push({
-      provider,
-      label: provider,
+      provider: providerId,
+      label: providerId,
       maxHeight: 0,
       lastOkAt: 0,
       lastEmptyAt: now,
@@ -198,16 +265,22 @@ export function catalogHasFourK(catalog: TitleCatalog | null): boolean {
 
 export function providersToSkip(
   catalog: TitleCatalog | null,
+  related: TitleCatalog | null = null,
   now = Date.now()
 ): string[] {
+  const protectedProviders = new Set([
+    ...knownGoodProviders(catalog),
+    ...knownGoodProviders(related),
+  ]);
   if (!catalog) return [];
-  return catalog.servers
-    .filter((server) => {
-      if (!server.lastEmptyAt) return false;
-      if (server.lastOkAt >= server.lastEmptyAt) return false;
-      return now - server.lastEmptyAt < EMPTY_SKIP_MS;
+  return [...foldServers(catalog.servers).entries()]
+    .filter(([id, server]) => {
+      if (protectedProviders.has(id)) return false;
+      if (!server.empty) return false;
+      if (server.ok >= server.empty) return false;
+      return now - server.empty < EMPTY_SKIP_MS;
     })
-    .map((server) => server.provider);
+    .map(([id]) => id);
 }
 
 export function persistWarmRoster<T>(
@@ -234,6 +307,35 @@ export function loadWarmRoster<T>(titleOrCacheKey: string): WarmRoster<T> | null
     return null;
   }
   return parsed;
+}
+
+export function backfillShowCatalogs(now = Date.now()): number {
+  const dir = catalogDir();
+  if (!existsSync(dir)) return 0;
+  const shows = new Set<string>();
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    const parsed = readJson<TitleCatalog>(join(dir, name));
+    if (!parsed?.id || !Array.isArray(parsed.servers)) continue;
+    const match = /^tv-(\d+)-s\d+e\d+$/.exec(parsed.id);
+    if (!match) continue;
+    const hits = parsed.servers.filter(
+      (server) => server.lastOkAt > 0 && server.lastOkAt >= (server.lastEmptyAt ?? 0)
+    );
+    if (!hits.length) continue;
+    const showId = showMemoryId(Number(match[1]));
+    rememberTitleHits(
+      showId,
+      hits.map((server) => ({
+        provider: server.provider,
+        label: server.label,
+        maxHeight: server.maxHeight,
+      })),
+      now
+    );
+    shows.add(showId);
+  }
+  return shows.size;
 }
 
 export function hydrateWarmRosters<T>(): WarmRoster<T>[] {

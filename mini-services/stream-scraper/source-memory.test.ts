@@ -4,15 +4,20 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  backfillShowCatalogs,
   catalogHasFourK,
   hydrateWarmRosters,
+  knownGoodProviders,
   loadWarmRoster,
   persistWarmRoster,
+  preferredProvidersForTitle,
   providersToSkip,
+  readTitleCatalog,
   rememberTitleHits,
   rememberTitleMiss,
   rosterIdentity,
   safeMemoryName,
+  showMemoryId,
   titleMemoryId,
   titleMemoryIdFromCacheKey,
 } from "./source-memory";
@@ -58,8 +63,44 @@ describe("title catalog", () => {
       { provider: "Videasy", label: "Quasar", maxHeight: 2160 },
     ]);
     expect(catalogHasFourK(catalog)).toBe(true);
-    expect(providersToSkip(catalog)).toEqual(["CinemaOS"]);
-    expect(providersToSkip(catalog)).not.toContain("Videasy");
+    expect(providersToSkip(catalog)).toEqual(["cinemaos"]);
+    expect(providersToSkip(catalog)).not.toContain("videasy");
+  });
+
+  it("does not skip Videasy after a lowercase empty and a Quasar hit", () => {
+    isolatedDir();
+    const id = titleMemoryId("movie", 550);
+    rememberTitleMiss(id, "videasy");
+    const catalog = rememberTitleHits(id, [
+      { provider: "Videasy", label: "Quasar", maxHeight: 2160 },
+    ]);
+    expect(providersToSkip(catalog)).toEqual([]);
+    expect(knownGoodProviders(catalog)).toEqual(["videasy"]);
+    rememberTitleMiss(id, "videasy");
+    expect(providersToSkip(readTitleCatalog(id))).toEqual([]);
+  });
+
+  it("reuses show-level servers for a new episode", () => {
+    isolatedDir();
+    const show = showMemoryId(94997);
+    const showCatalog = rememberTitleHits(show, [
+      { provider: "Videasy", label: "Quasar", maxHeight: 2160 },
+      { provider: "Vixsrc", label: "Luna", maxHeight: 1080 },
+    ]);
+    const episode = titleMemoryId("tv", 94997, 3, 9);
+    rememberTitleMiss(episode, "videasy");
+    rememberTitleMiss(episode, "cinemaos");
+    expect(preferredProvidersForTitle(null, showCatalog)).toEqual(["videasy", "vixsrc"]);
+    expect(providersToSkip(readTitleCatalog(episode), showCatalog)).toEqual(["cinemaos"]);
+  });
+
+  it("promotes episode catalogs into a show-level server list", () => {
+    isolatedDir();
+    rememberTitleHits(titleMemoryId("tv", 94997, 3, 8), [
+      { provider: "Videasy", label: "Quasar", maxHeight: 2160 },
+    ]);
+    expect(backfillShowCatalogs()).toBe(1);
+    expect(knownGoodProviders(readTitleCatalog(showMemoryId(94997)))).toEqual(["videasy"]);
   });
 });
 

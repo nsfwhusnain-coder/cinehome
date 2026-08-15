@@ -42,6 +42,9 @@ export function shouldWaitForMaximumFourK(
 ): boolean {
   if (!response || !discoveryOpen || startupReleased) return false;
   if (response.preferences?.playbackQuality !== 2160) return false;
+  // A remembered complete roster is already the answer — do not hide 1080
+  // and hunt again just because Ultra is the profile default.
+  if (!response.partial && (response.sources?.length ?? 0) > 0) return false;
   return !hasPlayablePreferredQuality(response);
 }
 
