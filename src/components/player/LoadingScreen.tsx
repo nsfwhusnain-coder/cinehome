@@ -19,7 +19,9 @@ import {
 import "@/components/brand-mark.css";
 import "./loading-bloom.css";
 
-const EXIT_MS = 420;
+/** Netflix-style match-cut. TV / reduced-motion stay a short fade. */
+const EXIT_MS = 1040;
+const EXIT_MS_REDUCED = 400;
 
 const TV_POSTER_RENDITION = "original";
 
@@ -65,6 +67,10 @@ export function LoadingScreen({
   const [leaving, setLeaving] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [artReady, setArtReady] = useState(false);
+  const [deviceClass, setDeviceClass] = useState(() =>
+    typeof window === "undefined" ? "desktop" : detectDeviceClass()
+  );
+  const [reduceMotion, setReduceMotion] = useState(false);
   const fillFloorRef = useRef(0);
   const artPath = useMemo(
     () => tmdbPathFromUrl(posterUrl) ?? tmdbPathFromUrl(backdropUrl),
@@ -92,6 +98,19 @@ export function LoadingScreen({
   }, [visible, artPath]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setReduceMotion(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    if (visible) setDeviceClass(detectDeviceClass());
+  }, [visible]);
+
+  useEffect(() => {
     if (visible) {
       setMounted(true);
       setLeaving(false);
@@ -100,14 +119,16 @@ export function LoadingScreen({
     }
     if (!mounted) return;
     setLeaving(true);
+    const exitMs =
+      reduceMotion || deviceClass === "tv" ? EXIT_MS_REDUCED : EXIT_MS;
     const timer = window.setTimeout(() => {
       setMounted(false);
       setLeaving(false);
       fillFloorRef.current = 0;
       setElapsedMs(0);
-    }, EXIT_MS);
+    }, exitMs);
     return () => window.clearTimeout(timer);
-  }, [visible, mounted]);
+  }, [visible, mounted, reduceMotion, deviceClass]);
 
   useEffect(() => {
     if (!visible) return;
@@ -131,10 +152,6 @@ export function LoadingScreen({
   const chips = useMemo(
     () => bloomChips(sourceCount, premiumCount, chosenIndex),
     [sourceCount, premiumCount, chosenIndex]
-  );
-  const deviceClass = useMemo(
-    () => (visible ? detectDeviceClass() : "desktop"),
-    [visible]
   );
   const posterSrc = useMemo(() => {
     const raw = posterUrl || backdropUrl;
@@ -162,12 +179,13 @@ export function LoadingScreen({
     <div
       className={cn(
         "bloom-stage pointer-events-none absolute inset-0 z-40",
-        "flex flex-col items-center justify-center overflow-hidden bg-black",
+        "flex flex-col items-center justify-center overflow-hidden",
         leaving && "bloom-stage--out"
       )}
       data-phase={phase}
       data-device={deviceClass}
       data-discovering={discovering ? "true" : "false"}
+      data-leaving={leaving ? "true" : "false"}
       style={
         {
           "--bloom-hue": hue,

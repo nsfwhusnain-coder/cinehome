@@ -5,12 +5,38 @@
   --bloom-fill: 0;
   --crimson: 8 86% 56%;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --bloom-exit: cubic-bezier(0.4, 0, 0.2, 1);
+  background-color: #000;
   opacity: 1;
-  transition: opacity 400ms var(--ease);
 }
 
+/*
+ * Match-cut into the stream. Chrome leaves first, the poster flies into
+ * the lens, then the black veil lifts so the already-playing frame is
+ * revealed — not a hard cut of the whole overlay.
+ */
 .bloom-stage--out {
-  opacity: 0;
+  animation: bloom-stage-clear 1040ms var(--bloom-exit) forwards;
+}
+
+.bloom-stage--out .bloom-copy {
+  animation: bloom-chrome-out 280ms var(--bloom-exit) forwards;
+}
+
+.bloom-stage--out .bloom-card-wrap {
+  animation: bloom-matchcut 920ms var(--bloom-exit) forwards;
+}
+
+.bloom-stage--out .bloom-card,
+.bloom-stage--out .bloom-card-sheen {
+  animation: none;
+}
+
+.bloom-stage--out .bloom-wash,
+.bloom-stage--out .bloom-aurora,
+.bloom-stage--out .bloom-room,
+.bloom-stage--out .bloom-dither {
+  animation: bloom-veil-out 1040ms var(--bloom-exit) forwards;
 }
 
 .bloom-wash {
@@ -436,6 +462,48 @@
   50% { opacity: 0.8; }
 }
 
+@keyframes bloom-chrome-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+
+@keyframes bloom-matchcut {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+  42% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.78);
+    filter: blur(10px);
+  }
+}
+
+@keyframes bloom-veil-out {
+  to { opacity: 0; }
+}
+
+@keyframes bloom-stage-clear {
+  0%,
+  32% { background-color: #000; }
+  100% { background-color: transparent; }
+}
+
+@keyframes bloom-stage-fade {
+  to { opacity: 0; }
+}
+
 .bloom-stage[data-device="tv"] .bloom-wash {
   filter: none;
   opacity: 0.28;
@@ -450,6 +518,19 @@
 .bloom-stage[data-device="tv"] .bloom-card-sheen,
 .bloom-stage[data-device="tv"] .bloom-meter-pulse,
 .bloom-stage[data-device="tv"] .bloom-step-dot {
+  animation: none;
+}
+
+.bloom-stage[data-device="tv"].bloom-stage--out {
+  animation: bloom-stage-fade 400ms ease forwards;
+}
+
+.bloom-stage[data-device="tv"].bloom-stage--out .bloom-copy,
+.bloom-stage[data-device="tv"].bloom-stage--out .bloom-card-wrap,
+.bloom-stage[data-device="tv"].bloom-stage--out .bloom-wash,
+.bloom-stage[data-device="tv"].bloom-stage--out .bloom-aurora,
+.bloom-stage[data-device="tv"].bloom-stage--out .bloom-room,
+.bloom-stage[data-device="tv"].bloom-stage--out .bloom-dither {
   animation: none;
 }
 
@@ -471,6 +552,19 @@
   .bloom-step-dot,
   .bloom-chip,
   .bloom-chip--ghost {
+    animation: none;
+  }
+
+  .bloom-stage--out {
+    animation: bloom-stage-fade 400ms ease forwards;
+  }
+
+  .bloom-stage--out .bloom-copy,
+  .bloom-stage--out .bloom-card-wrap,
+  .bloom-stage--out .bloom-wash,
+  .bloom-stage--out .bloom-aurora,
+  .bloom-stage--out .bloom-room,
+  .bloom-stage--out .bloom-dither {
     animation: none;
   }
 }
