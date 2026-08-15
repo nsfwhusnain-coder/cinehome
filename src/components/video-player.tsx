@@ -405,6 +405,8 @@ interface Props {
   /** Progressive source count for loading status. */
   sourceCount?: number;
   poster?: string | null;
+  /** 2:3 title poster for the loading card. Backdrop stays on `poster`. */
+  artwork?: string | null;
   title: string;
   mediaType?: "movie" | "tv";
   /** TMDB id of the title — used to build the transcode URL for HEVC/AV1 sources
@@ -835,6 +837,7 @@ export function VideoPlayer({
   refreshNonce,
   sourceCount = 0,
   poster,
+  artwork,
   title,
   mediaType,
   tmdbId,
@@ -4955,6 +4958,7 @@ export function VideoPlayer({
         serverName={huntingName}
         title={title}
         backdropUrl={poster}
+        posterUrl={artwork}
         sourceCount={Math.max(sourceCount, healthySourceCount)}
         discovering={Boolean(isDiscoveringSources)}
         status={resumeNotice ?? loadingStatus}

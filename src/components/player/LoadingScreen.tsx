@@ -64,6 +64,7 @@ export function LoadingScreen({
   const [mounted, setMounted] = useState(visible);
   const [leaving, setLeaving] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [artReady, setArtReady] = useState(false);
   const fillFloorRef = useRef(0);
   const artPath = useMemo(
     () => tmdbPathFromUrl(posterUrl) ?? tmdbPathFromUrl(backdropUrl),
@@ -139,6 +140,10 @@ export function LoadingScreen({
     const raw = posterUrl || backdropUrl;
     return deviceClass === "tv" ? tmdbUrlAtSize(raw, TV_POSTER_RENDITION) : raw;
   }, [deviceClass, posterUrl, backdropUrl]);
+
+  useEffect(() => {
+    setArtReady(false);
+  }, [posterSrc]);
   const washSrc = useMemo(
     () =>
       deviceClass === "tv"
@@ -178,10 +183,21 @@ export function LoadingScreen({
 
       <div className="bloom-card-wrap">
         {posterSrc ? (
-          <div className="bloom-card">
+          <div className="bloom-card" data-art={artReady ? "ready" : "loading"}>
             <span className="bloom-card-sheen" aria-hidden />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={posterSrc} alt="" className="bloom-poster" draggable={false} />
+            <img
+              src={posterSrc}
+              alt=""
+              className={cn("bloom-poster", artReady && "bloom-poster--ready")}
+              draggable={false}
+              onLoad={() => setArtReady(true)}
+              ref={(el) => {
+                if (el?.complete && el.naturalWidth > 0) {
+                  queueMicrotask(() => setArtReady(true));
+                }
+              }}
+            />
           </div>
         ) : (
           <span className="ab-glass bloom-mark" data-compact="false" aria-hidden>

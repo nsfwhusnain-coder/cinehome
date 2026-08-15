@@ -621,6 +621,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
   };
 
   const backdrop = tmdbImageUrl(meta?.backdrop_path ?? playback?.poster, "original");
+  const artwork = tmdbImageUrl(meta?.poster_path, "original");
 
   // Full-bleed inside watch/layout — no max-width shell; bars only from object-fit:contain
   return (
@@ -712,6 +713,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
                 : sourceCount || playbackSources.length
             }
             poster={backdrop}
+            artwork={artwork}
             title={title}
             mediaType={mediaType}
             initialTime={savedTime}
