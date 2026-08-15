@@ -110,6 +110,7 @@ import {
 import { appendNewSourceIdentities } from "./progressive-merge";
 import { parseContentClassParam, resultCacheKey } from "./result-cache-key";
 import {
+  DISK_ROSTER_TTL_MS,
   hydrateWarmRosters,
   loadWarmRoster,
   persistWarmRoster,
@@ -1438,41 +1439,66 @@ function cacheTtlForResult(result: ScrapeResult): number {
   return base;
 }
 
+function rememberTitleRoster(key: string, result: ScrapeResult, ramTtlMs: number): void {
+  const titleId = titleMemoryIdFromCacheKey(key);
+  if (!titleId || !result.sources.length) return;
+  rememberTitleHits(titleId, result.sources);
+  persistWarmRoster(
+    titleId,
+    result,
+    Date.now() + Math.max(ramTtlMs, DISK_ROSTER_TTL_MS)
+  );
+}
+
 function setCachedResult(key: string, result: ScrapeResult): void {
   const ttl = cacheTtlForResult(result);
+  rememberTitleRoster(key, result, ttl > 0 ? ttl : 0);
   if (ttl <= 0) return;
 
   if (resultCache.has(key)) removeFromResultCacheOrder(key);
   const expiresAt = Date.now() + ttl;
   resultCache.set(key, { result, expiresAt });
   resultCacheOrder.push(key);
-  persistWarmRoster(key, result, expiresAt);
-  const titleId = titleMemoryIdFromCacheKey(key);
-  if (titleId && result.sources.length) {
-    rememberTitleHits(titleId, result.sources);
-  }
   while (resultCacheOrder.length > MAX_RESULT_CACHE) {
     const oldest = resultCacheOrder.shift();
     if (oldest) resultCache.delete(oldest);
   }
 }
 
+function findCachedSibling(key: string): ScrapeResult | null {
+  const titleId = titleMemoryIdFromCacheKey(key);
+  if (!titleId) return null;
+  const now = Date.now();
+  for (const [otherKey, entry] of resultCache) {
+    if (otherKey === key) continue;
+    if (entry.expiresAt <= now) continue;
+    if (otherKey !== titleId && titleMemoryIdFromCacheKey(otherKey) !== titleId) {
+      continue;
+    }
+    if (entry.result.sources.length) return entry.result;
+  }
+  const disk = loadWarmRoster<ScrapeResult>(titleId);
+  return disk?.result.sources.length ? disk.result : null;
+}
+
 function getCached(key: string): ScrapeResult | null {
   const entry = resultCache.get(key);
-  if (!entry || Date.now() > entry.expiresAt) {
-    if (entry) {
-      resultCache.delete(key);
-      removeFromResultCacheOrder(key);
-    }
-    const disk = loadWarmRoster<ScrapeResult>(key);
-    if (disk) {
-      resultCache.set(key, { result: disk.result, expiresAt: disk.expiresAt });
-      resultCacheOrder.push(key);
-      return disk.result;
-    }
-    return null;
+  if (entry && Date.now() <= entry.expiresAt) {
+    return entry.result;
   }
-  return entry.result;
+  if (entry) {
+    resultCache.delete(key);
+    removeFromResultCacheOrder(key);
+  }
+  const sibling = findCachedSibling(key);
+  if (sibling) return sibling;
+  const disk = loadWarmRoster<ScrapeResult>(key);
+  if (disk?.result.sources.length) {
+    resultCache.set(key, { result: disk.result, expiresAt: disk.expiresAt });
+    resultCacheOrder.push(key);
+    return disk.result;
+  }
+  return null;
 }
 
 /**

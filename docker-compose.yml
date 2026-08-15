@@ -44,6 +44,7 @@ services:
       # Shared warm Chromium worker. The active primary wave has one measured
       # productive host; concurrent background enrichment queues here.
       - BROWSER_POOL_SIZE=${BROWSER_POOL_SIZE:-1}
+      - SOURCE_MEMORY_DIR=/app/data/source-memory
       # Scraper kill switches / log level (optional; also via .env — see CINEHOME.md / .env.example):
       # PROVIDER_LORDFLIX=0  PROVIDER_VIDEASY=0  PROVIDER_PLAYWRIGHT=0  SCRAPER_LOG_LEVEL=info
     volumes:

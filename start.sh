@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-mkdir -p /app/db /app/transcode-cache /app/data/source-memory
+export SOURCE_MEMORY_DIR="${SOURCE_MEMORY_DIR:-/app/data/source-memory}"
+mkdir -p /app/db /app/transcode-cache "$SOURCE_MEMORY_DIR"
 
 bunx prisma db push --skip-generate
 

@@ -11,6 +11,7 @@ import {
   providersToSkip,
   rememberTitleHits,
   rememberTitleMiss,
+  rosterIdentity,
   safeMemoryName,
   titleMemoryId,
   titleMemoryIdFromCacheKey,
@@ -77,5 +78,19 @@ describe("warm roster disk", () => {
     });
     expect(loadWarmRoster("movie:13:::q1080:fast")).toBeNull();
     expect(hydrateWarmRosters()).toHaveLength(1);
+  });
+
+  it("reuses one title file for fast/full and 1080/4K cache keys", () => {
+    isolatedDir();
+    persistWarmRoster(
+      "movie:550:::q2160:fast",
+      { streamUrl: "https://cdn.test/q.m3u8", sources: [{ label: "Quasar" }] },
+      Date.now() + 60_000
+    );
+    expect(rosterIdentity("movie:550:::q1080:full")).toBe("movie-550");
+    expect(loadWarmRoster("movie:550:::q1080:full")?.result).toEqual({
+      streamUrl: "https://cdn.test/q.m3u8",
+      sources: [{ label: "Quasar" }],
+    });
   });
 });

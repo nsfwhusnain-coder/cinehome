@@ -11,6 +11,8 @@ import { join } from "node:path";
 
 export const CATALOG_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 export const EMPTY_SKIP_MS = 18 * 60 * 60 * 1000;
+/** Disk roster outlives signed HLS URLs. A 410 refresh is cheaper than a full scrape. */
+export const DISK_ROSTER_TTL_MS = 6 * 60 * 60 * 1000;
 export const MAX_CATALOG_FILES = 800;
 export const MAX_ROSTER_FILES = 240;
 
@@ -35,10 +37,15 @@ export interface WarmRoster<T> {
 }
 
 function memoryRoot(): string {
-  return (
-    process.env.SOURCE_MEMORY_DIR?.trim() ||
-    join(process.cwd(), "data", "source-memory")
-  );
+  const fromEnv = process.env.SOURCE_MEMORY_DIR?.trim();
+  if (fromEnv) return fromEnv;
+  // start.sh cds into mini-services/stream-scraper. The bind mount is /app/data.
+  if (existsSync("/app/data")) return "/app/data/source-memory";
+  return join(process.cwd(), "data", "source-memory");
+}
+
+export function rosterIdentity(titleOrCacheKey: string): string {
+  return titleMemoryIdFromCacheKey(titleOrCacheKey) ?? titleOrCacheKey;
 }
 
 function catalogDir(): string {
@@ -204,21 +211,23 @@ export function providersToSkip(
 }
 
 export function persistWarmRoster<T>(
-  cacheKey: string,
+  titleOrCacheKey: string,
   result: T,
   expiresAt: number
 ): void {
   if (expiresAt <= Date.now()) return;
-  writeJson(rosterPath(cacheKey), { key: cacheKey, expiresAt, result });
+  const titleId = rosterIdentity(titleOrCacheKey);
+  writeJson(rosterPath(titleId), { key: titleId, expiresAt, result });
   pruneOldest(rosterDir(), MAX_ROSTER_FILES);
 }
 
-export function loadWarmRoster<T>(cacheKey: string): WarmRoster<T> | null {
-  const parsed = readJson<WarmRoster<T>>(rosterPath(cacheKey));
+export function loadWarmRoster<T>(titleOrCacheKey: string): WarmRoster<T> | null {
+  const titleId = rosterIdentity(titleOrCacheKey);
+  const parsed = readJson<WarmRoster<T>>(rosterPath(titleId));
   if (!parsed?.key || typeof parsed.expiresAt !== "number") return null;
   if (parsed.expiresAt <= Date.now()) {
     try {
-      unlinkSync(rosterPath(cacheKey));
+      unlinkSync(rosterPath(titleId));
     } catch {
       /* ignore */
     }
