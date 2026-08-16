@@ -183,6 +183,8 @@ export interface PlaybackResponse {
   };
   /** Fresh-roster generation returned only by an explicit recovery resolve. */
   refreshNonce?: number;
+  /** False when the remux packer is already at capacity. */
+  remuxAvailable?: boolean;
 }
 
 export interface PlaybackProvider {

@@ -1,4 +1,7 @@
-import { decideImmediateSource } from "./decide-playback";
+import {
+  decideImmediateSource,
+  type DecidePlaybackOptions,
+} from "./decide-playback";
 import type { PlaybackResponse, PlaybackSource } from "./types";
 
 /**
@@ -8,9 +11,13 @@ import type { PlaybackResponse, PlaybackSource } from "./types";
  */
 export function buildFastDebridResponse(
   sources: PlaybackSource[],
-  qualityHint: "auto" | number = "auto"
+  qualityHint: "auto" | number = "auto",
+  extra: Omit<DecidePlaybackOptions, "preferredHeight"> = {}
 ): PlaybackResponse | null {
-  const best = decideImmediateSource(sources, { preferredHeight: qualityHint });
+  const best = decideImmediateSource(sources, {
+    preferredHeight: qualityHint,
+    ...extra,
+  });
   if (!best) return null;
   return {
     status: "available",

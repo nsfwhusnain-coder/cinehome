@@ -731,7 +731,7 @@ function PlaybackPreferencesSection() {
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Ultra already waits for 4K. Maximum is the same rule for remux-only titles.
+            Ultra (4K quality preset) always waits for 4K. Auto always starts at 1080p.
           </p>
         </div>
         <Button

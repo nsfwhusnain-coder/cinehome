@@ -181,6 +181,15 @@ const remuxStartAtByKey = new Map<string, number>();
 
 /** Running process and per-viewer source family, used for seek supersession. */
 const remuxProcesses = new Map<string, ChildProcess>();
+
+function abortRemuxJob(key: string, reason: string): void {
+  const proc = remuxProcesses.get(key);
+  if (proc && proc.exitCode === null && proc.signalCode === null) {
+    log(`remux key=${key} aborted: ${reason}`);
+    proc.kill("SIGKILL");
+  }
+  remuxReservations.delete(key);
+}
 const remuxSessionFamilyByKey = new Map<string, string>();
 /** Partial old suffixes remain readable briefly for handoff rollback. */
 const supersededRemuxUntil = new Map<string, number>();
@@ -1096,6 +1105,21 @@ const server = createServer(async (req, res) => {
     const familyHint = /^[a-f0-9]{24}$/.test(familyParam) ? familyParam : "";
     if (!inputUrl) return sendText(res, 400, "Missing u (source url)");
 
+    const remuxKey = sourceKey(
+      inputUrl,
+      maxHeight,
+      mode,
+      audioSelection,
+      startAtSeconds
+    );
+    let remuxSettled = false;
+    const onClientGone = () => {
+      if (!remuxSettled && mode === "remux") {
+        abortRemuxJob(remuxKey, "playlist client closed");
+      }
+    };
+    req.on("close", onClientGone);
+
     try {
       const playlist = await getOrBuild(
         inputUrl,
@@ -1106,11 +1130,13 @@ const server = createServer(async (req, res) => {
         owner,
         familyHint
       );
+      remuxSettled = true;
       const { readFile } = await import("node:fs/promises");
       const body = await readFile(playlist, "utf8");
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
       res.end(body);
     } catch (e) {
+      remuxSettled = true;
       const msg = e instanceof Error ? e.message : String(e);
       log(`transcode failed mode=${mode}: ${msg}`);
       const temporarilyBusy =
@@ -1121,6 +1147,8 @@ const server = createServer(async (req, res) => {
         temporarilyBusy ? 503 : 502,
         temporarilyBusy ? "remux temporarily busy" : "transcode failed"
       );
+    } finally {
+      req.off("close", onClientGone);
     }
     return;
   }

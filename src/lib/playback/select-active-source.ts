@@ -2,6 +2,7 @@ import type { FourKStartupPreference } from "@/lib/profile-preferences";
 import type { PlaybackSource } from "./types";
 import {
   decidePlayback,
+  shouldLockFourKStartup,
   type DecidePlaybackOptions,
 } from "./decide-playback";
 import {
@@ -32,6 +33,7 @@ export interface SelectActiveSourceInput {
   preferredHeight?: "auto" | number | null;
   contentClass?: string | null;
   urlRefreshPending?: boolean;
+  remuxAvailable?: boolean;
 }
 
 export interface SelectActiveSourceResult {
@@ -71,7 +73,6 @@ export function shouldAdoptRosterUpgrade(options: {
     current,
     candidate,
     everPlayed,
-    fourKStartup,
     userPicked,
     contentClass,
     preferredHeight,
@@ -93,16 +94,14 @@ export function shouldAdoptRosterUpgrade(options: {
   if (
     candidateRemux &&
     currentEnglishDirect &&
-    fourKStartup !== "maximum" &&
-    preferredHeight !== 2160
+    !shouldLockFourKStartup(preferredHeight)
   ) {
     return false;
   }
 
   if (candidateLang > currentLang) return true;
 
-  const lockFourK =
-    fourKStartup === "maximum" || preferredHeight === 2160;
+  const lockFourK = shouldLockFourKStartup(preferredHeight);
   if (
     lockFourK &&
     sourceMaxHeight(candidate) >= STARTUP_UHD &&
@@ -137,6 +136,7 @@ export function selectActiveSource(
     fourKStartup: input.fourKStartup,
     contentClass: input.contentClass,
     failedIds: input.failedIds,
+    remuxAvailable: input.remuxAvailable,
   };
   const decision = decidePlayback(input.roster, decideOptions);
   const best = decision.immediate;

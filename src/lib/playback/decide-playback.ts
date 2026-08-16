@@ -36,6 +36,15 @@ export interface DecidePlaybackOptions {
   fourKStartup?: FourKStartupPreference;
   contentClass?: string | null;
   failedIds?: ReadonlySet<string> | readonly string[];
+  /** False when the remux packer is already at capacity — do not auto-start Seventy. */
+  remuxAvailable?: boolean;
+}
+
+/** Ultra (2160) always starts on 4K. Auto / HD start on 1080. */
+export function shouldLockFourKStartup(
+  preferredHeight?: "auto" | number | null
+): boolean {
+  return preferredHeight === STARTUP_UHD_HEIGHT;
 }
 
 function failedSet(
@@ -142,6 +151,13 @@ function compareForAutoStart(
   const aH = sourceMaxHeight(a);
   const bH = sourceMaxHeight(b);
   const explicit = typeof targetHeight === "number" ? targetHeight : null;
+  const preferHdStart =
+    explicit == null || explicit === HD_FLOOR_HEIGHT || targetHeight === "auto";
+  if (preferHdStart) {
+    const aSweet = aH >= HD_FLOOR_HEIGHT && aH < STARTUP_UHD_HEIGHT ? 1 : 0;
+    const bSweet = bH >= HD_FLOOR_HEIGHT && bH < STARTUP_UHD_HEIGHT ? 1 : 0;
+    if (aSweet !== bSweet) return bSweet - aSweet;
+  }
   if (explicit != null) {
     const aMeet = aH >= explicit ? 1 : 0;
     const bMeet = bH >= explicit ? 1 : 0;
@@ -192,7 +208,6 @@ export function decidePlayback(
   sources: readonly PlaybackSource[],
   options: DecidePlaybackOptions = {}
 ): PlaybackDecision {
-  const fourKStartup = options.fourKStartup ?? "fast";
   const live = sources.filter((source) => !failedSet(options.failedIds).has(source.id));
   const roster = autoLanguagePool(
     autoIdentityPool(live),
@@ -208,10 +223,10 @@ export function decidePlayback(
     STARTUP_UHD_HEIGHT
   );
 
-  // Ultra (2160) and Maximum both start on 4K once. Never open 1080 and
+  // Ultra (2160) starts on 4K once. Auto starts 1080. Never open 1080 and
   // remount when 4K arrives — that reload is the UX the household rejected.
-  const lockFourK =
-    fourKStartup === "maximum" || options.preferredHeight === STARTUP_UHD_HEIGHT;
+  const remuxAllowed = options.remuxAvailable !== false;
+  const lockFourK = shouldLockFourKStartup(options.preferredHeight);
 
   if (lockFourK) {
     // Ultra searches the identity pool, not the English-only auto pool.
@@ -243,7 +258,7 @@ export function decidePlayback(
       options,
       STARTUP_UHD_HEIGHT
     );
-    if (fourKRemux) {
+    if (fourKRemux && remuxAllowed) {
       return { immediate: fourKRemux, deferredFourK: null, reason: "ranked_best" };
     }
     const fallback = pickFrom(
@@ -272,7 +287,7 @@ export function decidePlayback(
     options,
     options.preferredHeight
   );
-  if (directHd && remuxFourK) {
+  if (directHd && remuxFourK && remuxAllowed) {
     const deferRemux =
       sourceMaxHeight(directHd) < STARTUP_UHD_HEIGHT ? remuxFourK : null;
     return {

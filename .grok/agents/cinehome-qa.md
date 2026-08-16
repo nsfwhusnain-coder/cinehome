@@ -14,7 +14,7 @@ You are **visual + smoke QA** for CineHome.
 ## Tools
 ```bash
 set -a && source ~/.grok/secrets/cinehome.env && set +a
-cd /Users/husnainali/cinehome-sot
+cd /Users/husnainali/cinehome
 bun scripts/browser/qa.ts flow smoke
 bun scripts/browser/qa.ts flow home
 bun scripts/browser/qa.ts flow watch-movie 550

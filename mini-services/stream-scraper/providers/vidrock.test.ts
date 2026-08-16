@@ -104,7 +104,7 @@ describe("resolveVidrock", () => {
         );
       }
       return new Response("missing", { status: 404 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const streams = await resolveVidrock(95479, "tv", 1, 1);
     expect(streams.length).toBe(2);
@@ -129,7 +129,7 @@ describe("resolveVidrock", () => {
   it("throws on HTTP 500", async () => {
     const { ProviderOutageError } = await import("./provider-outage");
     globalThis.fetch = (async () =>
-      new Response("broken", { status: 500 })) as typeof fetch;
+      new Response("broken", { status: 500 })) as unknown as typeof fetch;
     await expect(resolveVidrock(1, "movie")).rejects.toBeInstanceOf(
       ProviderOutageError
     );

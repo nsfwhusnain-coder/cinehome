@@ -443,7 +443,11 @@ function DetailContent({
                 className="rounded-full border-0 bg-white px-6 font-semibold text-[#111] hover:bg-white/85"
               >
                 <Play className="mr-1 h-4 w-4 fill-current" />
-                {mediaType === "tv" ? `Play S${selectedSeason}E${selectedEpisode}` : "Play"}
+                {mediaType === "tv"
+                  ? selectedSeason === 0
+                    ? `Play Special ${selectedEpisode}`
+                    : `Play S${selectedSeason}E${selectedEpisode}`
+                  : "Play"}
               </Button>
               {mediaType === "tv" && data.seasons?.length ? (
                 <SeasonPicker

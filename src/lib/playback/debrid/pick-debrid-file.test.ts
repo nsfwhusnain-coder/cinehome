@@ -51,6 +51,16 @@ describe("pickDebridVideoFile", () => {
     ).toBeNull();
   });
 
+  it("ignores fileIdx when it lands on a sample or tiny file", () => {
+    const sample = file(1, "/Movie.sample.mkv", 2_000_000);
+    expect(
+      pickDebridVideoFile([sample, movieA], {
+        fileIdx: 0,
+        releaseTitle: "MovieA 2024 1080p",
+      })?.path
+    ).toBe("/MovieA.mkv");
+  });
+
   it("returns the only video file in a single-video torrent", () => {
     expect(
       pickDebridVideoFile(

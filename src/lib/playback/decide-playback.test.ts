@@ -216,6 +216,23 @@ describe("decidePlayback contract", () => {
     expect(decision.immediate?.id).toBe("kronos");
   });
 
+  it("Auto starts native 1080 instead of native 4K", () => {
+    const decision = decidePlayback([poseidon, kronos], {
+      preferredHeight: "auto",
+      fourKStartup: "maximum",
+    });
+    expect(decision.immediate?.id).toBe("kronos");
+  });
+
+  it("does not auto-start remux 4K when the packer is full", () => {
+    const decision = decidePlayback([luna, hades], {
+      preferredHeight: 2160,
+      remuxAvailable: false,
+    });
+    expect(decision.immediate?.id).toBe("luna");
+    expect(decision.deferredFourK).toBeNull();
+  });
+
   it("drops failed ids before ranking", () => {
     const decision = decidePlayback([kronos, luna], {
       fourKStartup: "fast",

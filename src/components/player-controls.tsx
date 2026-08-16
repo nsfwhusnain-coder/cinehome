@@ -11,7 +11,6 @@ import {
   Captions,
   RotateCcw,
   RotateCw,
-  Cast,
   Cloud,
   Download,
   ArrowLeft,
@@ -245,13 +244,8 @@ export function PlayerControls({
             {title}
           </div>
         )}
-        <button
-          type="button"
-          className="flex h-9 w-9 items-center justify-center text-white transition hover:opacity-70"
-          aria-label="Cast"
-        >
-          <Cast className="h-[22px] w-[22px]" strokeWidth={1.5} />
-        </button>
+        {/* Same width as the back button so the title stays centered. */}
+        <div className="h-9 w-9 shrink-0" aria-hidden />
       </div>
 
       {/* Settings dock (quality/speed) */}

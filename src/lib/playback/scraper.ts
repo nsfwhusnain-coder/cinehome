@@ -230,13 +230,13 @@ export const ScraperPlaybackProvider: PlaybackProvider = {
     if (req.noCache) params.set("nocache", "1");
     if (req.contentClass === "anime") params.set("contentClass", "anime");
     // Preferred quality → scraper ranking (never blocks TTFF; ranking only).
-    // Auto hunts 4K; an explicit 1080 profile stays at 1080. Ranking only.
+    // Auto starts 1080; Ultra sends 2160. Ranking only.
     params.set(
       "qualityHint",
       String(
         req.qualityHint != null && req.qualityHint !== "auto"
           ? req.qualityHint
-          : 2160
+          : 1080
       )
     );
 

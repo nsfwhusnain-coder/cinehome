@@ -9,6 +9,7 @@ import {
   detectVideasyStreamType,
   parseVideasyQuality,
   resolveVideasy,
+  throwIfVideasyEmptyOutage,
   videasyQualityRank,
   videasyStreamLabel,
   VIDEASY_SERVERS,
@@ -16,6 +17,7 @@ import {
   VIDEASY_OUTER_TIMEOUT_MS,
   VIDEASY_TIMEOUT_MS,
 } from "./videasy";
+import { ProviderOutageError } from "./provider-outage";
 
 const originalFetch = globalThis.fetch;
 
@@ -140,7 +142,7 @@ describe("resolveVideasy", () => {
         return new Response(JSON.stringify({ error: "none" }), { status: 500 });
       }
       return new Response("missing", { status: 404 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const streams = await resolveVideasy(61838, "tv", 1, 1);
     expect(streams).toHaveLength(1);
@@ -198,7 +200,7 @@ describe("resolveVideasy", () => {
         return new Response(yoru, { status: 200 });
       }
       return new Response("missing", { status: 404 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const streams = await resolveVideasy(346698, "movie");
     expect(streams).toHaveLength(2);
@@ -258,7 +260,7 @@ describe("resolveVideasy", () => {
         return new Response(yoru, { status: 200 });
       }
       return new Response("missing", { status: 404 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const streams = await resolveVideasy(550, "movie");
     expect(yoruHits).toBe(2);
@@ -267,15 +269,55 @@ describe("resolveVideasy", () => {
   });
 
   it("returns empty on a 404 seed miss instead of throwing", async () => {
-    globalThis.fetch = (async () => new Response("nope", { status: 404 })) as typeof fetch;
+    globalThis.fetch = (async () => new Response("nope", { status: 404 })) as unknown as typeof fetch;
     await expect(resolveVideasy(61838, "tv", 1, 1)).resolves.toEqual([]);
   });
 
   it("throws on seed HTTP 503 (real outage)", async () => {
-    const { ProviderOutageError } = await import("./provider-outage");
-    globalThis.fetch = (async () => new Response("nope", { status: 503 })) as typeof fetch;
+    globalThis.fetch = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
     await expect(resolveVideasy(61838, "tv", 1, 1)).rejects.toBeInstanceOf(
       ProviderOutageError
     );
+  });
+
+  it("treats 200-empty + sibling 429 as an outage, not a title miss", async () => {
+    const seed = "59556143.vB6Gja40kUFU91w_z_KVWX";
+    const mediaId = 61838;
+    const empty = encryptVideasyPayload(JSON.stringify({ sources: [] }), seed, mediaId);
+
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const href = String(input);
+      if (href.includes("/seed?")) {
+        return new Response(JSON.stringify({ seed }), { status: 200 });
+      }
+      if (href.includes("db.speedracelight.com")) {
+        return new Response(
+          JSON.stringify({
+            name: "Barbie: Life in the Dreamhouse",
+            first_air_date: "2012-05-01",
+            external_ids: { imdb_id: "tt2644032" },
+          }),
+          { status: 200 }
+        );
+      }
+      if (href.includes("downloader2/sources-with-title")) {
+        return new Response(empty, { status: 200 });
+      }
+      if (href.includes("cdn/sources-with-title")) {
+        return new Response("rate limited", { status: 429 });
+      }
+      return new Response("missing", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    await expect(resolveVideasy(61838, "tv", 1, 1)).rejects.toBeInstanceOf(
+      ProviderOutageError
+    );
+    expect(() =>
+      throwIfVideasyEmptyOutage(0, new ProviderOutageError("videasy_http_429", "http_5xx", 429))
+    ).toThrow(ProviderOutageError);
+    expect(() => throwIfVideasyEmptyOutage(0, null)).not.toThrow();
+    expect(() =>
+      throwIfVideasyEmptyOutage(1, new ProviderOutageError("videasy_http_429", "http_5xx", 429))
+    ).not.toThrow();
   });
 });

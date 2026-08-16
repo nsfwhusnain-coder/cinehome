@@ -308,6 +308,17 @@ function mergeServerSources(
   return [...current, ...next];
 }
 
+/**
+ * Sibling servers can 200-empty while another 429s. That is an outage, not
+ * a title miss — returning [] would write an 18h EMPTY_SKIP.
+ */
+export function throwIfVideasyEmptyOutage(
+  pickedCount: number,
+  outage: unknown
+): void {
+  if (pickedCount === 0 && outage != null) throw outage;
+}
+
 function sourcesHaveUhd(sources: VideasyRawSource[]): boolean {
   return sources.some(
     (item) => videasyQualityRank(String(item.quality ?? "")) >= UHD_RANK
@@ -347,7 +358,7 @@ async function collectServerSources(
 }
 
 /**
- * Resolve Videasy/Vidking sources. Empty = title miss, not an outage.
+ * Resolve Videasy/Vidking sources. Empty with no outage = title miss.
  * Cypher is the 1080 MP4 ladder. Yoru is the native 4K HLS. If the first
  * pass only sees Cypher, retry Yoru once before giving up on 4K.
  */
@@ -362,7 +373,7 @@ export async function resolveVideasy(
     const seed = await fetchVideasySeed(tmdbId);
     if (!seed) return [];
     const meta = await fetchVideasyMeta(tmdbId, mediaType);
-    let { picked, sawSuccess, outage } = await collectServerSources(
+    let { picked, outage } = await collectServerSources(
       VIDEASY_SERVERS,
       seed,
       meta,
@@ -385,13 +396,12 @@ export async function resolveVideasy(
           season,
           episode
         );
-        sawSuccess = sawSuccess || retry.sawSuccess;
         if (retry.outage) outage = retry.outage;
         picked = mergeServerSources(picked, retry.picked);
       }
     }
     if (picked.length) return mapStreams(picked);
-    if (!sawSuccess && outage) throw outage;
+    throwIfVideasyEmptyOutage(picked.length, outage);
     return [];
   } catch (err) {
     rethrowIfProviderOutage(err, "videasy");

@@ -190,6 +190,7 @@ function mergePlaybackResponses(
   const defaultSource = decideImmediateSource(mergedSources, {
     preferredHeight: heightPref,
     fourKStartup: profilePreferences?.fourKStartup,
+    remuxAvailable: full?.remuxAvailable ?? fast?.remuxAvailable,
   });
 
   // Once full has returned, prefer its partial flag so fast's soft-miss partial doesn't stick forever.

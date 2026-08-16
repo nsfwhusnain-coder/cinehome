@@ -616,6 +616,9 @@ describe("isMoviePackRelease", () => {
     expect(isMoviePackRelease("X-Men Filmography 1080p")).toBe(true);
     expect(isMoviePackRelease("Dark Knight Trilogy 1080p")).toBe(true);
     expect(
+      isMoviePackRelease("Plexbomb.Top100.movies.of.2024.pack.1080p.x264")
+    ).toBe(true);
+    expect(
       isMoviePackRelease(
         "Trilogia - Se Beber Não Case! (2009-2013) Dual Áudio 1080p"
       )

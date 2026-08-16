@@ -294,6 +294,8 @@ const STICKY_SOURCE_MIN_POSITION_S = 8;
 const HEALTHY_PLAY_LOCK_S = 2;
 /** Hard HTTP statuses that count toward immediate failover (CDN / proxy denials). */
 const HLS_HARD_HTTP_CODES = new Set([403, 404, 410, 502, 503, 520, 521, 522, 524]);
+const REMUX_BUSY_HTTP_CODES = new Set([429, 502, 503]);
+const FRAG_TIMEOUT_FAILOVER_COUNT = 3;
 /** If play never advances past t≈0 after load, fail over (stuck Aether/PNG ads). */
 /** Cold start: allow large pure-media level fetch after multi-variant master (R10). */
 const HLS_ZERO_PROGRESS_FAIL_MS = 22_000;
@@ -411,6 +413,7 @@ interface Props {
   profileAudioLanguage?: string;
   profileSubtitlePreference?: SubtitlePreference;
   profileFourKStartup?: FourKStartupPreference;
+  remuxAvailable?: boolean;
   /** TMDB original language, used only to choose among tracks actually exposed. */
   originalLanguage?: string | null;
   /** Changes when a cache-bypassing roster recovery returns. */
@@ -852,6 +855,7 @@ export function VideoPlayer({
   profileAudioLanguage,
   profileSubtitlePreference,
   profileFourKStartup,
+  remuxAvailable = true,
   originalLanguage,
   refreshNonce,
   sourceCount = 0,
@@ -904,6 +908,9 @@ export function VideoPlayer({
     profileFourKStartup ?? getFourKStartupPreference()
   );
   fourKStartupRef.current = profileFourKStartup ?? getFourKStartupPreference();
+  const remuxAvailableRef = useRef(remuxAvailable);
+  remuxAvailableRef.current = remuxAvailable;
+  const fragTimeoutCountsRef = useRef(new Map<string, number>());
   const [activeSource, setActiveSource] = useState<PlaybackSource | null>(null);
   const [sourceReloadGeneration, setSourceReloadGeneration] = useState(0);
   const orderedSources = useMemo(() => {
@@ -1669,6 +1676,7 @@ export function VideoPlayer({
         : "maximum",
       preferredProvider: preferred,
       preferredHeight,
+      remuxAvailable: remuxAvailableRef.current,
     });
     const best = selection.next;
 
@@ -2073,7 +2081,6 @@ export function VideoPlayer({
         if (video) freezeLastVideoFrame(video);
         setIsSwitchingServer(true);
         setBuffering(true);
-        showStatusNotice("Opening that server…", REMUX_SEEK_NOTICE_MS);
         remuxSeekAbortRef.current?.abort();
         const controller = new AbortController();
         remuxSeekAbortRef.current = controller;
@@ -3235,6 +3242,15 @@ export function VideoPlayer({
           const source = activeSourceRef.current;
           const detail = String(data.details ?? data.type ?? "hls_error");
 
+          if (
+            source &&
+            sourceDelivery(source) === "remux" &&
+            REMUX_BUSY_HTTP_CODES.has(httpCode)
+          ) {
+            failActiveSource("remux_unavailable", sourceAttempt);
+            return;
+          }
+
           // Non-fatal hard HTTP (403/502 segment denials) — storm → failover once.
           if (!data.fatal && isHardHttp) {
             noteHardTransportFailure(sourceAttempt, `hls_http_${httpCode}`);
@@ -3265,6 +3281,18 @@ export function VideoPlayer({
                   engine: playbackEngineRef.current,
                   errorDetail: detail,
                 });
+                if (
+                  data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT &&
+                  everPlayedRef.current
+                ) {
+                  const count =
+                    (fragTimeoutCountsRef.current.get(source.id) ?? 0) + 1;
+                  fragTimeoutCountsRef.current.set(source.id, count);
+                  if (count >= FRAG_TIMEOUT_FAILOVER_COUNT) {
+                    failActiveSource("frag_load_timeout_storm", sourceAttempt);
+                    return;
+                  }
+                }
               }
 
               // A few providers expose a damaged 480p rendition while their
@@ -3754,11 +3782,13 @@ export function VideoPlayer({
       // TTFF is near-instant. The watch page also prefetches on mount.
       const nextEpTarget = nextEpisodeTargetRef.current;
       if (
+        nextEpTarget &&
+        typeof tvId === "number" &&
         shouldPrefetchNextEpisode({
           alreadyPreloaded: nextEpPreloadedRef.current,
-          mediaType,
+          mediaType: mediaType ?? "tv",
           tvId,
-          hasNextTarget: Boolean(nextEpTarget),
+          hasNextTarget: true,
           progressDuration,
           currentTime: t,
         })

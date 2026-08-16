@@ -16,9 +16,9 @@ function source(overrides: Partial<PlaybackSource>): PlaybackSource {
 }
 
 describe("wantsFourKDiscovery", () => {
-  it("treats auto and Ultra as 4K-seeking", () => {
-    expect(wantsFourKDiscovery("auto")).toBe(true);
-    expect(wantsFourKDiscovery(null)).toBe(true);
+  it("only Ultra hunts a different 4K source", () => {
+    expect(wantsFourKDiscovery("auto")).toBe(false);
+    expect(wantsFourKDiscovery(null)).toBe(false);
     expect(wantsFourKDiscovery(2160)).toBe(true);
   });
 
@@ -44,10 +44,18 @@ describe("findLateFourKSource", () => {
     probe: { ok: true, ttfbMs: 50, bytesPerSec: 8_000_000, speedScore: 80 },
   });
 
-  it("adopts a probed direct 4K after HD has already started", () => {
+  it("does not remount Auto onto a late 4K source", () => {
     expect(
       findLateFourKSource(playing1080, [playing1080, direct4k], {
         preferredHeight: "auto",
+      })
+    ).toBeNull();
+  });
+
+  it("adopts a probed direct 4K after HD has already started when Ultra is on", () => {
+    expect(
+      findLateFourKSource(playing1080, [playing1080, direct4k], {
+        preferredHeight: 2160,
       })?.id
     ).toBe("uhd");
   });
@@ -94,7 +102,7 @@ describe("findLateFourKSource", () => {
   it("does not switch away from an already-playing 4K", () => {
     expect(
       findLateFourKSource(direct4k, [playing1080, direct4k], {
-        preferredHeight: "auto",
+        preferredHeight: 2160,
       })
     ).toBeNull();
   });

@@ -140,6 +140,7 @@ export function PersonView({ id, initialPerson, initialCredits }: Props) {
   const { data: session } = useSession();
   const hideAdult = useHideAdult();
   const [bioOpen, setBioOpen] = useState(false);
+  const [failedPhotoId, setFailedPhotoId] = useState<number | null>(null);
 
   const { data: progressList } = useQuery({
     queryKey: ["progress"],
@@ -208,7 +209,8 @@ export function PersonView({ id, initialPerson, initialCredits }: Props) {
     );
   }
 
-  const photo = tmdbImageUrl(person.profile_path, "original");
+  const photo = tmdbImageUrl(person.profile_path, "w500");
+  const photoFailed = failedPhotoId === id;
   const years = lifespan(person);
   const bio = person.biography?.trim() ?? "";
   const bioLong = bio.length > BIO_CLAMP;
@@ -248,8 +250,13 @@ export function PersonView({ id, initialPerson, initialCredits }: Props) {
           className="flex flex-col gap-6 rounded-2xl border border-white/10 bg-white/[0.04] p-6 backdrop-blur-xl md:flex-row md:items-start"
         >
           <div className="relative h-40 w-40 shrink-0 overflow-hidden rounded-full bg-muted ring-1 ring-white/15">
-            {photo ? (
-              <img src={photo} alt="" className="h-full w-full object-contain" />
+            {photo && !photoFailed ? (
+              <img
+                src={photo}
+                alt=""
+                className="h-full w-full object-cover"
+                onError={() => setFailedPhotoId(id)}
+              />
             ) : (
               <div className="flex h-full w-full items-center justify-center text-3xl font-semibold text-muted-foreground">
                 {initials}

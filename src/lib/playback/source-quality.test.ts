@@ -615,10 +615,10 @@ describe("pickDefaultSource — poison gate", () => {
 });
 
 describe("resolvePreferredHeightTarget / preferred-height scoring (Change 11)", () => {
-  it("auto and null hunt 4K while explicit HD stays capped", () => {
-    expect(resolvePreferredHeightTarget("auto")).toBe(2160);
-    expect(resolvePreferredHeightTarget(null)).toBe(2160);
-    expect(resolvePreferredHeightTarget(undefined)).toBe(2160);
+  it("auto and unset start at 1080 while Ultra stays 2160", () => {
+    expect(resolvePreferredHeightTarget("auto")).toBe(1080);
+    expect(resolvePreferredHeightTarget(null)).toBe(1080);
+    expect(resolvePreferredHeightTarget(undefined)).toBe(1080);
   });
 
   it("honours a lower explicit profile target without changing Auto's HD start", () => {

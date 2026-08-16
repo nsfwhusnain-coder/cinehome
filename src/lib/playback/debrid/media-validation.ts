@@ -11,6 +11,8 @@ export const MIN_EPISODE_BYTES = 15 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 2_000;
 const VALID_TTL_MS = 10 * 60 * 1000;
 const INVALID_TTL_MS = 60 * 1000;
+/** Samples and 1–3 MB "cached" packs should not be retried every minute. */
+const TOO_SMALL_TTL_MS = 6 * 60 * 60 * 1000;
 const INDETERMINATE_TTL_MS = 30 * 1000;
 
 export type MediaValidationReason =
@@ -92,7 +94,9 @@ function totalBytesFromHeaders(response: Response): number | null {
 }
 
 function ttlFor(result: MediaValidationResult): number {
-  if (!result.acceptable) return INVALID_TTL_MS;
+  if (!result.acceptable) {
+    return result.reason === "too_small" ? TOO_SMALL_TTL_MS : INVALID_TTL_MS;
+  }
   return result.reason === "plausible_size" ? VALID_TTL_MS : INDETERMINATE_TTL_MS;
 }
 

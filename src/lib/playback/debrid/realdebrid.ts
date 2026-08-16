@@ -39,6 +39,8 @@ const TERMINAL_FAILURE_STATUSES = new Set(["error", "magnet_error", "virus", "de
 const VIDEO_EXT_PATTERN = /\.(mp4|mkv|avi|mov|m4v|webm)$/i;
 const NON_FEATURE_FILE_PATTERN =
   /\b(?:featurettes?|bonus(?:es)?|extras?|sample|soundtrack|deleted[ ._-]?scenes?)\b/i;
+/** Smaller than a real episode — samples, NFO-side dumps, fake RD cache rows. */
+const MIN_FEATURE_FILE_BYTES = 15 * 1024 * 1024;
 const RELEASE_STOP_TOKENS = new Set([
   "1080p",
   "2160p",
@@ -188,6 +190,14 @@ function tokenizeRelease(text: string): string[] {
  * fileIdx (0-based) wins when it lands. Otherwise match filename tokens from
  * the release title. A multi-video torrent with no unique match is skipped.
  */
+function isUsableFeatureFile(file: DebridTorrentFile): boolean {
+  if (NON_FEATURE_FILE_PATTERN.test(file.path)) return false;
+  if (Number.isFinite(file.bytes) && file.bytes > 0 && file.bytes < MIN_FEATURE_FILE_BYTES) {
+    return false;
+  }
+  return true;
+}
+
 export function pickDebridVideoFile(
   files: readonly DebridTorrentFile[] | undefined,
   opts: { fileIdx?: number; releaseTitle?: string } = {}
@@ -197,13 +207,11 @@ export function pickDebridVideoFile(
   if (typeof opts.fileIdx === "number") {
     const fileIdx = opts.fileIdx;
     const matched = files.find((file) => file.id === fileIdx + 1);
-    if (matched) return matched;
+    if (matched && isUsableFeatureFile(matched)) return matched;
   }
 
   const videos = files.filter((file) => VIDEO_EXT_PATTERN.test(file.path));
-  const features = videos.filter(
-    (file) => !NON_FEATURE_FILE_PATTERN.test(file.path)
-  );
+  const features = videos.filter(isUsableFeatureFile);
   const pool = features.length ? features : videos.length ? videos : [...files];
   if (pool.length === 1) return pool[0] ?? null;
 

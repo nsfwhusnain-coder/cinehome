@@ -120,6 +120,8 @@ import {
   readTitleCatalog,
   rememberTitleHits,
   rememberTitleMiss,
+  cachedEntryTitleId,
+  rosterSatisfiesQuality,
   showMemoryId,
   titleMemoryId,
   titleMemoryIdFromCacheKey,
@@ -1453,7 +1455,7 @@ function rememberTitleRoster(key: string, result: ScrapeResult, ramTtlMs: number
     }
   }
   persistWarmRoster(
-    titleId,
+    key,
     result,
     Date.now() + Math.max(ramTtlMs, DISK_ROSTER_TTL_MS)
   );
@@ -1481,12 +1483,14 @@ function findCachedSibling(key: string): ScrapeResult | null {
   for (const [otherKey, entry] of resultCache) {
     if (otherKey === key) continue;
     if (entry.expiresAt <= now) continue;
-    if (otherKey !== titleId && titleMemoryIdFromCacheKey(otherKey) !== titleId) {
+    const otherTitle = cachedEntryTitleId(otherKey);
+    if (otherKey !== titleId && otherTitle !== titleId) {
       continue;
     }
+    if (!rosterSatisfiesQuality(otherKey, key)) continue;
     if (entry.result.sources.length) return entry.result;
   }
-  const disk = loadWarmRoster<ScrapeResult>(titleId);
+  const disk = loadWarmRoster<ScrapeResult>(key);
   return disk?.result.sources.length ? disk.result : null;
 }
 

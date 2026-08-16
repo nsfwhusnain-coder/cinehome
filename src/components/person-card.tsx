@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { tmdbImageUrl } from "@/lib/tmdb";
 
@@ -11,7 +12,8 @@ interface Props {
 }
 
 export function PersonCard({ id, name, character, profilePath }: Props) {
-  const img = tmdbImageUrl(profilePath, "original");
+  const img = tmdbImageUrl(profilePath, "w185");
+  const [imgFailed, setImgFailed] = useState(false);
   const initials = name
     .split(" ")
     .map((p) => p[0])
@@ -26,12 +28,13 @@ export function PersonCard({ id, name, character, profilePath }: Props) {
       aria-label={`View ${name}`}
     >
       <div className="relative aspect-square w-full max-w-24 overflow-hidden rounded-full bg-muted ring-1 ring-border transition-all duration-300 group-hover:ring-2 group-hover:ring-primary">
-        {img ? (
+        {img && !imgFailed ? (
           <img
             src={img}
             alt=""
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
             loading="lazy"
+            onError={() => setImgFailed(true)}
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-sm font-semibold text-muted-foreground">

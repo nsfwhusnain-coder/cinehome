@@ -31,22 +31,22 @@ describe("client startup ranking", () => {
   const direct1080 = source("direct-1080", 1080, "mp4");
   const direct4k = source("direct-4k", 2160, "mp4");
 
-  test("Ultra starts direct HD, not remux 4K, so the player does not 404", () => {
+  test("Ultra starts remux 4K when that is the only 4K", () => {
     const decision = pickClientStartupSource([remux4k, direct1080], {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(decision.immediate?.id).toBe("direct-1080");
-    expect(decision.deferredFourK?.id).toBe("remux-4k");
+    expect(decision.immediate?.id).toBe("remux-4k");
+    expect(decision.deferredFourK).toBeNull();
   });
 
-  test("maximum mode also starts direct HD and keeps remux 4K deferred", () => {
+  test("Ultra still remux-first when Maximum is selected", () => {
     const decision = pickClientStartupSource([remux4k, direct1080], {
       preferredHeight: 2160,
       fourKStartup: "maximum",
     });
-    expect(decision.immediate?.id).toBe("direct-1080");
-    expect(decision.deferredFourK?.id).toBe("remux-4k");
+    expect(decision.immediate?.id).toBe("remux-4k");
+    expect(decision.deferredFourK).toBeNull();
   });
 
   test("direct 4K is never delayed", () => {
@@ -66,7 +66,7 @@ describe("client startup ranking", () => {
     expect(decision.immediate?.id).toBe("remux-4k");
   });
 
-  test("auto uses the same fast 4K handoff as Ultra", () => {
+  test("auto starts 1080 and leaves remux 4K deferred", () => {
     const decision = pickClientStartupSource([remux4k, direct1080], {
       preferredHeight: "auto",
       fourKStartup: "fast",
@@ -131,8 +131,8 @@ describe("client startup ranking", () => {
       preferredHeight: 2160,
       fourKStartup: "fast",
     });
-    expect(ultra.immediate?.id).toBe("luna");
-    expect(ultra.deferredFourK?.id).toBe("remux-4k");
+    expect(ultra.immediate?.id).toBe("remux-4k");
+    expect(ultra.deferredFourK).toBeNull();
 
     const auto = pickClientStartupSource([hindi1080, remux4k, luna], {
       preferredHeight: "auto",
@@ -161,7 +161,17 @@ describe("shouldAdoptRosterUpgrade", () => {
     ).toBe(false);
   });
 
-  test("allows remux 4K over direct HD only in maximum startup mode", () => {
+  test("allows remux 4K over direct HD only when Ultra is the preset", () => {
+    expect(
+      shouldAdoptRosterUpgrade({
+        current: direct1080,
+        candidate: remux4k,
+        everPlayed: false,
+        fourKStartup: "fast",
+        userPicked: false,
+        preferredHeight: 2160,
+      })
+    ).toBe(true);
     expect(
       shouldAdoptRosterUpgrade({
         current: direct1080,
@@ -169,8 +179,9 @@ describe("shouldAdoptRosterUpgrade", () => {
         everPlayed: false,
         fourKStartup: "maximum",
         userPicked: false,
+        preferredHeight: "auto",
       })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("never overrides an explicit user pick or a healthy first frame", () => {

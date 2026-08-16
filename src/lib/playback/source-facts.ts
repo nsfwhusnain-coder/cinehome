@@ -13,7 +13,7 @@ const ENGLISH_AUDIO_NAME =
   /\benglish\b|\bcinema en\b|\bcinema-en\b|\(en\)/i;
 const CINEMA_XX = /\bcinema[ ._-]?xx\b/i;
 const PACK_NAME =
-  /\b(?:season[ ._-]?\d+|s\d{1,2}|complete[ ._-]?(?:series|season|pack)|collection|colec(?:ao|ão|cion|ción)|filmography|duology|trilog(?:y|ie|ia|ía)|box[ ._-]?set)\b/i;
+  /\b(?:season[ ._-]?\d+|s\d{1,2}|complete[ ._-]?(?:series|season|pack)|collection|colec(?:ao|ão|cion|ción)|filmography|duology|trilog(?:y|ie|ia|ía)|box[ ._-]?set|pack)\b/i;
 /** `2009-2013` on a movie release is a trilogy/collection dump, not one feature. */
 const YEAR_SPAN_PACK = /\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/;
 const PORTUGUESE_RELEASE =

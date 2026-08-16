@@ -3,7 +3,11 @@ import { getAuthenticatedUser } from "@/lib/auth";
 import { getProvider } from "@/lib/playback";
 import type { MediaType, PlaybackResponse, PlaybackSource } from "@/lib/playback";
 import { isPlaybackFastPathEnabled } from "@/lib/feature-flags";
-import { decideImmediateSource } from "@/lib/playback/decide-playback";
+import {
+  decideImmediateSource,
+  type DecidePlaybackOptions,
+} from "@/lib/playback/decide-playback";
+import { remuxHasCapacity } from "@/lib/playback/remux-health";
 import { buildFastDebridResponse } from "@/lib/playback/fast-debrid";
 import { RateLimiter } from "@/lib/rate-limit";
 import { getUserPlaybackPreferences } from "@/lib/profile-preferences.server";
@@ -169,11 +173,17 @@ export async function GET(
   }
   // The profile is authoritative on every device. Client hints are deliberately
   // ignored so a stale browser cache cannot override a newly selected default.
-  const [profilePreferences, contentClass] = await Promise.all([
+  const [profilePreferences, contentClass, remuxAvailable] = await Promise.all([
     getUserPlaybackPreferences(userId),
     resolvePlaybackContentClass(type, tmdbId),
+    remuxHasCapacity(),
   ]);
   const qualityHint = profilePreferences.playbackQuality;
+  const decideOptions = {
+    preferredHeight: qualityHint,
+    fourKStartup: profilePreferences.fourKStartup,
+    remuxAvailable,
+  } as const;
   const sourceCacheIdentity = {
     userId,
     mediaType: type as MediaType,
@@ -207,10 +217,14 @@ export async function GET(
         cached,
         userId,
         type,
-        qualityHint
+        decideOptions
       );
       rememberPlaybackRoster(sourceCacheIdentity, healthAware.sources);
-      return NextResponse.json({ ...healthAware, preferences: profilePreferences }, {
+      return NextResponse.json({
+        ...healthAware,
+        preferences: profilePreferences,
+        remuxAvailable,
+      }, {
         headers: {
           "Cache-Control": "private, no-store",
           "X-Playback-Cache": "HIT",
@@ -272,7 +286,8 @@ export async function GET(
     const debridSources = await debridPromise;
     const debridOnly = buildFastDebridResponse(
       debridSources,
-      qualityHint ?? "auto"
+      qualityHint ?? "auto",
+      decideOptions
     );
     if (debridOnly) {
       result = debridOnly;
@@ -289,7 +304,7 @@ export async function GET(
       );
     } else {
       result = await providerPromise;
-      mergeDebridSources(result, debridSources, qualityHint);
+      mergeDebridSources(result, debridSources, decideOptions);
     }
   } else {
     const [providerResult, resolvedDebridSources] = await Promise.all([
@@ -305,7 +320,7 @@ export async function GET(
           )
         : resolvedDebridSources;
     result = providerResult;
-    mergeDebridSources(result, debridSources, qualityHint);
+    mergeDebridSources(result, debridSources, decideOptions);
   }
 
   // Cache available resolves. Empty partial stays short; playable partial
@@ -318,12 +333,13 @@ export async function GET(
     result,
     userId,
     type,
-    qualityHint
+    decideOptions
   );
   rememberPlaybackRoster(sourceCacheIdentity, healthAwareResult.sources);
   return NextResponse.json({
     ...healthAwareResult,
     preferences: profilePreferences,
+    remuxAvailable,
     ...(refreshNonce != null ? { refreshNonce } : {}),
   }, {
     headers: {
@@ -337,7 +353,7 @@ function withRuntimeProviderHealth(
   result: PlaybackResponse,
   viewerId: string,
   contentClass: MediaType,
-  qualityHint: "auto" | number
+  decideOptions: DecidePlaybackOptions
 ): PlaybackResponse {
   if (!result.sources?.length) return result;
   const sources = sourcesWithProviderHealth(
@@ -345,7 +361,7 @@ function withRuntimeProviderHealth(
     providerHealthRegistry,
     { contentClass, viewerId }
   );
-  const best = decideImmediateSource(sources, { preferredHeight: qualityHint });
+  const best = decideImmediateSource(sources, decideOptions);
   const ticketed = stampSourceUrlTickets(sources, viewerId);
   return {
     ...result,
@@ -407,13 +423,13 @@ async function resolveFastDebridSourcesSafely(req: {
 function mergeDebridSources(
   result: PlaybackResponse,
   debridSources: PlaybackSource[],
-  qualityHint?: "auto" | number
+  decideOptions: DecidePlaybackOptions
 ): void {
   if (!debridSources.length) return;
   const merged = [...(result.sources ?? []), ...debridSources];
   result.sources = merged;
   const best =
-    decideImmediateSource(merged, { preferredHeight: qualityHint ?? "auto" }) ??
+    decideImmediateSource(merged, decideOptions) ??
     merged[0];
   if (!best) return;
   result.streamUrl = best.url;

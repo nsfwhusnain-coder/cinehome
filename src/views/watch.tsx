@@ -705,6 +705,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
             profileAudioLanguage={playback?.preferences?.audioLanguage}
             profileSubtitlePreference={playback?.preferences?.subtitlePreference}
             profileFourKStartup={playback?.preferences?.fourKStartup}
+            remuxAvailable={playback?.remuxAvailable !== false}
             originalLanguage={meta?.original_language ?? null}
             refreshNonce={playback?.refreshNonce}
             sourceCount={

@@ -266,14 +266,14 @@ describe("resolveCinemaos outages vs title miss", () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ streams: [] }), {
         headers: { "Content-Type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
     await expect(resolveCinemaos(550, "movie")).resolves.toEqual([]);
   });
 
   it("throws on HTTP 502", async () => {
     const { ProviderOutageError } = await import("./provider-outage");
     globalThis.fetch = (async () =>
-      new Response("down", { status: 502 })) as typeof fetch;
+      new Response("down", { status: 502 })) as unknown as typeof fetch;
     await expect(resolveCinemaos(550, "movie")).rejects.toBeInstanceOf(
       ProviderOutageError
     );
@@ -289,7 +289,7 @@ describe("resolveCinemaos stream declaration", () => {
         quality: "1080p",
         url: "https://hcdn.hakunaymatata.com/resource/opaque-token",
       }],
-    }), { headers: { "Content-Type": "application/json" } })) as typeof fetch;
+    }), { headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
 
     const streams = await resolveCinemaos(550, "movie");
 

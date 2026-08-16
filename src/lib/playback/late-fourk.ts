@@ -2,18 +2,17 @@ import type { PlaybackSource } from "./types";
 import {
   isSourcePlayableHere,
   pickDefaultSource,
-  resolvePreferredHeightTarget,
   sourceDelivery,
   sourceMaxHeight,
 } from "./source-quality";
 
 export const UHD_HEIGHT = 2160;
 
-/** Auto and unset hunt 4K. An explicit 1080/720 profile stays at that cap. */
+/** Only an explicit Ultra preset hunts a different 4K source. Auto stays on HD. */
 export function wantsFourKDiscovery(
   preferred: "auto" | number | null | undefined
 ): boolean {
-  return resolvePreferredHeightTarget(preferred) >= UHD_HEIGHT;
+  return preferred === UHD_HEIGHT;
 }
 
 /**

@@ -12,10 +12,12 @@ import {
   persistWarmRoster,
   preferredProvidersForTitle,
   providersToSkip,
+  qualityBucketFromCacheKey,
   readTitleCatalog,
   rememberTitleHits,
   rememberTitleMiss,
   rosterIdentity,
+  rosterSatisfiesQuality,
   safeMemoryName,
   showMemoryId,
   titleMemoryId,
@@ -47,6 +49,10 @@ describe("source memory identity", () => {
     expect(titleMemoryIdFromCacheKey("tv:71912:1:1:q2160:full")).toBe(
       "tv-71912-s1e1"
     );
+    expect(titleMemoryIdFromCacheKey("tv:71912:0:1:q2160:full")).toBe(
+      "tv-71912-s0e1"
+    );
+    expect(titleMemoryId("tv", 71912, 0, 1)).toBe("tv-71912-s0e1");
   });
 });
 
@@ -94,6 +100,20 @@ describe("title catalog", () => {
     expect(providersToSkip(readTitleCatalog(episode), showCatalog)).toEqual(["cinemaos"]);
   });
 
+  it("unions episode known-good with show 4K and puts UHD first", () => {
+    isolatedDir();
+    const episodeCatalog = rememberTitleHits(titleMemoryId("tv", 94997, 3, 8), [
+      { provider: "Vixsrc", label: "Luna", maxHeight: 1080 },
+    ]);
+    const showCatalog = rememberTitleHits(showMemoryId(94997), [
+      { provider: "Videasy", label: "Quasar", maxHeight: 2160 },
+    ]);
+    expect(preferredProvidersForTitle(episodeCatalog, showCatalog)).toEqual([
+      "videasy",
+      "vixsrc",
+    ]);
+  });
+
   it("promotes episode catalogs into a show-level server list", () => {
     isolatedDir();
     rememberTitleHits(titleMemoryId("tv", 94997, 3, 8), [
@@ -121,17 +141,28 @@ describe("warm roster disk", () => {
     expect(hydrateWarmRosters()).toHaveLength(1);
   });
 
-  it("reuses one title file for fast/full and 1080/4K cache keys", () => {
+  it("shares one roster file for fast/full of the same quality bucket", () => {
     isolatedDir();
     persistWarmRoster(
       "movie:550:::q2160:fast",
       { streamUrl: "https://cdn.test/q.m3u8", sources: [{ label: "Quasar" }] },
       Date.now() + 60_000
     );
-    expect(rosterIdentity("movie:550:::q1080:full")).toBe("movie-550");
-    expect(loadWarmRoster("movie:550:::q1080:full")?.result).toEqual({
+    expect(qualityBucketFromCacheKey("movie:550:::q2160:fast")).toBe("q2160");
+    expect(qualityBucketFromCacheKey("movie:550:::q1080:full")).toBe("q1080");
+    expect(rosterIdentity("movie:550:::q2160:fast")).toBe("movie-550:q2160");
+    expect(rosterIdentity("movie:550:::q2160:full")).toBe("movie-550:q2160");
+    expect(rosterIdentity("movie:550:::q1080:full")).toBe("movie-550:q1080");
+    expect(loadWarmRoster("movie:550:::q2160:full")?.result).toEqual({
       streamUrl: "https://cdn.test/q.m3u8",
       sources: [{ label: "Quasar" }],
     });
+    expect(loadWarmRoster("movie:550:::q1080:full")).toBeNull();
+    expect(rosterSatisfiesQuality("movie:550:::q1080:full", "movie:550:::q2160:fast")).toBe(
+      false
+    );
+    expect(rosterSatisfiesQuality("movie:550:::q2160:fast", "movie:550:::q1080:full")).toBe(
+      true
+    );
   });
 });

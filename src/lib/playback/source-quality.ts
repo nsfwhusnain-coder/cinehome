@@ -67,14 +67,14 @@ const RUNTIME_HEALTH_RATE_DEADBAND = 0.15;
 
 /**
  * Settings preferred quality → ranking / discovery target height.
- * `"auto"` hunts 4K when a playable UHD source exists, then richest 1080p.
+ * `"auto"` starts at 1080p (same-stream ABR may still climb). Ultra is 2160.
  * The 1080p floor is still enforced by ranking tiers — Auto never prefers
  * known sub-HD over known HD.
  */
 export function resolvePreferredHeightTarget(
   pref: "auto" | number | null | undefined
 ): number {
-  if (pref == null || pref === "auto") return 2160;
+  if (pref == null || pref === "auto") return 1080;
   return pref;
 }
 
@@ -1263,7 +1263,7 @@ export function sourceRosterMeetsHdFloor(sources: PlaybackSource[]): boolean {
 export function pickDefaultSource(
   sources: PlaybackSource[],
   preferredProvider?: string | null,
-  /** Settings preferred quality height (`"auto"` hunts 4K after health). */
+  /** Settings preferred quality height (`"auto"` starts at 1080). */
   preferredHeight?: "auto" | number | null
 ): PlaybackSource | null {
   if (!sources.length) return null;

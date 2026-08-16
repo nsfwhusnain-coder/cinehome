@@ -15,6 +15,11 @@ export const EMPTY_SKIP_MS = 18 * 60 * 60 * 1000;
 export const DISK_ROSTER_TTL_MS = 6 * 60 * 60 * 1000;
 export const MAX_CATALOG_FILES = 800;
 export const MAX_ROSTER_FILES = 240;
+export const ROSTER_BUCKET_HD = "q1080";
+export const ROSTER_BUCKET_UHD = "q2160";
+export const ROSTER_UHD_MIN_HEIGHT = 2160;
+const CACHE_KEY_QUALITY_RE = /(?:^|:)q(\d+)(?:$|:)/i;
+const ROSTER_IDENTITY_QUALITY_RE = /:q\d+$/i;
 
 export interface MemoryServer {
   provider: string;
@@ -44,8 +49,44 @@ function memoryRoot(): string {
   return join(process.cwd(), "data", "source-memory");
 }
 
+export function qualityBucketFromHeight(height: number): string {
+  return Number.isFinite(height) && height >= ROSTER_UHD_MIN_HEIGHT
+    ? ROSTER_BUCKET_UHD
+    : ROSTER_BUCKET_HD;
+}
+
+/** Parse `qNNNN` from a cache key. Missing / auto / below 2160 → q1080. */
+export function qualityBucketFromCacheKey(key: string): string {
+  const match = CACHE_KEY_QUALITY_RE.exec(key);
+  if (!match?.[1]) return ROSTER_BUCKET_HD;
+  return qualityBucketFromHeight(Number(match[1]));
+}
+
+/**
+ * Disk roster identity: title + quality bucket.
+ * Fast/full share a file; 1080 and 2160 do not.
+ */
 export function rosterIdentity(titleOrCacheKey: string): string {
-  return titleMemoryIdFromCacheKey(titleOrCacheKey) ?? titleOrCacheKey;
+  const titleId =
+    titleMemoryIdFromCacheKey(titleOrCacheKey) ??
+    titleOrCacheKey.replace(ROSTER_IDENTITY_QUALITY_RE, "");
+  const bucket = qualityBucketFromCacheKey(titleOrCacheKey);
+  return `${titleId}:${bucket}`;
+}
+
+/** RAM sibling reuse: never serve q1080 as a 4K hit. UHD may satisfy HD. */
+export function rosterSatisfiesQuality(storedKey: string, requestKey: string): boolean {
+  const stored = qualityBucketFromCacheKey(storedKey);
+  const want = qualityBucketFromCacheKey(requestKey);
+  if (stored === want) return true;
+  return stored === ROSTER_BUCKET_UHD && want === ROSTER_BUCKET_HD;
+}
+
+export function cachedEntryTitleId(keyOrIdentity: string): string | null {
+  const fromCache = titleMemoryIdFromCacheKey(keyOrIdentity);
+  if (fromCache) return fromCache;
+  const stripped = keyOrIdentity.replace(ROSTER_IDENTITY_QUALITY_RE, "");
+  return stripped.startsWith("movie-") || stripped.startsWith("tv-") ? stripped : null;
 }
 
 function catalogDir(): string {
@@ -56,6 +97,16 @@ function rosterDir(): string {
   return join(memoryRoot(), "rosters");
 }
 
+/** Season 0 is TMDB specials — truthiness used to collapse it to S1. */
+export function tvMemoryIndex(value?: number | null): number {
+  return value != null && Number.isFinite(value) && value >= 0 ? value : 1;
+}
+
+function tvIndexFromCachePart(raw: string | undefined): number {
+  if (raw == null || raw === "") return 1;
+  return tvMemoryIndex(Number(raw));
+}
+
 export function titleMemoryId(
   mediaType: string,
   tmdbId: number,
@@ -63,7 +114,7 @@ export function titleMemoryId(
   episode?: number
 ): string {
   if (mediaType === "tv") {
-    return `tv-${tmdbId}-s${season ?? 1}e${episode ?? 1}`;
+    return `tv-${tmdbId}-s${tvMemoryIndex(season)}e${tvMemoryIndex(episode)}`;
   }
   return `movie-${tmdbId}`;
 }
@@ -76,7 +127,12 @@ export function titleMemoryIdFromCacheKey(key: string): string | null {
     return null;
   }
   if (mediaType === "tv") {
-    return titleMemoryId("tv", tmdbId, Number(parts[2]) || 1, Number(parts[3]) || 1);
+    return titleMemoryId(
+      "tv",
+      tmdbId,
+      tvIndexFromCachePart(parts[2]),
+      tvIndexFromCachePart(parts[3])
+    );
   }
   return titleMemoryId("movie", tmdbId);
 }
@@ -115,13 +171,33 @@ export function knownGoodProviders(catalog: TitleCatalog | null): string[] {
     .map(([id]) => id);
 }
 
+function knownGoodWithHeight(
+  catalog: TitleCatalog | null
+): Array<{ id: string; maxHeight: number }> {
+  if (!catalog) return [];
+  return [...foldServers(catalog.servers).entries()]
+    .filter(([, server]) => server.ok > 0 && server.ok >= server.empty)
+    .map(([id, server]) => ({ id, maxHeight: server.maxHeight }));
+}
+
 export function preferredProvidersForTitle(
   episodeCatalog: TitleCatalog | null,
   showCatalog: TitleCatalog | null = null
 ): string[] {
-  const episode = knownGoodProviders(episodeCatalog);
-  if (episode.length) return episode;
-  return knownGoodProviders(showCatalog);
+  const merged = new Map<string, number>();
+  for (const row of [
+    ...knownGoodWithHeight(episodeCatalog),
+    ...knownGoodWithHeight(showCatalog),
+  ]) {
+    merged.set(row.id, Math.max(merged.get(row.id) ?? 0, row.maxHeight));
+  }
+  return [...merged.entries()]
+    .sort((a, b) => {
+      const aUhd = a[1] >= ROSTER_UHD_MIN_HEIGHT ? 1 : 0;
+      const bUhd = b[1] >= ROSTER_UHD_MIN_HEIGHT ? 1 : 0;
+      return bUhd - aUhd;
+    })
+    .map(([id]) => id);
 }
 
 export function safeMemoryName(raw: string): string {
