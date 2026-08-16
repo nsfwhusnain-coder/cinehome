@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { WatchView } from "@/views/watch";
+import { resolvePlayableTitle } from "@/lib/catalog/title-alias.server";
+import { playableHref } from "@/lib/catalog/title-alias";
 import { tmdb } from "@/lib/tmdb";
 
 interface SearchParams {
@@ -44,11 +47,16 @@ export default async function Page({
   const { type, id } = await params;
   const { season, episode } = await searchParams;
   const mediaType = type === "tv" ? "tv" : "movie";
+  const tmdbId = Number(id);
+  const playable = await resolvePlayableTitle(mediaType, tmdbId);
+  if (playable.mediaType !== mediaType || playable.tmdbId !== tmdbId) {
+    redirect(playableHref(playable));
+  }
 
   return (
     <WatchView
       mediaType={mediaType}
-      id={Number(id)}
+      id={tmdbId}
       season={season ? Number(season) : undefined}
       episode={episode ? Number(episode) : undefined}
     />

@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { DetailView } from "@/views/movie-detail";
+import { resolvePlayableTitle } from "@/lib/catalog/title-alias.server";
+import { detailHref } from "@/lib/catalog/title-alias";
 import { tmdb } from "@/lib/tmdb";
 
 export async function generateMetadata({
@@ -23,6 +26,11 @@ export async function generateMetadata({
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const data = await tmdb.movieDetails(Number(id)).catch(() => undefined);
-  return <DetailView mediaType="movie" id={Number(id)} initialData={data} />;
+  const tmdbId = Number(id);
+  const playable = await resolvePlayableTitle("movie", tmdbId);
+  if (playable.mediaType !== "movie" || playable.tmdbId !== tmdbId) {
+    redirect(detailHref(playable));
+  }
+  const data = await tmdb.movieDetails(tmdbId).catch(() => undefined);
+  return <DetailView mediaType="movie" id={tmdbId} initialData={data} />;
 }

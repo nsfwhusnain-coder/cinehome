@@ -25,6 +25,7 @@ import {
 import { tvQueryIndex } from "@/lib/playback/tv-index";
 import { resolvePlaybackContentClass } from "@/lib/playback/content-class";
 import { rememberPlaybackRoster } from "@/lib/playback/source-url-cache";
+import { resolvePlayableTitle } from "@/lib/catalog/title-alias.server";
 
 /**
  * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
@@ -103,10 +104,14 @@ export async function GET(
     return NextResponse.json({ error: "Invalid media type" }, { status: 400 });
   }
 
-  const tmdbId = Number(id);
-  if (!tmdbId) {
+  const requestedId = Number(id);
+  if (!requestedId) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
+
+  const playable = await resolvePlayableTitle(type, requestedId);
+  const mediaType = playable.mediaType;
+  const tmdbId = playable.tmdbId;
 
   const url = new URL(req.url);
   const seasonParam = url.searchParams.get("season");
@@ -116,7 +121,9 @@ export async function GET(
   // Season/episode 0 is TMDB specials — do not coerce 0 → 1.
   let season = seasonParam != null && seasonParam !== "" ? Number(seasonParam) : undefined;
   let episode = episodeParam != null && episodeParam !== "" ? Number(episodeParam) : undefined;
-  if (type === "tv") {
+  if (mediaType === "tv") {
+    if (season == null && playable.season != null) season = playable.season;
+    if (episode == null && playable.episode != null) episode = playable.episode;
     season = tvQueryIndex(Number.isFinite(season as number) ? season : undefined);
     episode = tvQueryIndex(Number.isFinite(episode as number) ? episode : undefined);
   }
@@ -140,7 +147,7 @@ export async function GET(
 
   if (!fast) {
     const titleResolveKey =
-      `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
+      `${userId}:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}`;
     const resolveBudget = consumePlaybackResolveBudget({
       userLimiter: fullResolvePerUserLimiter,
       titleLimiter: fullResolvePerTitleLimiter,
@@ -158,7 +165,7 @@ export async function GET(
   if (noCache) {
     const refreshKey =
       refreshMode === "recovery"
-        ? `${userId}:${type}:${tmdbId}:${season ?? 0}:${episode ?? 0}`
+        ? `${userId}:${mediaType}:${tmdbId}:${season ?? 0}:${episode ?? 0}`
         : userId;
     const refreshCheck =
       refreshMode === "recovery"
@@ -175,7 +182,7 @@ export async function GET(
   // ignored so a stale browser cache cannot override a newly selected default.
   const [profilePreferences, contentClass, remuxAvailable] = await Promise.all([
     getUserPlaybackPreferences(userId),
-    resolvePlaybackContentClass(type, tmdbId),
+    resolvePlaybackContentClass(mediaType, tmdbId),
     remuxHasCapacity(),
   ]);
   const qualityHint = profilePreferences.playbackQuality;
@@ -186,7 +193,7 @@ export async function GET(
   } as const;
   const sourceCacheIdentity = {
     userId,
-    mediaType: type as MediaType,
+    mediaType,
     tmdbId,
     season,
     episode,
@@ -200,7 +207,7 @@ export async function GET(
   } = await import("@/lib/server-cache");
   // Per-user key: proxy URLs embed HLS session ids. Cross-user warm is raw scrape.
   const cacheKey = playbackCacheKey(
-    type,
+    mediaType,
     tmdbId,
     season,
     episode,
@@ -216,7 +223,7 @@ export async function GET(
       const healthAware = withRuntimeProviderHealth(
         cached,
         userId,
-        type,
+        mediaType,
         decideOptions
       );
       rememberPlaybackRoster(sourceCacheIdentity, healthAware.sources);
@@ -257,13 +264,13 @@ export async function GET(
   const debridPromise = fast
     ? resolveFastDebridSourcesSafely({
         tmdbId,
-        mediaType: type as MediaType,
+        mediaType,
         season,
         episode,
       })
     : resolveDebridSourcesSafely({
         tmdbId,
-        mediaType: type as MediaType,
+        mediaType,
         season,
         episode,
         forceRefresh: noCache,
@@ -271,7 +278,7 @@ export async function GET(
 
   const providerPromise = provider.resolve({
     tmdbId,
-    mediaType: type as MediaType,
+    mediaType,
     season,
     episode,
     userId,
@@ -297,7 +304,7 @@ export async function GET(
       console.info(
         JSON.stringify({
           event: "playback_fast_debrid_hit",
-          mediaType: type,
+          mediaType,
           tmdbId,
           sourceCount: debridSources.length,
         })
@@ -332,7 +339,7 @@ export async function GET(
   const healthAwareResult = withRuntimeProviderHealth(
     result,
     userId,
-    type,
+    mediaType,
     decideOptions
   );
   rememberPlaybackRoster(sourceCacheIdentity, healthAwareResult.sources);

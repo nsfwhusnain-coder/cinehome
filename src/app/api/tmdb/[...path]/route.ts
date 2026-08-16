@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import { tmdb } from "@/lib/tmdb";
 import { cachedFetch } from "@/lib/server-cache";
+import { rewriteSearchResults } from "@/lib/catalog/title-alias";
 
 /**
  * Generic TMDB proxy. Lets us call TMDB from the client without exposing the API key.
@@ -80,10 +81,29 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ path: stri
         return tmdb.tvDetails(Number(b));
       }
       if (a === "search" && b === "movie") {
-        return tmdb.search(params.query as string, Number(params.page) || 1);
+        const found = await tmdb.search(
+          params.query as string,
+          Number(params.page) || 1
+        );
+        return {
+          ...found,
+          results: rewriteSearchResults(
+            (found.results ?? []).map((row) => ({
+              ...row,
+              media_type: row.media_type ?? "movie",
+            }))
+          ),
+        };
       }
       if (a === "search" && b === "multi") {
-        return tmdb.searchMulti(params.query as string, Number(params.page) || 1);
+        const found = await tmdb.searchMulti(
+          params.query as string,
+          Number(params.page) || 1
+        );
+        return {
+          ...found,
+          results: rewriteSearchResults(found.results ?? []),
+        };
       }
       if (a === "genre" && (b === "movie" || b === "tv")) {
         return tmdb.genres(b);
