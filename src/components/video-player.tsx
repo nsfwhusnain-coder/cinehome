@@ -65,6 +65,7 @@ import {
   toMediaTime,
 } from "@/lib/playback/remux-timeline";
 import { prewarmRemuxPosition } from "@/lib/playback/remux-prewarm";
+import { shouldRestartRemux } from "@/lib/playback/remux-resume";
 
 import { activeBufferProfile } from "@/lib/playback/device-profile";
 import { warmDecodeCapabilities } from "@/lib/playback/decode-capability";
@@ -933,6 +934,7 @@ export function VideoPlayer({
   const remuxSeekAbortRef = useRef<AbortController | null>(null);
   const remuxSeekGenerationRef = useRef(0);
   const pendingRemuxSeekTargetRef = useRef<number | null>(null);
+  const remuxRestartRef = useRef({ count: 0, lastAt: 0, sourceId: "" });
   const remuxRollbackRef = useRef<{
     sourceId: string;
     startAtSeconds: number;
@@ -1350,6 +1352,41 @@ export function VideoPlayer({
       setRemuxStart(offset);
     },
     [setRemuxStart]
+  );
+  const restartRemuxFromPlayhead = useCallback(
+    (httpCode: number): boolean => {
+      const source = activeSourceRef.current;
+      if (!source || sourceDelivery(source) !== "remux") return false;
+      if (remuxRestartRef.current.sourceId !== source.id) {
+        remuxRestartRef.current = { count: 0, lastAt: 0, sourceId: source.id };
+      }
+      const now = Date.now();
+      if (
+        !shouldRestartRemux({
+          remux: true,
+          everPlayed: everPlayedRef.current,
+          httpCode,
+          restartCount: remuxRestartRef.current.count,
+          lastRestartAtMs: remuxRestartRef.current.lastAt,
+          nowMs: now,
+        })
+      ) {
+        return false;
+      }
+      remuxRestartRef.current.count += 1;
+      remuxRestartRef.current.lastAt = now;
+      const playhead = logicalPlayhead(videoRef.current?.currentTime ?? 0);
+      const startAt = normalizeRemuxStart(playhead, fallbackDurationSRef.current);
+      resumeAtRef.current = playhead;
+      initialTimeAppliedRef.current = false;
+      if (videoRef.current) freezeLastVideoFrame(videoRef.current);
+      setError(null);
+      setBuffering(true);
+      setIsSwitchingServer(true);
+      setRemuxStart(startAt);
+      return true;
+    },
+    [logicalPlayhead, setRemuxStart, setBuffering, setError, setIsSwitchingServer]
   );
   /** hls.js levels with ladder/maxHeight annotation from source metadata. */
   const levelsFromHls = useCallback((hls: Hls): QualityLevel[] => {
@@ -3243,10 +3280,27 @@ export function VideoPlayer({
           const detail = String(data.details ?? data.type ?? "hls_error");
 
           if (
+            isSessionExpiredError({
+              response: { code: httpCode },
+              details: detail,
+            }) &&
+            onRetrySourcesRef.current
+          ) {
+            failedSourceIdsRef.current.clear();
+            setFailedSourceIds([]);
+            pendingUrlRefreshRef.current = true;
+            setBuffering(true);
+            if (everPlayedRef.current) setIsSwitchingServer(true);
+            onRetrySourcesRef.current();
+            return;
+          }
+
+          if (
             source &&
             sourceDelivery(source) === "remux" &&
-            REMUX_BUSY_HTTP_CODES.has(httpCode)
+            (REMUX_BUSY_HTTP_CODES.has(httpCode) || httpCode === 404)
           ) {
+            if (restartRemuxFromPlayhead(httpCode || 404)) return;
             failActiveSource("remux_unavailable", sourceAttempt);
             return;
           }
@@ -3289,6 +3343,7 @@ export function VideoPlayer({
                     (fragTimeoutCountsRef.current.get(source.id) ?? 0) + 1;
                   fragTimeoutCountsRef.current.set(source.id, count);
                   if (count >= FRAG_TIMEOUT_FAILOVER_COUNT) {
+                    if (restartRemuxFromPlayhead(404)) return;
                     failActiveSource("frag_load_timeout_storm", sourceAttempt);
                     return;
                   }
@@ -3585,6 +3640,7 @@ export function VideoPlayer({
     syncHlsTracks,
     syncNativeTracks,
     failActiveSource,
+    restartRemuxFromPlayhead,
     noteHardTransportFailure,
     recordDetectedHeight,
     rejectImplausiblyShortDuration,

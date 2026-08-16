@@ -118,17 +118,16 @@ const PLAYLIST_READY_BUDGET_MS = 60_000;
  *                       (after trying a cleanup first). The player treats the
  *                       error as a source failure and fails over, which is the
  *                       right outcome: another source beats a full disk.
- * REMUX_MAX_JOB_BYTES   kill a single remux whose output exceeds this. Sized
- *                       above any realistic streamable 4K encode (those run
- *                       6-20 GB); it exists to stop a pathological input - a
- *                       60 GB BluRay remux, or an upstream that never EOFs -
- *                       from eating the volume on its own.
+ * REMUX_MAX_JOB_BYTES   kill a single remux whose output exceeds this. A 4K
+ *                       stream-copy of a long feature is 40–80 GB (live:
+ *                       Interstellar/Dune crossed 30 GB mid-film). Cap sits
+ *                       above that so a normal Ultra watch is not killed.
  */
 const REMUX_MIN_FREE_BYTES = Number(
   process.env.TRANSCODER_REMUX_MIN_FREE_BYTES || 25 * 1024 * 1024 * 1024
 );
 const REMUX_MAX_JOB_BYTES = Number(
-  process.env.TRANSCODER_REMUX_MAX_JOB_BYTES || 30 * 1024 * 1024 * 1024
+  process.env.TRANSCODER_REMUX_MAX_JOB_BYTES || 96 * 1024 * 1024 * 1024
 );
 /** How often a running remux's output size is checked against the cap. */
 const REMUX_WATCHDOG_INTERVAL_MS = 30_000;
@@ -143,13 +142,13 @@ const REMUX_WATCHDOG_INTERVAL_MS = 30_000;
  * expensive part on a volume at 88%.
  *
  * A player requests segments continuously while playing and stops the moment
- * it is closed, so "no segment read recently" is a direct signal. Two minutes
- * is long enough to survive a pause with a full buffer, short enough to bound
- * an abandoned job. Output is wiped rather than kept: a killed stream copy
- * leaves a playlist that just stops partway through, and serving that later as
- * a cache hit would silently truncate the film.
+ * it is closed, so "no segment read recently" is a direct signal. Eight
+ * minutes covers a pause with a full 4K buffer. Output is kept: wiping it
+ * made the next playlist/segment 404 and the player marked a healthy 4K
+ * source red. The player restarts from the playhead if it needs more.
  */
-const REMUX_IDLE_TIMEOUT_MS = 120_000;
+const REMUX_IDLE_TIMEOUT_MS = 8 * 60 * 1000;
+const REMUX_EVICT_IDLE_MS = 30_000;
 const REMUX_IDLE_CHECK_INTERVAL_MS = 30_000;
 /** Keep an interrupted old suffix readable long enough to roll back a seek. */
 const REMUX_SUPERSEDED_GRACE_MS = 30_000;
@@ -279,6 +278,32 @@ function remuxSessionFamilyKey(
     )
     .digest("hex")
     .slice(0, 24);
+}
+
+function remuxSlotCount(): number {
+  return activeRemuxes.size + remuxReservations.size;
+}
+
+/** Free a slot by killing the remux nobody has read recently. */
+async function evictIdleRemuxes(needed = 1): Promise<void> {
+  if (needed <= 0 || remuxSlotCount() < REMUX_MAX_CONCURRENT) return;
+  const idle = [...activeRemuxes]
+    .map((candidate) => ({
+      key: candidate,
+      idleMs: Date.now() - (lastAccess.get(candidate) ?? 0),
+    }))
+    .filter((row) => row.idleMs >= REMUX_EVICT_IDLE_MS)
+    .sort((a, b) => b.idleMs - a.idleMs);
+  for (const row of idle.slice(0, needed)) {
+    const proc = remuxProcesses.get(row.key);
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null) continue;
+    log(`remux key=${row.key} evicted after ${row.idleMs}ms idle to free a slot`);
+    proc.kill("SIGKILL");
+  }
+  const deadline = Date.now() + REMUX_SUPERSEDE_WAIT_MS;
+  while (remuxSlotCount() >= REMUX_MAX_CONCURRENT && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, REMUX_SLOT_POLL_MS));
+  }
 }
 
 async function supersedeOlderRemuxForSeek(
@@ -575,20 +600,8 @@ function watchRemuxIdle(proc: ChildProcess, outDir: string, key: string): void {
     const idleMs = Date.now() - (lastAccess.get(key) ?? 0);
     if (idleMs > REMUX_IDLE_TIMEOUT_MS) {
       clearInterval(timer);
-      log(`remux key=${key} idle for ${idleMs}ms; stopping ffmpeg and discarding partial output`);
+      log(`remux key=${key} idle for ${idleMs}ms; stopping ffmpeg, keeping segments`);
       proc.kill("SIGKILL");
-      // Wipe on the close handler, not here, so ffmpeg has released its files.
-      proc.once("close", () => {
-        inflight.delete(key);
-        lastAccess.delete(key);
-        wipeOutDir(outDir);
-      });
-      // Already exited between the check and the kill.
-      if (proc.exitCode !== null) {
-        inflight.delete(key);
-        lastAccess.delete(key);
-        wipeOutDir(outDir);
-      }
     }
   }, REMUX_IDLE_CHECK_INTERVAL_MS);
   timer.unref();
@@ -765,8 +778,12 @@ async function getOrBuild(
       return cached;
     }
     supersededRemuxUntil.delete(key);
-    // A remux with no writer and no ENDLIST was interrupted. Never expose a
-    // silently truncated suffix as a warm cache hit.
+    // Interrupted remux: keep serving the segments already written. Wiping
+    // here 404'd the next fragment and the player marked a good 4K source
+    // red. A playhead restart uses a different startAt / key.
+    if (mode === "remux" && readFileSync(cached, "utf8").includes("#EXTINF")) {
+      return cached;
+    }
     wipeOutDir(cacheDir(key));
   }
 
@@ -797,9 +814,12 @@ async function getOrBuild(
     if (startAtSeconds > 0) {
       await supersedeOlderRemuxForSeek(key, familyKey);
     }
-    if (activeRemuxes.size + remuxReservations.size >= REMUX_MAX_CONCURRENT) {
+    if (remuxSlotCount() >= REMUX_MAX_CONCURRENT) {
+      await evictIdleRemuxes(1);
+    }
+    if (remuxSlotCount() >= REMUX_MAX_CONCURRENT) {
       throw new Error(
-        `remux at capacity: ${activeRemuxes.size + remuxReservations.size}/${REMUX_MAX_CONCURRENT} active or starting`
+        `remux at capacity: ${remuxSlotCount()}/${REMUX_MAX_CONCURRENT} active or starting`
       );
     }
     remuxReservations.add(key);
