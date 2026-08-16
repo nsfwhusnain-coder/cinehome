@@ -64,8 +64,22 @@ describe("preferred quality discovery", () => {
 
   it("releases Ultra hold after the startup budget so titles without 4K still play", () => {
     const ultra = response([source("fast-hd", 1080)]);
-    expect(ULTRA_STARTUP_HOLD_MS).toBeGreaterThanOrEqual(45_000);
+    expect(ULTRA_STARTUP_HOLD_MS).toBe(60_000);
     expect(shouldWaitForMaximumFourK(ultra, true, true)).toBe(false);
+  });
+
+  it("does not wait for 4K when no playable stream exists yet", () => {
+    const empty = response([]);
+    expect(shouldWaitForMaximumFourK(empty, true)).toBe(false);
+  });
+
+  it("still waits once a 720p or 480p stream is found", () => {
+    expect(shouldWaitForMaximumFourK(response([source("sd", 480)]), true)).toBe(
+      true
+    );
+    expect(shouldWaitForMaximumFourK(response([source("hd", 720)]), true)).toBe(
+      true
+    );
   });
 
   it("still waits on a remembered 1080 roster when Ultra is on and discovery is open", () => {

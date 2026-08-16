@@ -57,6 +57,14 @@ describe("filterHighQualitySources", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps a 480p-only roster so last-resort titles still play", () => {
+    expect(
+      filterHighQualitySources([
+        { label: "Pulse 480", maxHeight: 480, url: "https://p.test/a" },
+      ])
+    ).toHaveLength(1);
+  });
+
   it("does not treat unknown-rate HD as a floor failure", () => {
     expect(
       failsQualityFloor({ label: "Luna", maxHeight: 1080, url: "https://luna.test/a" })

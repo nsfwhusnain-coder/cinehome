@@ -24,6 +24,7 @@ import {
 } from "@/lib/playback/request-error";
 import {
   advanceMaximumStartupGate,
+  hasPlayableAnyQuality,
   hasPlayablePreferredQuality,
   preferredQualityDiscoveryPending,
   shouldWaitForMaximumFourK,
@@ -325,6 +326,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const fastData = usableCachedPlayback(fast.data, fast.dataUpdatedAt);
 
   const pollStartedAtRef = useRef<number | null>(null);
+  const firstPlayableAtRef = useRef<number | null>(null);
   const pollBudgetRef = useRef({ target: "", baselineUpdates: 0 });
 
   const full = useQuery({
@@ -419,6 +421,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     if (discoveryWallHit) setDiscoveryWallHit(false);
     if (softMissWallHit) setSoftMissWallHit(false);
     if (ultraHoldExpired) setUltraHoldExpired(false);
+    firstPlayableAtRef.current = null;
   }
 
   const [maximumGate, setMaximumGate] = useState({
@@ -472,18 +475,12 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     const started = pollStartedAtRef.current;
     const t1 = window.setTimeout(() => setDiscoveryWallHit(true), Math.max(0, DISCOVERY_UI_WALL_MS - (Date.now() - started)));
     const t2 = window.setTimeout(() => setSoftMissWallHit(true), Math.max(0, SOFT_MISS_WALL_MS - (Date.now() - started)));
-    const t3 = window.setTimeout(
-      () => setUltraHoldExpired(true),
-      Math.max(0, ULTRA_STARTUP_HOLD_MS - (Date.now() - started))
-    );
     // If already past wall (strict mode remount), apply immediately.
     if (Date.now() - started >= DISCOVERY_UI_WALL_MS) setDiscoveryWallHit(true);
     if (Date.now() - started >= SOFT_MISS_WALL_MS) setSoftMissWallHit(true);
-    if (Date.now() - started >= ULTRA_STARTUP_HOLD_MS) setUltraHoldExpired(true);
     return () => {
       window.clearTimeout(t1);
       window.clearTimeout(t2);
-      window.clearTimeout(t3);
     };
   }, [
     canFetch,
@@ -497,6 +494,26 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
     full.isFetched,
     hasSources,
   ]);
+
+  useEffect(() => {
+    if (!canFetch || !wantsLockedFourK) return;
+    if (!mergedData || !hasPlayableAnyQuality(mergedData)) return;
+    if (hasPlayablePreferredQuality(mergedData)) {
+      setUltraHoldExpired(true);
+      return;
+    }
+    if (firstPlayableAtRef.current == null) {
+      firstPlayableAtRef.current = Date.now();
+    }
+    const remain =
+      ULTRA_STARTUP_HOLD_MS - (Date.now() - firstPlayableAtRef.current);
+    if (remain <= 0) {
+      setUltraHoldExpired(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setUltraHoldExpired(true), remain);
+    return () => window.clearTimeout(timer);
+  }, [canFetch, wantsLockedFourK, mergedData, wallTarget]);
 
   // Scraper partial after full settled — ignore for UI once we have sources + wall.
   const rawPartial = full.isFetched
@@ -556,6 +573,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
   const retryFull = useCallback(async () => {
     forceRefreshRef.current = true;
     pollStartedAtRef.current = null;
+    firstPlayableAtRef.current = null;
     setDiscoveryWallHit(false);
     setSoftMissWallHit(false);
     setUltraHoldExpired(false);

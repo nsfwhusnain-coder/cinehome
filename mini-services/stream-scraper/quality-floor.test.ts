@@ -12,6 +12,14 @@ describe("scraper quality floor", () => {
     expect(kept.map((source) => source.label)).toEqual(["Kronos"]);
   });
 
+  it("keeps a 480p-only roster", () => {
+    expect(
+      filterHighQualitySources([
+        { label: "Pulse 480", maxHeight: 480, url: "https://p.test/a" },
+      ])
+    ).toHaveLength(1);
+  });
+
   it("never empties a one-row roster", () => {
     expect(
       filterHighQualitySources([
