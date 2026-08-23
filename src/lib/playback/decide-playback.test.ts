@@ -87,28 +87,27 @@ describe("decidePlayback contract", () => {
   it("starts remux 4K when Ultra is selected and no direct 4K exists", () => {
     const decision = decidePlayback([hindi1080, hades, luna], {
       preferredHeight: 2160,
-      fourKStartup: "fast",
+      fourKStartup: "maximum",
     });
     expect(decision.immediate?.id).toBe("hades");
     expect(decision.deferredFourK).toBeNull();
   });
 
-  it("starts Kronos over Hindi, remux, and Arabic", () => {
-    const decision = decidePlayback([hindi1080, arabic1080, hades, kronos], {
+  it("starts 4K over 1080p when both are available (highest quality priority)", () => {
+    const decision = decidePlayback([poseidon, kronos], {
+      preferredHeight: "auto",
+      fourKStartup: "maximum",
+    });
+    expect(decision.immediate?.id).toBe("poseidon");
+    expect(decision.deferredFourK).toBeNull();
+  });
+
+  it("starts Kronos over Hindi and Arabic when 4K is absent", () => {
+    const decision = decidePlayback([hindi1080, arabic1080, kronos], {
       preferredHeight: "auto",
       fourKStartup: "fast",
     });
     expect(decision.immediate?.id).toBe("kronos");
-    expect(decision.deferredFourK?.id).toBe("hades");
-  });
-
-  it("plays remux 4K when the only other HD is Hindi", () => {
-    const decision = decidePlayback([hindi1080, hades], {
-      preferredHeight: 2160,
-      fourKStartup: "fast",
-    });
-    expect(decision.immediate?.id).toBe("hades");
-    expect(decision.deferredFourK).toBeNull();
   });
 
   it("never auto-defaults a pack when an exact title exists", () => {
@@ -186,15 +185,6 @@ describe("decidePlayback contract", () => {
     expect(decision.deferredFourK).toBeNull();
   });
 
-  it("auto may still fast-start HD while remux 4K is deferred", () => {
-    const decision = decidePlayback([luna, hades], {
-      preferredHeight: "auto",
-      fourKStartup: "fast",
-    });
-    expect(decision.immediate?.id).toBe("luna");
-    expect(decision.deferredFourK?.id).toBe("hades");
-  });
-
   it("starts the rich native 1080p, not a skinny labelled 1080p", () => {
     const leanLuna = src({
       id: "lean-luna",
@@ -212,14 +202,6 @@ describe("decidePlayback contract", () => {
     const decision = decidePlayback([leanLuna, richKronos], {
       preferredHeight: "auto",
       fourKStartup: "fast",
-    });
-    expect(decision.immediate?.id).toBe("kronos");
-  });
-
-  it("Auto starts native 1080 instead of native 4K", () => {
-    const decision = decidePlayback([poseidon, kronos], {
-      preferredHeight: "auto",
-      fourKStartup: "maximum",
     });
     expect(decision.immediate?.id).toBe("kronos");
   });

@@ -1,38 +1,9 @@
 import { isTvUserAgent } from "@/lib/tv-detect";
 
-/**
- * What this browser can actually decode.
- *
- * The detection this replaces asked one question and applied the answer to a
- * different one. It probed `hvc1.1.6.L93.B0` — HEVC Main profile, 8-bit,
- * **level 3.1**, which tops out around 720p — and used the result to decide
- * whether 4K HEVC was playable. Real 4K HEVC is Main10 at level 5.0/5.1
- * (`hvc1.2.4.L150.B0`). A browser that decodes 4K Main10 in hardware but
- * declines the 8-bit Main string was told it supported no HEVC at all, and
- * every 4K release silently vanished from its roster. AV1 had the same flaw:
- * `av01.0.05M.08` is level 5, 8-bit, and the answer was applied to 4K 10-bit.
- *
- * Three changes:
- *  1. Probe a MATRIX of strings per codec, at the tiers actually shipped, and
- *     treat any hit as support.
- *  2. Ask both transports — `MediaSource.isTypeSupported` for the MSE/hls.js
- *     path and `canPlayType` for progressive `<video>` — because a browser can
- *     genuinely have one without the other (iOS Safari had no MSE until 17.1
- *     while decoding HEVC natively since iOS 11).
- *  3. Refine asynchronously with `navigator.mediaCapabilities.decodingInfo()`,
- *     which is the only API that answers for a specific resolution and
- *     bitrate, and additionally reports whether decode is hardware-backed.
- *
- * Sync accessors stay sync — they sit inside per-source ranking loops — and are
- * simply upgraded in place once the async probe resolves.
- */
-
-/** 4K decode targets, used for the mediaCapabilities refinement. */
-const UHD_WIDTH = 3840;
-const UHD_HEIGHT = 2160;
-const UHD_FRAMERATE = 24;
-/** ~15 Mbps: a typical 4K streaming ladder top rung. */
-const UHD_BITRATE = 15_000_000;
+export const UHD_WIDTH = 3840;
+export const UHD_HEIGHT = 2160;
+export const UHD_BITRATE = 20_000_000;
+export const UHD_FRAMERATE = 24;
 
 /**
  * HEVC strings spanning the tiers actually shipped: Main 8-bit at 720p/1080p
@@ -114,15 +85,6 @@ export function probeDecodeSync(types: readonly string[]): DecodeSupport {
 const hevcCache: { value: DecodeSupport | null } = { value: null };
 const av1Cache: { value: DecodeSupport | null } = { value: null };
 
-/**
- * A server render has no `window`, so `probeDecodeSync` correctly answers "no"
- * — but that answer must never be CACHED. These caches are module-level, and a
- * Next.js server process is long-lived, so one server-side call would latch
- * "this machine cannot decode HEVC" for every request the process ever serves
- * afterwards. Server-side `isSourcePlayableHere` must not latch that
- * answer: it would report the entire HEVC tier ineligible for every
- * request the process ever serves.
- */
 function cachedProbe(
   cache: { value: DecodeSupport | null },
   types: readonly string[]
@@ -175,23 +137,12 @@ interface DecodingInfo {
   powerEfficient?: boolean;
 }
 
-/**
- * Standalone rather than `extends Navigator`: the DOM lib already declares
- * `mediaCapabilities` as non-optional, so widening it to optional is a genuine
- * conflict. It is optional in reality — older Safari and several TV browsers
- * ship without it — so the guard below is load-bearing, not defensive noise.
- */
 interface CapabilityNavigator {
   mediaCapabilities?: {
     decodingInfo(config: unknown): Promise<DecodingInfo>;
   };
 }
 
-/**
- * Ask mediaCapabilities whether a specific 4K configuration decodes here.
- * Returns null when the API is absent or the query throws, so callers keep the
- * synchronous answer rather than downgrading on an unsupported browser.
- */
 async function probeUhd(contentType: string): Promise<DecodingInfo | null> {
   if (typeof navigator === "undefined") return null;
   const api = (navigator as unknown as CapabilityNavigator).mediaCapabilities;
@@ -212,15 +163,6 @@ async function probeUhd(contentType: string): Promise<DecodingInfo | null> {
   }
 }
 
-/**
- * Upgrade the cached answers with a real 4K query. Safe to call more than once
- * and safe to never call — ranking works from the synchronous probe either way.
- *
- * Deliberately additive: a positive mediaCapabilities result can turn support
- * ON (the string matrix was too conservative) but a negative one never turns it
- * OFF, because a browser that accepts the codec string and plays it in practice
- * must not lose its roster to a stricter secondary opinion.
- */
 export async function warmDecodeCapabilities(): Promise<void> {
   const [hevc, av1] = await Promise.all([
     probeUhd('video/mp4; codecs="hvc1.2.4.L150.B0"'),
@@ -242,28 +184,12 @@ export async function warmDecodeCapabilities(): Promise<void> {
   }
 }
 
-/**
- * True when HEVC is reachable ONLY through the plain <video> element and not
- * through MSE — or when this is a living-room TV whose canPlayType probe is
- * empty but the panel decodes HEVC in hardware.
- *
- * This is the one case where giving up hls.js is worth it. Native HLS has no
- * JS-level API to select or floor a rendition — AVFoundation and the equivalent
- * TV pipelines run ABR inside the OS with no hook — so choosing it forfeits
- * HLS_MIN_HEIGHT, applyPreferredHlsQuality and the adaptive floor entirely. That
- * price is only worth paying when MSE genuinely cannot decode the codec.
- *
- * Non-TV stays measured: `!mseAccepts && elementAccepts`. TV + no MSE HEVC
- * returns true even when every canPlayType string is "" — inventory already
- * trusts those panels, and the engine must follow.
- */
 export function hevcNeedsNativePath(): boolean {
   if (mseAccepts(HEVC_PROBE_TYPES)) return false;
   if (elementAccepts(HEVC_PROBE_TYPES)) return true;
   return isLivingRoomHevcTrust();
 }
 
-/** Test seam — capability is cached for the session in normal use. */
 export function resetDecodeCapabilityCache(): void {
   hevcCache.value = null;
   av1Cache.value = null;

@@ -66,13 +66,13 @@ describe("client startup ranking", () => {
     expect(decision.immediate?.id).toBe("remux-4k");
   });
 
-  test("auto starts 1080 and leaves remux 4K deferred", () => {
+  test("4K starts immediately over 1080p when both available", () => {
     const decision = pickClientStartupSource([remux4k, direct1080], {
       preferredHeight: "auto",
-      fourKStartup: "fast",
+      fourKStartup: "maximum",
     });
-    expect(decision.immediate?.id).toBe("direct-1080");
-    expect(decision.deferredFourK?.id).toBe("remux-4k");
+    expect(decision.immediate?.id).toBe("remux-4k");
+    expect(decision.deferredFourK).toBeNull();
   });
 
   test("does not defer remux 4K when a direct 4K is already starting", () => {
@@ -105,7 +105,7 @@ describe("client startup ranking", () => {
     expect(decision.deferredFourK).toBeNull();
   });
 
-  test("fast-starts English Luna, not Hindi 1080, and still defers remux 4K", () => {
+  test("starts English 4K over Hindi and 1080p", () => {
     const hindi1080: PlaybackSource = {
       id: "cinema-hi",
       url: "https://example.test/cinema-hi.mp4",
@@ -133,13 +133,6 @@ describe("client startup ranking", () => {
     });
     expect(ultra.immediate?.id).toBe("remux-4k");
     expect(ultra.deferredFourK).toBeNull();
-
-    const auto = pickClientStartupSource([hindi1080, remux4k, luna], {
-      preferredHeight: "auto",
-      fourKStartup: "fast",
-    });
-    expect(auto.immediate?.id).toBe("luna");
-    expect(auto.deferredFourK?.id).toBe("remux-4k");
   });
 });
 
@@ -157,11 +150,12 @@ describe("shouldAdoptRosterUpgrade", () => {
         everPlayed: false,
         fourKStartup: "fast",
         userPicked: false,
+        preferredHeight: 1080,
       })
     ).toBe(false);
   });
 
-  test("allows remux 4K over direct HD only when Ultra is the preset", () => {
+  test("allows remux 4K over direct HD when Ultra or Auto is the preset", () => {
     expect(
       shouldAdoptRosterUpgrade({
         current: direct1080,
@@ -179,9 +173,9 @@ describe("shouldAdoptRosterUpgrade", () => {
         everPlayed: false,
         fourKStartup: "maximum",
         userPicked: false,
-        preferredHeight: "auto",
+        preferredHeight: 2160,
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test("never overrides an explicit user pick or a healthy first frame", () => {

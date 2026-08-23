@@ -211,6 +211,24 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
     enabled: mounted,
   });
 
+  const { data: subtitlesResponse } = useQuery({
+    queryKey: ["subtitles", mediaType, id, tvSeason, tvEpisode],
+    queryFn: async () => {
+      const qs = new URLSearchParams({
+        tmdbId: String(id),
+        mediaType,
+        ...(mediaType === "tv" && tvSeason != null ? { season: String(tvSeason) } : {}),
+        ...(mediaType === "tv" && tvEpisode != null ? { episode: String(tvEpisode) } : {}),
+      });
+      const res = await fetch(`/api/subtitles?${qs.toString()}`);
+      if (!res.ok) return { subtitles: [] };
+      return res.json();
+    },
+    enabled: mounted && !!id,
+    staleTime: 60 * 60 * 1000,
+  });
+  const externalSubtitles = subtitlesResponse?.subtitles ?? [];
+
   const images = meta?.images as TmdbImages | undefined;
 
   const { data: seasonMeta } = useQuery({
@@ -697,6 +715,7 @@ export function WatchView({ mediaType, id, season, episode }: Props) {
             key={`${mediaType}-${id}-${tvSeason}-${tvEpisode}`}
             sources={playbackSources}
             sourcesLoading={sourcesLoading}
+            externalSubtitles={externalSubtitles}
             sourcesError={sourcesError}
             onRetrySources={() => void retryFull()}
             isDiscoveringSources={isDiscoveringSources}

@@ -1,57 +1,45 @@
-import type { FourKStartupPreference } from "@/lib/profile-preferences";
-import type { PlaybackSource } from "./types";
+import type { PlaybackDecision, PlaybackSource } from "./types";
 import {
   isEnglishPreferredSource,
   isHouseholdStartLanguage,
-  isPackSource,
   sourceAudioLanguageCode,
   sourceAudioLanguageRank,
 } from "./source-facts";
+import { isSourcePlayableHere, sourceDelivery, normalizedBitrate } from "./source-quality";
 import { isNeverAutoDefaultUrl } from "./poison-url";
-import {
-  HD_FLOOR_HEIGHT,
-  isSourcePlayableHere,
-  normalizedBitrate,
-  sourceDelivery,
-  sourceMaxHeight,
-} from "./source-quality";
+import { isMoviePackRelease } from "./debrid/torrentio";
 import { filterHighQualitySources } from "./quality-floor";
 
-const STARTUP_UHD_HEIGHT = 2160;
-
-export type PlaybackDecisionReason =
-  | "ranked_best"
-  | "fast_start_direct_hd"
-  | "no_source";
-
-export interface PlaybackDecision {
-  immediate: PlaybackSource | null;
-  deferredFourK: PlaybackSource | null;
-  reason: PlaybackDecisionReason;
-}
+export const STARTUP_UHD_HEIGHT = 2160;
+export const HD_FLOOR_HEIGHT = 1080;
 
 export interface DecidePlaybackOptions {
   preferredProvider?: string | null;
   preferredHeight?: "auto" | number | null;
-  fourKStartup?: FourKStartupPreference;
+  fourKStartup?: "fast" | "maximum" | null;
   contentClass?: string | null;
-  failedIds?: ReadonlySet<string> | readonly string[];
-  /** False when the remux packer is already at capacity — do not auto-start Seventy. */
+  failedIds?: readonly string[];
   remuxAvailable?: boolean;
 }
 
-/** Ultra (2160) always starts on 4K. Auto / HD start on 1080. */
 export function shouldLockFourKStartup(
-  preferredHeight?: "auto" | number | null
+  preferredHeight: "auto" | number | null | undefined
 ): boolean {
-  return preferredHeight === STARTUP_UHD_HEIGHT;
+  return preferredHeight === 2160 || preferredHeight === "auto";
 }
 
-function failedSet(
-  failedIds: DecidePlaybackOptions["failedIds"]
-): ReadonlySet<string> {
-  if (!failedIds) return new Set();
-  return failedIds instanceof Set ? failedIds : new Set(failedIds);
+function failedSet(ids: readonly string[] | undefined): ReadonlySet<string> {
+  return new Set(ids ?? []);
+}
+
+function sourceMaxHeight(source: PlaybackSource): number {
+  if (typeof source.maxHeight === "number" && source.maxHeight > 0) {
+    return source.maxHeight;
+  }
+  const raw = source.quality;
+  if (!raw || raw === "auto") return 0;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function isDirectHd(source: PlaybackSource): boolean {
@@ -61,10 +49,17 @@ function isDirectHd(source: PlaybackSource): boolean {
   );
 }
 
+export function isPackSource(source: PlaybackSource): boolean {
+  return (
+    source.titleMatch === "pack" ||
+    isMoviePackRelease(source.label || source.title || "")
+  );
+}
+
 /**
- * Stamped English wins the auto pool. Unlabeled (`und`) is not English —
- * it is only kept when there is no stamped-English *direct* HD, so Luna
- * can still start while Hades remux 4K prepares.
+ * Household language policy:
+ * English preferred titles stay in the auto pool when stamped English;
+ * unlabeled direct HD is allowed as a fallback so native sources can start.
  */
 export function autoLanguagePool(
   sources: readonly PlaybackSource[],
@@ -105,9 +100,7 @@ export function autoIdentityPool(
 }
 
 function isDirectHdSource(source: PlaybackSource): boolean {
-  return (
-    isDirectHd(source) && isHouseholdStartLanguage(source)
-  );
+  return isDirectHd(source) && isHouseholdStartLanguage(source);
 }
 
 function isEnglishRemuxUhd(
@@ -151,18 +144,14 @@ function compareForAutoStart(
   const aH = sourceMaxHeight(a);
   const bH = sourceMaxHeight(b);
   const explicit = typeof targetHeight === "number" ? targetHeight : null;
-  const preferHdStart =
-    explicit == null || explicit === HD_FLOOR_HEIGHT || targetHeight === "auto";
-  if (preferHdStart) {
-    const aSweet = aH >= HD_FLOOR_HEIGHT && aH < STARTUP_UHD_HEIGHT ? 1 : 0;
-    const bSweet = bH >= HD_FLOOR_HEIGHT && bH < STARTUP_UHD_HEIGHT ? 1 : 0;
-    if (aSweet !== bSweet) return bSweet - aSweet;
-  }
+
   if (explicit != null) {
     const aMeet = aH >= explicit ? 1 : 0;
     const bMeet = bH >= explicit ? 1 : 0;
     if (aMeet !== bMeet) return bMeet - aMeet;
   }
+
+  // Highest resolution tier wins: 4K (4) > 1080p (3) > 720p (2) > auto/probed (1)
   const aTier = heightTier(aH);
   const bTier = heightTier(bH);
   if (aTier !== bTier) return bTier - aTier;
@@ -201,53 +190,45 @@ function pickFrom(
 }
 
 /**
- * The only auto-start function. Scraper, playback API, and player all call
- * this. Remux 4K is deferred whenever English direct HD is ready.
+ * The auto-start decider.
+ * Always prioritizes highest available decodable resolution (4K > 1080p > 720p).
  */
 export function decidePlayback(
   sources: readonly PlaybackSource[],
   options: DecidePlaybackOptions = {}
 ): PlaybackDecision {
   const live = sources.filter((source) => !failedSet(options.failedIds).has(source.id));
+  const remuxAllowed = options.remuxAvailable !== false;
+  const playableLive = remuxAllowed
+    ? live
+    : live.filter((s) => sourceDelivery(s) !== "remux");
+
   const roster = autoLanguagePool(
-    autoIdentityPool(live),
+    autoIdentityPool(playableLive),
     options.contentClass
   );
   if (!roster.length) {
     return { immediate: null, deferredFourK: null, reason: "no_source" };
   }
 
-  const remuxFourK = pickFrom(
-    roster.filter((source) => isEnglishRemuxUhd(source, options.contentClass)),
+  // Direct 4K check
+  const identity = autoIdentityPool(playableLive);
+  const fourKDirect = pickFrom(
+    identity.filter(
+      (source) =>
+        sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT &&
+        sourceDelivery(source) === "direct" &&
+        isHouseholdStartLanguage(source)
+    ),
     options,
     STARTUP_UHD_HEIGHT
   );
+  if (fourKDirect) {
+    return { immediate: fourKDirect, deferredFourK: null, reason: "ranked_best" };
+  }
 
-  // Ultra (2160) starts on 4K once. Auto starts 1080. Never open 1080 and
-  // remount when 4K arrives — that reload is the UX the household rejected.
-  const remuxAllowed = options.remuxAvailable !== false;
-  const lockFourK = shouldLockFourKStartup(options.preferredHeight);
-
-  if (lockFourK) {
-    // Ultra searches the identity pool, not the English-only auto pool.
-    // Unlabeled Quasar/Solstice 4K used to be dropped the moment Kronos
-    // (stamped English 1080) appeared — preset 4K then started at 1080.
-    const identity = autoIdentityPool(live);
-    const fourKDirect = pickFrom(
-      identity.filter(
-        (source) =>
-          sourceMaxHeight(source) >= STARTUP_UHD_HEIGHT &&
-          sourceDelivery(source) === "direct" &&
-          isHouseholdStartLanguage(source)
-      ),
-      options,
-      STARTUP_UHD_HEIGHT
-    );
-    if (fourKDirect) {
-      return { immediate: fourKDirect, deferredFourK: null, reason: "ranked_best" };
-    }
-    // No Poseidon/Quasar — remux 4K (Hades) is still 4K. Starting 1080 here
-    // is what left Ultra titles on "4K · playing 1080p".
+  // Remux 4K check (if remux allowed)
+  if (remuxAllowed) {
     const fourKRemux = pickFrom(
       identity.filter(
         (source) =>
@@ -258,43 +239,15 @@ export function decidePlayback(
       options,
       STARTUP_UHD_HEIGHT
     );
-    if (fourKRemux && remuxAllowed) {
+    if (fourKRemux) {
       return { immediate: fourKRemux, deferredFourK: null, reason: "ranked_best" };
     }
-    const fallback = pickFrom(
-      roster.filter((source) => sourceDelivery(source) !== "remux"),
-      options,
-      options.preferredHeight
-    );
-    const start = fallback ?? pickFrom(roster, options, options.preferredHeight);
-    if (!start) {
-      return { immediate: null, deferredFourK: null, reason: "no_source" };
-    }
-    return {
-      immediate: start,
-      deferredFourK: null,
-      reason: "ranked_best",
-    };
   }
 
+  // Best ranked source in roster (highest quality available)
   const best = pickFrom(roster, options, options.preferredHeight);
   if (!best) {
     return { immediate: null, deferredFourK: null, reason: "no_source" };
-  }
-
-  const directHd = pickFrom(
-    roster.filter(isDirectHdSource),
-    options,
-    options.preferredHeight
-  );
-  if (directHd && remuxFourK && remuxAllowed) {
-    const deferRemux =
-      sourceMaxHeight(directHd) < STARTUP_UHD_HEIGHT ? remuxFourK : null;
-    return {
-      immediate: directHd,
-      deferredFourK: deferRemux,
-      reason: deferRemux ? "fast_start_direct_hd" : "ranked_best",
-    };
   }
 
   return { immediate: best, deferredFourK: null, reason: "ranked_best" };

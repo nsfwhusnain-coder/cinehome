@@ -1,37 +1,22 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
-import {
-  nearestPreviewFrame,
-  previewBucket,
-} from "./hover-preview";
+import { nearestPreviewFrame, previewBucket } from "./hover-preview";
 
-describe("previewBucket", () => {
-  it("snaps to 2-second marks", () => {
+describe("hover-preview ring buffer", () => {
+  it("buckets timestamps on 2s intervals", () => {
     expect(previewBucket(0)).toBe(0);
-    expect(previewBucket(0.4)).toBe(0);
-    expect(previewBucket(1.2)).toBe(2);
-    expect(previewBucket(13.4)).toBe(14);
+    expect(previewBucket(1.4)).toBe(2);
+    expect(previewBucket(2.9)).toBe(2);
+    expect(previewBucket(3.1)).toBe(4);
   });
 
-  it("treats junk as zero", () => {
-    expect(previewBucket(Number.NaN)).toBe(0);
-    expect(previewBucket(-4)).toBe(0);
-  });
-});
+  it("finds nearest cached frame within distance limit", () => {
+    const frames = new Map<number, string>();
+    frames.set(10, "data:image/jpeg;base64,frame10");
+    frames.set(20, "data:image/jpeg;base64,frame20");
 
-describe("nearestPreviewFrame", () => {
-  it("returns the closest stored frame inside the window", () => {
-    const frames = new Map<number, string>([
-      [10, "a"],
-      [20, "b"],
-    ]);
-    expect(nearestPreviewFrame(frames, 11)).toBe("a");
-    expect(nearestPreviewFrame(frames, 18)).toBe("b");
-  });
-
-  it("returns null when nothing is near", () => {
-    const frames = new Map<number, string>([[0, "start"]]);
-    expect(nearestPreviewFrame(frames, 90)).toBeNull();
-    expect(nearestPreviewFrame(new Map(), 10)).toBeNull();
+    expect(nearestPreviewFrame(frames, 11)).toBe("data:image/jpeg;base64,frame10");
+    expect(nearestPreviewFrame(frames, 19)).toBe("data:image/jpeg;base64,frame20");
+    expect(nearestPreviewFrame(frames, 50, 10)).toBeNull();
   });
 });

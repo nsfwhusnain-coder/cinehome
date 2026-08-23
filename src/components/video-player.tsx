@@ -171,6 +171,15 @@ function fullscreenElement(): Element | null {
 }
 
 function isInteractivePlayerTarget(target: EventTarget | null): boolean {
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
   return (
     target instanceof Element &&
     Boolean(
@@ -403,6 +412,7 @@ async function probeSourceReachabilityCached(
 }
 
 interface Props {
+  externalSubtitles?: Array<{ id: string; label: string; language: string; vttUrl: string; isDefault?: boolean }>;
   sources: PlaybackSource[];
   sourcesLoading?: boolean;
   sourcesError?: string | null;
@@ -1501,7 +1511,16 @@ export function VideoPlayer({
   }, [setBuffering, setError]);
 
   useEffect(() => {
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       usePlayerStore.getState().reset();
       // These three notice timers are only ever cleared on title switch (the
       // mediaKey effect below) — a full unmount (navigating away mid-notice)
@@ -1628,7 +1647,16 @@ export function VideoPlayer({
       setError(null);
       setBuffering(true);
     });
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       cancelled = true;
     };
   }, [refreshNonce, setBuffering, setError]);
@@ -1790,7 +1818,16 @@ export function VideoPlayer({
       setBuffering(false);
       setError(ALL_SOURCES_FAILED_MSG);
     }, DISCOVERY_CLOSED_GRACE_MS);
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
     return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => clearTimeout(timer);
   }, [
     isDiscoveringSources,
     sourcesLoading,
@@ -1831,7 +1868,16 @@ export function VideoPlayer({
     setSwipeHint("visible");
     const fadeTimer = setTimeout(() => setSwipeHint("fading"), SWIPE_HINT_VISIBLE_MS);
     const hideTimer = setTimeout(() => setSwipeHint("hidden"), SWIPE_HINT_VISIBLE_MS + SWIPE_HINT_FADE_MS);
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       clearTimeout(fadeTimer);
       clearTimeout(hideTimer);
     };
@@ -2318,7 +2364,16 @@ export function VideoPlayer({
       for (const c of candidates) probeInFlightRef.current.delete(c.id);
     });
 
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       abort.abort();
     };
     // Deliberately excludes `probedHealth` — it only gates which candidates
@@ -2499,7 +2554,16 @@ export function VideoPlayer({
       if (usePlayerStore.getState().error) return;
       failActiveSource("first_frame_timeout");
     }, wallMs);
-    return () => window.clearTimeout(timer);
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => window.clearTimeout(timer);
     // orderedSources read at arm time only — do not re-arm when enrich appends.
     // Deps: one stable wall per active source; enrich must not re-arm it.
   }, [everPlayed, hasStream, activeSource?.id, initialTime, failActiveSource]);
@@ -3592,7 +3656,16 @@ export function VideoPlayer({
       }
     }
 
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       dashCancelled = true;
       video.removeEventListener("error", onBoundMediaElementError);
       // reset()/destroy() can synchronously abort XHR and emit loadend. Make
@@ -3712,7 +3785,16 @@ export function VideoPlayer({
     video.addEventListener("loadedmetadata", seekIfEarly);
     video.addEventListener("durationchange", seekIfEarly);
     video.addEventListener("canplay", seekIfEarly);
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       video.removeEventListener("loadedmetadata", seekIfEarly);
       video.removeEventListener("durationchange", seekIfEarly);
       video.removeEventListener("canplay", seekIfEarly);
@@ -4124,7 +4206,16 @@ export function VideoPlayer({
     video.addEventListener("enterpictureinpicture", onEnterPip);
     video.addEventListener("leavepictureinpicture", onLeavePip);
 
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       clearInterval(watchdogTimer);
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
@@ -4187,7 +4278,16 @@ export function VideoPlayer({
       setShowControls(true);
     }, sleepMinutes * 60_000);
 
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       if (sleepTimerRef.current != null) {
         clearTimeout(sleepTimerRef.current);
         sleepTimerRef.current = null;
@@ -4212,7 +4312,16 @@ export function VideoPlayer({
 
   useEffect(() => {
     resetControlsTimer();
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     };
   }, [resetControlsTimer, isPlaying]);
@@ -4225,7 +4334,16 @@ export function VideoPlayer({
     };
     document.addEventListener("fullscreenchange", onFsChange);
     document.addEventListener("webkitfullscreenchange", onFsChange);
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       document.removeEventListener("fullscreenchange", onFsChange);
       document.removeEventListener("webkitfullscreenchange", onFsChange);
     };
@@ -4244,7 +4362,16 @@ export function VideoPlayer({
     document.addEventListener("pointermove", wakeControls, true);
     document.addEventListener("mousemove", wakeControls, true);
     document.addEventListener("pointerdown", wakeControls, true);
-    return () => {
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => {
       document.removeEventListener("pointermove", wakeControls, true);
       document.removeEventListener("mousemove", wakeControls, true);
       document.removeEventListener("pointerdown", wakeControls, true);
@@ -4952,7 +5079,16 @@ export function VideoPlayer({
     };
 
     window.addEventListener("keydown", onWindowKeyDown, true);
-    return () => window.removeEventListener("keydown", onWindowKeyDown, true);
+    useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
+  return () => window.removeEventListener("keydown", onWindowKeyDown, true);
   }, [
     hasStream,
     togglePlay,
@@ -5096,6 +5232,15 @@ export function VideoPlayer({
       : []),
   ];
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !externalSubtitles?.length) return;
+    const timer = setTimeout(() => {
+      syncNativeTracks(video);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [externalSubtitles, syncNativeTracks]);
+
   return (
     <div
       ref={containerRef}
@@ -5125,9 +5270,11 @@ export function VideoPlayer({
         ref={scoutRef}
         muted
         playsInline
-        preload="none"
-        className="pointer-events-none hidden"
-        aria-hidden
+        preload="auto"
+        crossOrigin="anonymous"
+        className="pointer-events-none fixed -top-[9999px] -left-[9999px] opacity-0"
+        style={{ width: 320, height: 180, zIndex: -100 }}
+        aria-hidden="true"
       />
       <video
         ref={videoRef}
