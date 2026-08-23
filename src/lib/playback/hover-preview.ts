@@ -1,8 +1,8 @@
 /** Hover-scrub preview helpers. Frames are stored on 2s buckets. */
 
 export const PREVIEW_BUCKET_S = 2;
-export const PREVIEW_MAX_FRAMES = 300;
-export const PREVIEW_NEAR_S = 12;
+export const PREVIEW_MAX_FRAMES = 500;
+export const PREVIEW_NEAR_S = 30;
 
 export function previewBucket(timeS: number, step = PREVIEW_BUCKET_S): number {
   if (!Number.isFinite(timeS) || timeS < 0) return 0;
@@ -50,11 +50,11 @@ export function captureVideoFrame(
   const height = Math.max(1, Math.round((video.videoHeight / video.videoWidth) * width));
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
   try {
     ctx.drawImage(video, 0, 0, width, height);
-    return canvas.toDataURL("image/jpeg", 0.78);
+    return canvas.toDataURL("image/jpeg", 0.8);
   } catch {
     return null;
   }

@@ -1126,6 +1126,8 @@ export function VideoPlayer({
     hoverTime,
     remux: needsRemux,
     poster: artwork || poster,
+    sourceUrl: activeSource?.url || src,
+    sourceType: activeSource?.type,
   });
 
   useEffect(() => {
@@ -5152,6 +5154,7 @@ export function VideoPlayer({
         // no in-source ABR) where smoothness = the browser's own
         // resource-fetch algorithm buffering ahead aggressively.
         preload="auto"
+        crossOrigin="anonymous"
         className="main-player absolute inset-0 block h-full w-full bg-black object-contain"
         style={{
           position: "absolute",
