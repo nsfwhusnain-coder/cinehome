@@ -26,26 +26,8 @@ import { tvQueryIndex } from "@/lib/playback/tv-index";
 import { resolvePlaybackContentClass } from "@/lib/playback/content-class";
 import { rememberPlaybackRoster } from "@/lib/playback/source-url-cache";
 import { resolvePlayableTitle } from "@/lib/catalog/title-alias.server";
+import { PlaybackTracker } from "@/lib/playback/playback-observability";
 
-/**
- * Rate limiting (KD-sec fix #4). Two separate limiters so normal browsing
- * (hover-prefetch, the fast cache-only check that fires on every card/detail
- * view) never gets throttled while the genuinely expensive paths do:
- *
- * - Full resolves have a per-title budget for broken client loops and a
- *   wider per-user budget for rapid catalogue abuse. A thin roster normally
- *   uses one initial resolve plus five progressive polls and one recovery.
- *   Keeping those keys separate prevents one slow title from starving every
- *   other title the same user opens during the five-minute window. Recovery
- *   bypasses this normal title bucket because its own stricter limiter below
- *   reserves the emergency path after progressive polling is exhausted.
- * - `noCacheResolveLimiter` bounds `nocache=1` requests specifically (admin
- *   -only — see below), which skip even the raw-scrape cache and force a
- *   brand new scrape + debrid resolve every single call.
- * - `recoveryRefreshLimiter` gives an authenticated user at most three
- *   cache-bypassing recovery attempts per title in ten minutes after the
- *   player exhausts a roster. The global full-resolve limiter still applies.
- */
 const FULL_RESOLVE_PER_TITLE_LIMIT = 12;
 const FULL_RESOLVE_PER_USER_LIMIT = 90;
 const FULL_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
@@ -87,12 +69,18 @@ function tooManyRequests(retryAfterMs: number, message: string): NextResponse {
  * GET /api/playback/tv/1399?season=1&episode=1
  *
  * Resolves playback for a title through the currently-configured PlaybackProvider
- * (see src/lib/playback/index.ts) and returns a PlaybackResponse.
+ * and returns a PlaybackResponse with structured PlaybackTracker observability.
  */
 export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ type: string; id: string }> }
 ) {
+  const url = new URL(req.url);
+  const clientPlaybackId =
+    req.headers.get("x-playback-id") ||
+    url.searchParams.get("playbackId") ||
+    undefined;
+
   const user = await getAuthenticatedUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -113,12 +101,9 @@ export async function GET(
   const mediaType = playable.mediaType;
   const tmdbId = playable.tmdbId;
 
-  const url = new URL(req.url);
   const seasonParam = url.searchParams.get("season");
   const episodeParam = url.searchParams.get("episode");
 
-  // TV requires S/E for scrapers. Default S1E1 when omitted (card Play, deep links).
-  // Season/episode 0 is TMDB specials — do not coerce 0 → 1.
   let season = seasonParam != null && seasonParam !== "" ? Number(seasonParam) : undefined;
   let episode = episodeParam != null && episodeParam !== "" ? Number(episodeParam) : undefined;
   if (mediaType === "tv") {
@@ -127,13 +112,19 @@ export async function GET(
     season = tvQueryIndex(Number.isFinite(season as number) ? season : undefined);
     episode = tvQueryIndex(Number.isFinite(episode as number) ? episode : undefined);
   }
+
+  const tracker = new PlaybackTracker({
+    playbackId: clientPlaybackId,
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+  });
+
   const wantFast =
     url.searchParams.get("fast") === "1" || url.searchParams.get("prefetch") === "1";
-  // Admin flag can disable Luna fast-path; full resolve only.
   const fastPathOk = await isPlaybackFastPathEnabled();
   const fast = wantFast && fastPathOk;
-  // nocache=1 remains the admin diagnostic control. refresh=1 is the bounded
-  // authenticated recovery path used after a real player roster is exhausted.
   const noCacheRequested = url.searchParams.get("nocache") === "1";
   const recoveryRefreshRequested = url.searchParams.get("refresh") === "1";
   const refreshMode = playbackRefreshMode({
@@ -178,8 +169,9 @@ export async function GET(
       );
     }
   }
-  // The profile is authoritative on every device. Client hints are deliberately
-  // ignored so a stale browser cache cannot override a newly selected default.
+
+  tracker.mark("auth_and_budget_verified", { fast, noCache });
+
   const [profilePreferences, contentClass, remuxAvailable] = await Promise.all([
     getUserPlaybackPreferences(userId),
     resolvePlaybackContentClass(mediaType, tmdbId),
@@ -199,13 +191,15 @@ export async function GET(
     episode,
   };
 
+  tracker.mark("preferences_loaded");
+
   const {
     getCachedPlayback,
     setCachedPlayback,
     playbackCacheKey,
     playbackResponseTtlMs,
   } = await import("@/lib/server-cache");
-  // Per-user key: proxy URLs embed HLS session ids. Cross-user warm is raw scrape.
+
   const cacheKey = playbackCacheKey(
     mediaType,
     tmdbId,
@@ -227,6 +221,14 @@ export async function GET(
         decideOptions
       );
       rememberPlaybackRoster(sourceCacheIdentity, healthAware.sources);
+      tracker.mark("cache_hit");
+      tracker.setSelectedSource({
+        id: healthAware.streamUrl || "cached",
+        quality: healthAware.quality || "auto",
+        provider: "cache",
+      });
+      tracker.logSummary("info");
+
       return NextResponse.json({
         ...healthAware,
         preferences: profilePreferences,
@@ -235,32 +237,16 @@ export async function GET(
         headers: {
           "Cache-Control": "private, no-store",
           "X-Playback-Cache": "HIT",
+          "X-Playback-Id": tracker.playbackId,
+          "X-Playback-Timing": tracker.getTimingHeaderValue(),
         },
       });
     }
   }
 
+  tracker.mark("cache_miss_dispatched");
   const provider = await getProvider();
 
-  // PREMIUM debrid tier (owner's Real-Debrid + Torrentio, primary/fast/
-  // high-volume source) — kicked off in PARALLEL with the base embed resolve
-  // on both paths:
-  //   - fast/prefetch: `resolveFastDebridSourcesSafely` is CACHE-ONLY — it
-  //     checks the single best browser-safe (native H.264/MP4) cached source
-  //     with a bounded DB read and NEVER performs a live Torrentio/RD network
-  //     resolve on this path (that would spend seconds on every cold-cache
-  //     request for ~no benefit, since the client already fires a parallel
-  //     `full` request that resolves the entire roster live). A cache hit
-  //     returns near-instantly; a cache miss returns [] immediately and the
-  //     embed sources serve alone — RD can never delay this response. The
-  //     full live roster resolve (Safari-4K, additional native 1080p
-  //     releases, and the cold-cache pick itself if there was one) always
-  //     still happens, entirely in the background, so a follow-up full
-  //     resolve or the next repeat view finds a warm, richer cache.
-  //   - full: `resolveDebridSourcesSafely` resolves (or reads from cache)
-  //     the entire RD roster + the TorBox sibling tier, live if needed.
-  // No-ops to [] when neither REAL_DEBRID_API_TOKEN nor TORBOX_API_KEY is
-  // set, or anything in the tier fails.
   const debridPromise = fast
     ? resolveFastDebridSourcesSafely({
         tmdbId,
@@ -298,8 +284,7 @@ export async function GET(
     );
     if (debridOnly) {
       result = debridOnly;
-      // Provider discovery was already started in parallel. Let it populate
-      // its own scraper cache for the full request without gating first frame.
+      tracker.mark("fast_debrid_hit", { count: debridSources.length });
       void providerPromise.catch(() => undefined);
       console.info(
         JSON.stringify({
@@ -311,6 +296,7 @@ export async function GET(
       );
     } else {
       result = await providerPromise;
+      tracker.mark("provider_resolved", { count: result.sources?.length ?? 0 });
       mergeDebridSources(result, debridSources, decideOptions);
     }
   } else {
@@ -318,6 +304,10 @@ export async function GET(
       providerPromise,
       debridPromise,
     ]);
+    tracker.mark("full_resolvers_settled", {
+      providerCount: providerResult.sources?.length ?? 0,
+      debridCount: resolvedDebridSources.length,
+    });
     const debridSources =
       refreshMode === "recovery" && refreshNonce != null
         ? proxyRecoveryDebridSources(
@@ -330,8 +320,6 @@ export async function GET(
     mergeDebridSources(result, debridSources, decideOptions);
   }
 
-  // Cache available resolves. Empty partial stays short; playable partial
-  // must not expire every 1.5s and re-trigger scrape + debrid.
   if (result && result.status !== "error") {
     setCachedPlayback(cacheKey, result, playbackResponseTtlMs(result));
   }
@@ -343,6 +331,14 @@ export async function GET(
     decideOptions
   );
   rememberPlaybackRoster(sourceCacheIdentity, healthAwareResult.sources);
+
+  tracker.setSelectedSource({
+    id: healthAwareResult.streamUrl || "none",
+    quality: healthAwareResult.quality || "auto",
+    provider: healthAwareResult.providerId || "scraped",
+  });
+  tracker.logSummary("info");
+
   return NextResponse.json({
     ...healthAwareResult,
     preferences: profilePreferences,
@@ -352,6 +348,8 @@ export async function GET(
     headers: {
       "Cache-Control": "private, no-store",
       "X-Playback-Cache": "MISS",
+      "X-Playback-Id": tracker.playbackId,
+      "X-Playback-Timing": tracker.getTimingHeaderValue(),
     },
   });
 }
@@ -377,11 +375,6 @@ function withRuntimeProviderHealth(
   };
 }
 
-/**
- * Dynamically imported so the Prisma-backed debrid module only loads on the
- * full resolve path. Wrapped in try/catch so an import or resolve failure
- * never breaks the base (embed) response.
- */
 async function resolveDebridSourcesSafely(req: {
   tmdbId: number;
   mediaType: MediaType;
@@ -397,15 +390,6 @@ async function resolveDebridSourcesSafely(req: {
   }
 }
 
-/**
- * Fast/prefetch-path counterpart — cache-only check for the single best
- * native RD source, hard-bounded to its own short defensive deadline
- * internally (see `resolveFastDebridSources` in
- * src/lib/playback/debrid/index.ts — it never performs a live network
- * resolve on this path). Wrapped in try/catch (mirroring
- * `resolveDebridSourcesSafely`) so an import or resolve failure never breaks
- * the base (embed) fast response.
- */
 async function resolveFastDebridSourcesSafely(req: {
   tmdbId: number;
   mediaType: MediaType;
@@ -420,13 +404,6 @@ async function resolveFastDebridSourcesSafely(req: {
   }
 }
 
-/**
- * Merge debrid sources into an already-resolved response — the existing
- * scoreSource/pickDefaultSource ranking (source-quality.ts) re-ranks the
- * combined roster and may promote a debrid source to default. If the base
- * roster came back empty (error/not_configured) but debrid found something,
- * promote the response to "available" so the premium tier can stand alone.
- */
 function mergeDebridSources(
   result: PlaybackResponse,
   debridSources: PlaybackSource[],

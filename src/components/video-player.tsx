@@ -3805,7 +3805,7 @@ export function VideoPlayer({
       // Read via ref — a new onProgress identity (parent re-render, e.g. every
       // progressive-enrich poll) must never force this whole effect to re-run
       // and re-attach all media listeners (task 8).
-      const progressIntervalMs = firstProgressSavedRef.current ? 5000 : 2000;
+      const progressIntervalMs = firstProgressSavedRef.current ? 15000 : 3000;
       /**
        * Which duration to record progress against.
        *

@@ -124,7 +124,7 @@ export const PW_WAIT_MS = 22_000;
  * Absolute cap for background enrich (APIs + PW). Phase 3 intercept: 38s → 28s.
  * Must stay ≥ PW_WAIT_MS + small API headroom.
  */
-export const ENRICH_HARD_TIMEOUT_MS = 28_000;
+export const ENRICH_HARD_TIMEOUT_MS = 30_000;
 
 /** Minimum residual PW budget before starting a secondary wave. */
 export const SECONDARY_MIN_REMAINING_MS = 6_000;

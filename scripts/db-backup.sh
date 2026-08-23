@@ -6,7 +6,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB_PATH="${DB_PATH:-${ROOT}/db/cinehome.db}"
+DEFAULT_DB="${ROOT}/db/custom.db"
+if [[ ! -f "${DEFAULT_DB}" ]] && [[ -f "${ROOT}/db/cinehome.db" ]]; then
+  DEFAULT_DB="${ROOT}/db/cinehome.db"
+fi
+DB_PATH="${DB_PATH:-${DEFAULT_DB}}"
 BACKUP_ROOT="${BACKUP_ROOT:-${ROOT}/db-backups}"
 KEEP_LAST="${KEEP_LAST:-7}"
 
@@ -23,17 +27,18 @@ fi
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 dest="${BACKUP_ROOT}/db-${stamp}"
 mkdir -p "${dest}"
+db_name="$(basename "${DB_PATH}")"
 
 if command -v sqlite3 >/dev/null 2>&1; then
-  sqlite3 "${DB_PATH}" ".backup '${dest}/cinehome.db'"
+  sqlite3 "${DB_PATH}" ".backup '${dest}/${db_name}'"
 else
   echo "sqlite3 not on PATH — copying db files (WAL-safe .backup unavailable)"
-  cp -a "${DB_PATH}" "${dest}/cinehome.db"
+  cp -a "${DB_PATH}" "${dest}/${db_name}"
   if [[ -f "${DB_PATH}-wal" ]]; then
-    cp -a "${DB_PATH}-wal" "${dest}/cinehome.db-wal"
+    cp -a "${DB_PATH}-wal" "${dest}/${db_name}-wal"
   fi
   if [[ -f "${DB_PATH}-shm" ]]; then
-    cp -a "${DB_PATH}-shm" "${dest}/cinehome.db-shm"
+    cp -a "${DB_PATH}-shm" "${dest}/${db_name}-shm"
   fi
 fi
 
@@ -48,4 +53,4 @@ while IFS= read -r old; do
   fi
 done < <(ls -1dt "${BACKUP_ROOT}"/db-* 2>/dev/null || true)
 
-echo "sqlite backup: ${dest}/cinehome.db"
+echo "sqlite backup: ${dest}/${db_name}"

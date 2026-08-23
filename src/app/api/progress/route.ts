@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { getAuthenticatedUserId } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { db, withSqliteRetry } from "@/lib/db";
 
 /**
  * Per-user watch progress (continue watching).
@@ -9,9 +9,6 @@ import { db } from "@/lib/db";
  * GET    /api/progress                — list (progress < 0.95, newest first, limit 20)
  * POST   /api/progress                — upsert { tmdbId, mediaType, title, poster, backdrop, progress, position, duration, season?, episode?, providerId? }
  * DELETE /api/progress?tmdbId=...&mediaType=...&season=...&episode=... — remove (TV: specific episode when season+episode given)
- *
- * Deploy: run `npx prisma db push` after schema change. Migrate existing movie rows:
- *   UPDATE WatchProgress SET season = 0, episode = 0 WHERE mediaType = 'movie';
  */
 
 const MEDIA_TYPES = new Set(["movie", "tv"]);
@@ -35,14 +32,12 @@ export async function GET() {
   const userId = await getAuthenticatedUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // Fetch extra rows so TV multi-episode progress still yields ~20 unique titles after collapse.
   const items = await db.watchProgress.findMany({
     where: { userId, progress: { lt: 0.95 } },
     orderBy: { updatedAt: "desc" },
     take: 80,
   });
 
-  // One card per show: keep the most recently updated episode (already newest-first).
   const seen = new Set<string>();
   const collapsed: typeof items = [];
   for (const row of items) {
@@ -106,39 +101,41 @@ export async function POST(req: NextRequest) {
   const tmdbId = Number(body.tmdbId);
 
   try {
-    const item = await db.watchProgress.upsert({
-      where: {
-        userId_tmdbId_mediaType_season_episode: {
+    const item = await withSqliteRetry(async () => {
+      return await db.watchProgress.upsert({
+        where: {
+          userId_tmdbId_mediaType_season_episode: {
+            userId,
+            tmdbId,
+            mediaType: body.mediaType,
+            season: resolved.season,
+            episode: resolved.episode,
+          },
+        },
+        update: {
+          title: body.title,
+          poster: body.poster ?? null,
+          backdrop: body.backdrop ?? null,
+          progress,
+          position: body.position ?? 0,
+          duration: body.duration,
+          providerId: body.providerId ?? null,
+        },
+        create: {
           userId,
           tmdbId,
           mediaType: body.mediaType,
+          title: body.title,
+          poster: body.poster ?? null,
+          backdrop: body.backdrop ?? null,
+          progress,
+          position: body.position ?? 0,
+          duration: body.duration,
           season: resolved.season,
           episode: resolved.episode,
+          providerId: body.providerId ?? null,
         },
-      },
-      update: {
-        title: body.title,
-        poster: body.poster ?? null,
-        backdrop: body.backdrop ?? null,
-        progress,
-        position: body.position ?? 0,
-        duration: body.duration,
-        providerId: body.providerId ?? null,
-      },
-      create: {
-        userId,
-        tmdbId,
-        mediaType: body.mediaType,
-        title: body.title,
-        poster: body.poster ?? null,
-        backdrop: body.backdrop ?? null,
-        progress,
-        position: body.position ?? 0,
-        duration: body.duration,
-        season: resolved.season,
-        episode: resolved.episode,
-        providerId: body.providerId ?? null,
-      },
+      });
     });
 
     return NextResponse.json(item);
@@ -170,21 +167,23 @@ export async function DELETE(req: NextRequest) {
 
   const baseWhere = { userId, tmdbId: Number(tmdbId), mediaType };
 
-  if (mediaType === "movie") {
-    await db.watchProgress.deleteMany({
-      where: { ...baseWhere, season: 0, episode: 0 },
-    });
-  } else if (seasonParam != null && episodeParam != null) {
-    await db.watchProgress.deleteMany({
-      where: {
-        ...baseWhere,
-        season: Number(seasonParam),
-        episode: Number(episodeParam),
-      },
-    });
-  } else {
-    await db.watchProgress.deleteMany({ where: baseWhere });
-  }
+  await withSqliteRetry(async () => {
+    if (mediaType === "movie") {
+      await db.watchProgress.deleteMany({
+        where: { ...baseWhere, season: 0, episode: 0 },
+      });
+    } else if (seasonParam != null && episodeParam != null) {
+      await db.watchProgress.deleteMany({
+        where: {
+          ...baseWhere,
+          season: Number(seasonParam),
+          episode: Number(episodeParam),
+        },
+      });
+    } else {
+      await db.watchProgress.deleteMany({ where: baseWhere });
+    }
+  });
 
   return NextResponse.json({ ok: true });
 }
