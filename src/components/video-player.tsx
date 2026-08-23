@@ -130,6 +130,10 @@ import { PlayerControls } from "@/components/player-controls";
 import { LoadingScreen } from "@/components/player/LoadingScreen";
 import { premiumSourceCount } from "@/lib/playback/bloom-visuals";
 import { useHoverPreview } from "@/hooks/use-hover-preview";
+import { GestureOverlay } from "@/components/player/GestureOverlay";
+import { usePlayerGestures } from "@/hooks/use-player-gestures";
+import { EpisodeDrawer } from "@/components/player/EpisodeDrawer";
+import { AudioSubtitlesModal } from "@/components/player/AudioSubtitlesModal";
 import { PlayerErrorCard, type PlayerErrorAction } from "@/components/player/PlayerErrorCard";
 import { SkipIntroButton } from "@/components/player/SkipIntroButton";
 import type { DockSection } from "@/components/player-dock";
@@ -1006,6 +1010,10 @@ export function VideoPlayer({
   const [isSwitchingServer, setIsSwitchingServer] = useState(false);
   const [remuxPacking, setRemuxPacking] = useState(false);
   const [hoverTime, setHoverTime] = useState<number | null>(null);
+  const [episodesOpen, setEpisodesOpen] = useState(false);
+  const [audioSubtitlesOpen, setAudioSubtitlesOpen] = useState(false);
+  const [subtitleOffset, setSubtitleOffset] = useState(0);
+  const [subtitleFontSize, setSubtitleFontSize] = useState<"small" | "medium" | "large" | "extra-large">("medium");
   /** One-shot status after hard-error auto-failover (not silent stalls). */
   const [failoverNotice, setFailoverNotice] = useState<string | null>(null);
   const failoverNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1121,6 +1129,34 @@ export function VideoPlayer({
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const {
+    ripple,
+    brightness: gestureBrightness,
+    volumeLevel: gestureVolume,
+    videoBrightness,
+    onTouchStart: onGestureTouchStart,
+    onTouchMove: onGestureTouchMove,
+    onTouchEnd: onGestureTouchEnd,
+    handleDoubleTap,
+  } = usePlayerGestures({
+    containerRef,
+    videoRef,
+    onSeekRelative: handleSeekRelative,
+    onTogglePlay: togglePlay,
+    onToggleFullscreen: toggleFullscreen,
+    onToggleMute: toggleMute,
+    onToggleSubtitles: () => {
+      if (activeSubtitleTrack != null) {
+        handleSubtitleChange(null);
+      } else if (subtitleTracks.length > 0) {
+        handleSubtitleChange(typeof subtitleTracks[0].id === "number" ? subtitleTracks[0].id : 0);
+      }
+    },
+    onToggleEpisodes: () => setEpisodesOpen((v) => !v),
+    onToggleAudioSubtitles: () => setAudioSubtitlesOpen((v) => !v),
+    isTvShow: mediaType === "tv",
+  });
+
   const { previewSrc, scoutRef } = useHoverPreview({
     videoRef,
     hoverTime,
@@ -5130,9 +5166,26 @@ export function VideoPlayer({
           closeDock();
         }
       }}
-      onTouchStart={onTouchStart}
-      onTouchEnd={onTouchEnd}
+      onTouchStart={(e) => {
+        onTouchStart(e);
+        onGestureTouchStart(e);
+      }}
+      onTouchMove={onGestureTouchMove}
+      onTouchEnd={(e) => {
+        onTouchEnd(e);
+        onGestureTouchEnd();
+      }}
       tabIndex={0}
+      style={{
+        ["--subtitle-font-size" as string]:
+          subtitleFontSize === "small"
+            ? "1rem"
+            : subtitleFontSize === "large"
+              ? "1.5rem"
+              : subtitleFontSize === "extra-large"
+                ? "1.85rem"
+                : "1.25rem",
+      }}
     >
       <video
         ref={scoutRef}
@@ -5163,6 +5216,7 @@ export function VideoPlayer({
           height: "100%",
           objectFit: "contain",
           display: "block",
+          filter: `brightness(${videoBrightness})`,
         }}
         onClick={() => {
           if (performance.now() < suppressVideoClickUntilRef.current) return;
@@ -5493,6 +5547,52 @@ export function VideoPlayer({
         onSleepMinutesChange={setSleepMinutes}
         expectedDurationS={fallbackDurationS}
         tmdbId={tmdbId}
+        onOpenEpisodeDrawer={() => setEpisodesOpen(true)}
+        onOpenAudioSubtitles={() => setAudioSubtitlesOpen(true)}
+      />
+
+      <GestureOverlay
+        ripple={ripple}
+        brightness={gestureBrightness}
+        volume={gestureVolume}
+        isMuted={isMuted}
+      />
+
+      <EpisodeDrawer
+        open={episodesOpen}
+        onClose={() => setEpisodesOpen(false)}
+        tvId={tvId}
+        tvSeasons={tvSeasons}
+        currentSeason={tvSeason}
+        currentEpisode={tvEpisode}
+        onSelectEpisode={onSelectEpisode}
+        showTitle={title}
+      />
+
+      <AudioSubtitlesModal
+        open={audioSubtitlesOpen}
+        onClose={() => setAudioSubtitlesOpen(false)}
+        audioTracks={audioTracks}
+        activeAudioTrackId={activeAudioTrack}
+        onSelectAudioTrack={handleAudioChange}
+        subtitleTracks={subtitleTracks.map((s) => ({
+          id: String(s.id),
+          label: s.label,
+          language: s.language,
+        }))}
+        activeSubtitleId={activeSubtitleTrack != null ? String(activeSubtitleTrack) : null}
+        onSelectSubtitle={(id) => {
+          if (id === null) {
+            handleSubtitleChange(null);
+          } else {
+            const found = subtitleTracks.find((s) => String(s.id) === id);
+            if (found) handleSubtitleChange(typeof found.id === "number" ? found.id : 0);
+          }
+        }}
+        subtitleOffset={subtitleOffset}
+        onSubtitleOffsetChange={setSubtitleOffset}
+        subtitleFontSize={subtitleFontSize}
+        onSubtitleFontSizeChange={setSubtitleFontSize}
       />
     </div>
   );

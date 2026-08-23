@@ -101,6 +101,8 @@ interface Props {
   previewSrc?: string | null;
   onHoverTime?: (time: number | null) => void;
   onTitleClick?: () => void;
+  onOpenEpisodeDrawer?: () => void;
+  onOpenAudioSubtitles?: () => void;
 }
 
 export function PlayerControls({
@@ -373,7 +375,11 @@ export function PlayerControls({
               <IconBtn
                 onClick={() => {
                   onCloseDock();
-                  setShowEpisodes((v) => !v);
+                  if (onOpenEpisodeDrawer) {
+                    onOpenEpisodeDrawer();
+                  } else {
+                    setShowEpisodes((v) => !v);
+                  }
                 }}
                 label="Episodes"
                 active={showEpisodes}
@@ -400,9 +406,13 @@ export function PlayerControls({
               <IconBtn
                 onClick={() => {
                   setShowEpisodes(false);
-                  onToggleSettings?.("subtitles");
+                  if (onOpenAudioSubtitles) {
+                    onOpenAudioSubtitles();
+                  } else {
+                    onToggleSettings?.("subtitles");
+                  }
                 }}
-                label="Subtitles"
+                label="Audio & Subtitles"
                 active={settingsOpen && dockSection === "subtitles"}
               >
                 <Captions className="h-5 w-5" />
