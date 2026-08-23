@@ -5118,6 +5118,34 @@ export function VideoPlayer({
       : []),
   ];
 
+  const {
+    ripple,
+    brightness: gestureBrightness,
+    volumeLevel: gestureVolume,
+    videoBrightness,
+    onTouchStart: onGestureTouchStart,
+    onTouchMove: onGestureTouchMove,
+    onTouchEnd: onGestureTouchEnd,
+    handleDoubleTap,
+  } = usePlayerGestures({
+    containerRef,
+    videoRef,
+    onSeekRelative: seekRelative,
+    onTogglePlay: togglePlay,
+    onToggleFullscreen: toggleFullscreen,
+    onToggleMute: toggleMute,
+    onToggleSubtitles: () => {
+      if (activeSubtitleTrack != null) {
+        handleSubtitleChange(null);
+      } else if (subtitleTracks.length > 0) {
+        handleSubtitleChange(typeof subtitleTracks[0].id === "number" ? subtitleTracks[0].id : 0);
+      }
+    },
+    onToggleEpisodes: () => setEpisodesOpen((v) => !v),
+    onToggleAudioSubtitles: () => setAudioSubtitlesOpen((v) => !v),
+    isTvShow: mediaType === "tv",
+  });
+
   return (
     <div
       ref={containerRef}
