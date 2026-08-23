@@ -149,6 +149,8 @@ export function PlayerControls({
   previewSrc,
   onHoverTime,
   onTitleClick,
+  onOpenEpisodeDrawer,
+  onOpenAudioSubtitles,
 }: Props) {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const currentTime = usePlayerStore((s) => s.currentTime);

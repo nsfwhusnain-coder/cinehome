@@ -224,7 +224,7 @@ export async function GET(
       tracker.mark("cache_hit");
       tracker.setSelectedSource({
         id: healthAware.streamUrl || "cached",
-        quality: healthAware.quality || "auto",
+        quality: healthAware.sources?.[0]?.quality || "auto",
         provider: "cache",
       });
       tracker.logSummary("info");
@@ -334,7 +334,7 @@ export async function GET(
 
   tracker.setSelectedSource({
     id: healthAwareResult.streamUrl || "none",
-    quality: healthAwareResult.quality || "auto",
+    quality: healthAwareResult.sources?.[0]?.quality || "auto",
     provider: healthAwareResult.providerId || "scraped",
   });
   tracker.logSummary("info");

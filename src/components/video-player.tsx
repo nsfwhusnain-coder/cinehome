@@ -1172,6 +1172,13 @@ export function VideoPlayer({
   const playingHeight = usePlayerStore((s) => s.playingHeight);
   const subtitlesOn = usePlayerStore((s) => s.subtitlesOn);
   const activeSubtitleId = usePlayerStore((s) => s.activeSubtitleId);
+  const isMuted = usePlayerStore((s) => s.isMuted);
+  const volume = usePlayerStore((s) => s.volume);
+  const isFullscreen = usePlayerStore((s) => s.isFullscreen);
+  const subtitleTracks = usePlayerStore((s) => s.subtitleTracks);
+  const audioTracks = usePlayerStore((s) => s.audioTracks);
+  const activeAudioTrack = usePlayerStore((s) => s.activeAudioId);
+  const activeSubtitleTrack = usePlayerStore((s) => s.activeSubtitleId);
 
   /**
    * The loading overlay is intentionally not told which server it is waiting
@@ -5573,13 +5580,17 @@ export function VideoPlayer({
       <AudioSubtitlesModal
         open={audioSubtitlesOpen}
         onClose={() => setAudioSubtitlesOpen(false)}
-        audioTracks={audioTracks}
+        audioTracks={audioTracks.map((a) => ({
+          id: a.id,
+          label: a.name || a.lang || `Audio ${a.id + 1}`,
+          language: a.lang,
+        }))}
         activeAudioTrackId={activeAudioTrack}
         onSelectAudioTrack={handleAudioChange}
         subtitleTracks={subtitleTracks.map((s) => ({
           id: String(s.id),
-          label: s.label,
-          language: s.language,
+          label: s.name || s.lang || `Subtitle ${s.id + 1}`,
+          language: s.lang,
         }))}
         activeSubtitleId={activeSubtitleTrack != null ? String(activeSubtitleTrack) : null}
         onSelectSubtitle={(id) => {

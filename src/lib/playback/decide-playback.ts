@@ -1,3 +1,4 @@
+export type { PlaybackDecision };
 import type { PlaybackDecision, PlaybackSource } from "./types";
 import {
   isEnglishPreferredSource,
@@ -18,7 +19,7 @@ export interface DecidePlaybackOptions {
   preferredHeight?: "auto" | number | null;
   fourKStartup?: "fast" | "maximum" | null;
   contentClass?: string | null;
-  failedIds?: readonly string[];
+  failedIds?: readonly string[] | ReadonlySet<string>;
   remuxAvailable?: boolean;
 }
 
@@ -28,8 +29,10 @@ export function shouldLockFourKStartup(
   return preferredHeight === 2160 || preferredHeight === "auto";
 }
 
-function failedSet(ids: readonly string[] | undefined): ReadonlySet<string> {
-  return new Set(ids ?? []);
+function failedSet(ids: readonly string[] | ReadonlySet<string> | undefined): ReadonlySet<string> {
+  if (!ids) return new Set();
+  if (ids instanceof Set) return ids;
+  return new Set(ids);
 }
 
 function sourceMaxHeight(source: PlaybackSource): number {
@@ -52,7 +55,7 @@ function isDirectHd(source: PlaybackSource): boolean {
 export function isPackSource(source: PlaybackSource): boolean {
   return (
     source.titleMatch === "pack" ||
-    isMoviePackRelease(source.label || source.title || "")
+    isMoviePackRelease(source.label || (source as { title?: string }).title || "")
   );
 }
 

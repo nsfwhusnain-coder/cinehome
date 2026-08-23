@@ -158,6 +158,12 @@ export interface PlaybackSource {
   compat?: "native" | "safari";
 }
 
+export interface PlaybackDecision {
+  immediate: PlaybackSource | null;
+  deferredFourK: PlaybackSource | null;
+  reason?: string;
+}
+
 export interface PlaybackResponse {
   status: PlaybackStatus;
   streamUrl?: string;

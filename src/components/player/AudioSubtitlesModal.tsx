@@ -18,15 +18,19 @@ export interface AudioSubtitlesModalProps {
   onClose: () => void;
   audioTracks?: Array<{
     id: number;
-    label: string;
+    label?: string;
+    name?: string;
     language?: string;
+    lang?: string;
   }>;
   activeAudioTrackId?: number | null;
   onSelectAudioTrack?: (id: number) => void;
   subtitleTracks?: Array<{
     id: string;
-    label: string;
+    label?: string;
+    name?: string;
     language?: string;
+    lang?: string;
   }>;
   activeSubtitleId?: string | null;
   onSelectSubtitle?: (id: string | null) => void;
@@ -57,8 +61,8 @@ export function AudioSubtitlesModal({
     const q = subSearch.toLowerCase();
     return subtitleTracks.filter(
       (s) =>
-        s.label.toLowerCase().includes(q) ||
-        (s.language && s.language.toLowerCase().includes(q))
+        (s.label || s.name || "").toLowerCase().includes(q) ||
+        ((s.language || s.lang) && (s.language || s.lang || "").toLowerCase().includes(q))
     );
   }, [subtitleTracks, subSearch]);
 
@@ -125,7 +129,7 @@ export function AudioSubtitlesModal({
                           : "border-white/5 bg-zinc-900/60 text-zinc-300 hover:border-white/20 hover:bg-zinc-800/80"
                       )}
                     >
-                      <span className="truncate pr-2">{track.label || `Track ${trackId + 1}`}</span>
+                      <span className="truncate pr-2">{(track.label || track.name || `Track ${track.id + 1}`) || `Track ${trackId + 1}`}</span>
                       {isSelected && <Check className="h-4 w-4 shrink-0 text-white" />}
                     </button>
                   );
@@ -187,7 +191,7 @@ export function AudioSubtitlesModal({
                         : "border-white/5 bg-zinc-900/60 text-zinc-300 hover:border-white/20 hover:bg-zinc-800/80"
                     )}
                   >
-                    <span className="truncate pr-2">{track.label}</span>
+                    <span className="truncate pr-2">{(track.label || track.name || `Track ${track.id + 1}`)}</span>
                     {isSelected && <Check className="h-4 w-4 shrink-0 text-white" />}
                   </button>
                 );
