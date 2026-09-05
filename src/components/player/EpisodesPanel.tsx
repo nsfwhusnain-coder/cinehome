@@ -15,10 +15,23 @@ const GLASS_STYLE: CSSProperties = {
     "inset 0 1px 0 rgba(255,255,255,0.32), inset 0 -0.5px 0 rgba(255,255,255,0.06), 0 16px 48px rgba(0,0,0,0.5)",
 };
 
+/**
+ * One entry in the player's season picker. Exported because `player-controls`
+ * already imports this name for its `tvSeasons` prop, which is passed straight
+ * through to `seasons` below — the type simply had no declaration, so the build
+ * carried an unresolved import (only invisible because `next.config.ts` sets
+ * `typescript.ignoreBuildErrors`).
+ */
+export interface SeasonOption {
+  season_number: number;
+  name?: string;
+  episode_count?: number;
+}
+
 interface Props {
   open: boolean;
   tvId: number;
-  seasons: { season_number: number; name?: string; episode_count?: number }[];
+  seasons: SeasonOption[];
   season: number;
   episode: number;
   onClose: () => void;
