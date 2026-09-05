@@ -24,6 +24,10 @@ node_modules
 .DS_Store
 *.pem
 *.bak
+# timestamped safety backups (e.g. docker-compose.yml.bak-cache-<stamp>).
+# These live in the deploy directory and would otherwise leave it dirty,
+# which scripts/deploy.sh refuses to build from.
+*.bak-*
 
 # debug
 npm-debug.log*
