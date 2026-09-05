@@ -44,6 +44,8 @@ export interface ScraperSourceEntry {
   qualitySource?: "manifest" | "label" | "probe" | "unknown";
   /** Manifest-declared bits/sec at maxHeight — separates same-height releases. */
   bitrateBps?: number;
+  /** Video codec measured from the stream by the mini-service's quality probe. */
+  videoCodec?: "h264" | "hevc" | "av1";
   qualityRungs?: { height: number; url: string; bitrateBps?: number }[];
   audioLanguage?: string;
   probe?: {
@@ -170,7 +172,11 @@ export function toPlaybackSource(entry: ScraperSourceEntry, proxyUrl: string): P
       maxHeightFromQuality(entry.quality, entry.label, entry.url) ?? 0;
   }
   const type = entry.type ?? streamTypeFrom(entry.label, entry.url, entry.provider, entry.quality);
-  const codec = detectCodec(entry.url);
+  // A codec MEASURED from the stream beats one guessed from the URL. Tokenised
+  // CDN URLs carry no codec hint at all, so detectCodec returns "unknown" and
+  // the client's decode gate cannot tell a 4K HEVC rendition (undecodable in
+  // Chrome/Firefox) from a 4K H.264 one.
+  const codec = entry.videoCodec ?? detectCodec(entry.url);
   const baseId = sourceId(entry.provider, entry.label);
   const audioLanguage =
     entry.audioLanguage ||

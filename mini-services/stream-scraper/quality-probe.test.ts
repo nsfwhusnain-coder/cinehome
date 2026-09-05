@@ -14,7 +14,9 @@ import {
   type QualityInfo,
   type QualitySession,
   type QualitySource,
-} from "./quality-probe";
+  parseMp4VideoCodec,
+  parseTsVideoCodec,
+  parseHlsMasterCodec,} from "./quality-probe";
 
 const originalFetch = globalThis.fetch;
 
@@ -614,5 +616,86 @@ describe("bounded complete HLS metadata", () => {
     expect(requestedRange).toStartWith("bytes=0-");
     expect(pulls).toBeLessThan(64);
     expect(cancelled).toBe(true);
+  });
+});
+
+describe("video codec detection", () => {
+  /** Minimal ISO-BMFF: a `stsd`-style sample entry box with the given fourcc. */
+  function mp4WithSampleEntry(fourcc: string): Uint8Array {
+    const size = 90; // header + a plausible visual sample entry
+    const bytes = new Uint8Array(8 + size);
+    // A leading box so the scan never starts at offset 0.
+    new DataView(bytes.buffer).setUint32(0, 8);
+    bytes.set(new TextEncoder().encode("ftyp"), 4);
+    new DataView(bytes.buffer).setUint32(8, size);
+    bytes.set(new TextEncoder().encode(fourcc), 12);
+    return bytes;
+  }
+
+  /** Minimal MPEG-TS: PAT announcing a PMT, then a PMT declaring one video ES. */
+  function tsWithStreamType(streamType: number): Uint8Array {
+    const PMT_PID = 0x1000;
+    const packets = new Uint8Array(188 * 3);
+    packets.fill(0xff);
+
+    const writePacket = (index: number, pid: number, payload: number[]): void => {
+      const o = index * 188;
+      packets[o] = 0x47;
+      packets[o + 1] = 0x40 | ((pid >> 8) & 0x1f); // payload_unit_start_indicator
+      packets[o + 2] = pid & 0xff;
+      packets[o + 3] = 0x10; // payload only
+      packets[o + 4] = 0x00; // pointer_field
+      packets.set(payload, o + 5);
+    };
+
+    // PAT: table_id 0, section_length 13, one program -> PMT_PID
+    writePacket(0, 0, [
+      0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00,
+      0x00, 0x01, 0xe0 | ((PMT_PID >> 8) & 0x1f), PMT_PID & 0xff,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    // PMT: table_id 2, program_info_length 0, one ES of `streamType`
+    writePacket(1, PMT_PID, [
+      0x02, 0xb0, 0x12, 0x00, 0x01, 0xc1, 0x00, 0x00,
+      0xe1, 0x00, 0xf0, 0x00,
+      streamType, 0xe1, 0x00, 0xf0, 0x00,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    writePacket(2, 0x1fff, [0x00]);
+    return packets;
+  }
+
+  it("reads H.264, HEVC and AV1 from an ISO-BMFF sample entry", () => {
+    expect(parseMp4VideoCodec(mp4WithSampleEntry("avc1"))).toBe("h264");
+    expect(parseMp4VideoCodec(mp4WithSampleEntry("hvc1"))).toBe("hevc");
+    expect(parseMp4VideoCodec(mp4WithSampleEntry("hev1"))).toBe("hevc");
+    expect(parseMp4VideoCodec(mp4WithSampleEntry("av01"))).toBe("av1");
+  });
+
+  it("returns undefined rather than guessing when nothing identifies a codec", () => {
+    expect(parseMp4VideoCodec(new Uint8Array(64))).toBeUndefined();
+    expect(parseTsVideoCodec(new Uint8Array(64))).toBeUndefined();
+    // Not a sample entry: no valid box header precedes the fourcc.
+    expect(parseMp4VideoCodec(new TextEncoder().encode("xxxxavc1"))).toBeUndefined();
+  });
+
+  it("walks PAT then PMT to read the MPEG-TS video stream type", () => {
+    expect(parseTsVideoCodec(tsWithStreamType(0x1b))).toBe("h264");
+    expect(parseTsVideoCodec(tsWithStreamType(0x24))).toBe("hevc");
+    // An audio-only stream_type must not be reported as a video codec.
+    expect(parseTsVideoCodec(tsWithStreamType(0x0f))).toBeUndefined();
+  });
+
+  it("prefers an HLS master's declared CODECS over any probing", () => {
+    const master = [
+      "#EXTM3U",
+      '#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=3840x2160,CODECS="hvc1.2.4.L153.B0,mp4a.40.2"',
+      "uhd.m3u8",
+    ].join("\n");
+    expect(parseHlsMasterCodec(master)).toBe("hevc");
+    expect(
+      parseHlsMasterCodec('#EXT-X-STREAM-INF:CODECS="avc1.640028,mp4a.40.2"\na.m3u8')
+    ).toBe("h264");
+    expect(parseHlsMasterCodec("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\na.m3u8")).toBeUndefined();
   });
 });

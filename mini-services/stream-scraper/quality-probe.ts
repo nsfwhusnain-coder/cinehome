@@ -56,7 +56,22 @@ export interface QualityInfo {
    * from "genuinely low", matching how maxHeight treats 0.
    */
   bitrateBps?: number;
+  /**
+   * Video codec measured from the stream itself, not guessed from the URL.
+   *
+   * The app previously only had `detectCodec(url)`, which returns "unknown" for
+   * every tokenised CDN URL — so a 4K HEVC rendition and a 4K H.264 one were
+   * indistinguishable to the client's decode gate, and Chrome/Firefox (which
+   * cannot decode HEVC in any container) would pick an HEVC source, stall, and
+   * fail over. Measured on this box: 2 of 12 auto-picked 4K sources were HEVC
+   * carrying no codec information at all.
+   *
+   * Omitted rather than guessed when nothing could be measured.
+   */
+  videoCodec?: VideoCodec;
 }
+
+export type VideoCodec = "h264" | "hevc" | "av1";
 
 const QUALITY_PROBE_TIMEOUT_MS = 3_000;
 const MP4_PROBE_TIMEOUT_MS = 3_000;
@@ -422,6 +437,155 @@ export function parseMp4Dimensions(bytes: Uint8Array): Mp4Dimensions | null {
   return best;
 }
 
+/** Sample-entry fourccs that identify the video codec inside an ISO-BMFF `stsd`. */
+const MP4_CODEC_FOURCCS: ReadonlyArray<readonly [string, VideoCodec]> = [
+  ["avc1", "h264"],
+  ["avc3", "h264"],
+  ["hvc1", "hevc"],
+  ["hev1", "hevc"],
+  ["av01", "av1"],
+];
+
+function matchesFourcc(bytes: Uint8Array, offset: number, fourcc: string): boolean {
+  for (let i = 0; i < 4; i++) {
+    if (bytes[offset + i] !== fourcc.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+/**
+ * Pure ISO-BMFF parser: the video codec of the first plausible sample entry.
+ *
+ * Scans for the sample-entry fourcc the same way `parseMp4Dimensions` scans for
+ * `tkhd`, and validates each candidate as a real box (a sane declared size)
+ * so a byte sequence that merely spells "avc1" inside media data cannot be
+ * mistaken for a codec declaration.
+ */
+export function parseMp4VideoCodec(bytes: Uint8Array): VideoCodec | undefined {
+  for (let offset = 4; offset + 4 <= bytes.byteLength; offset++) {
+    for (const [fourcc, codec] of MP4_CODEC_FOURCCS) {
+      if (!matchesFourcc(bytes, offset, fourcc)) continue;
+      const span = isoBoxSpan(bytes, offset - 4);
+      // A sample entry is at least its header plus the 78-byte visual entry.
+      if (span && span.size >= 16 && span.size <= bytes.byteLength * 4) {
+        return codec;
+      }
+    }
+  }
+  return undefined;
+}
+
+const TS_PACKET_BYTES = 188;
+const TS_SYNC_BYTE = 0x47;
+/** ISO 13818-1 stream_type values for the codecs a browser might be asked to decode. */
+const TS_STREAM_TYPES: Readonly<Record<number, VideoCodec>> = {
+  0x1b: "h264",
+  0x24: "hevc",
+  0x33: "av1",
+};
+
+/**
+ * Pure MPEG-TS parser: walks PAT -> PMT and reads the video elementary
+ * stream_type. Several CDNs still ship TS segments with no init segment and no
+ * CODECS attribute anywhere, which is exactly the case that used to leave a 4K
+ * HEVC rendition tagged as codec-unknown.
+ */
+export function parseTsVideoCodec(bytes: Uint8Array): VideoCodec | undefined {
+  const start = findTsSyncOffset(bytes);
+  if (start < 0) return undefined;
+  const pmtPids = new Set<number>();
+  for (let off = start; off + TS_PACKET_BYTES <= bytes.byteLength; off += TS_PACKET_BYTES) {
+    if (bytes[off] !== TS_SYNC_BYTE) break;
+    const pid = ((bytes[off + 1]! & 0x1f) << 8) | bytes[off + 2]!;
+    const payloadStart = tsPayloadOffset(bytes, off);
+    if (payloadStart < 0) continue;
+    if (pid === 0) {
+      collectPmtPids(bytes, payloadStart, off + TS_PACKET_BYTES, pmtPids);
+    } else if (pmtPids.has(pid)) {
+      const codec = videoCodecFromPmt(bytes, payloadStart, off + TS_PACKET_BYTES);
+      if (codec) return codec;
+    }
+  }
+  return undefined;
+}
+
+function findTsSyncOffset(bytes: Uint8Array): number {
+  for (let i = 0; i < Math.min(bytes.byteLength, TS_PACKET_BYTES * 2); i++) {
+    if (
+      bytes[i] === TS_SYNC_BYTE &&
+      i + TS_PACKET_BYTES < bytes.byteLength &&
+      bytes[i + TS_PACKET_BYTES] === TS_SYNC_BYTE
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Payload offset for a packet, skipping the adaptation field and pointer_field. */
+function tsPayloadOffset(bytes: Uint8Array, packetStart: number): number {
+  const adaptation = (bytes[packetStart + 3]! & 0x30) >> 4;
+  if (adaptation === 0 || adaptation === 2) return -1;
+  let offset = packetStart + 4;
+  if (adaptation === 3) {
+    const adaptationLength = bytes[offset]!;
+    offset += 1 + adaptationLength;
+  }
+  const payloadUnitStart = (bytes[packetStart + 1]! & 0x40) !== 0;
+  if (payloadUnitStart) offset += 1 + (bytes[offset] ?? 0);
+  return offset < packetStart + TS_PACKET_BYTES ? offset : -1;
+}
+
+function collectPmtPids(
+  bytes: Uint8Array,
+  tableStart: number,
+  packetEnd: number,
+  into: Set<number>
+): void {
+  if (bytes[tableStart] !== 0x00) return;
+  const sectionLength = ((bytes[tableStart + 1]! & 0x0f) << 8) | bytes[tableStart + 2]!;
+  const end = Math.min(tableStart + 3 + sectionLength - 4, packetEnd);
+  for (let i = tableStart + 8; i + 4 <= end; i += 4) {
+    const programNumber = (bytes[i]! << 8) | bytes[i + 1]!;
+    if (programNumber === 0) continue;
+    into.add(((bytes[i + 2]! & 0x1f) << 8) | bytes[i + 3]!);
+  }
+}
+
+function videoCodecFromPmt(
+  bytes: Uint8Array,
+  tableStart: number,
+  packetEnd: number
+): VideoCodec | undefined {
+  if (bytes[tableStart] !== 0x02) return undefined;
+  const sectionLength = ((bytes[tableStart + 1]! & 0x0f) << 8) | bytes[tableStart + 2]!;
+  const end = Math.min(tableStart + 3 + sectionLength - 4, packetEnd);
+  const programInfoLength = ((bytes[tableStart + 10]! & 0x0f) << 8) | bytes[tableStart + 11]!;
+  let i = tableStart + 12 + programInfoLength;
+  while (i + 5 <= end) {
+    const streamType = bytes[i]!;
+    const esInfoLength = ((bytes[i + 3]! & 0x0f) << 8) | bytes[i + 4]!;
+    const codec = TS_STREAM_TYPES[streamType];
+    if (codec) return codec;
+    i += 5 + esInfoLength;
+  }
+  return undefined;
+}
+
+/** Pure — the video codec declared by an HLS master's CODECS attribute, if any. */
+export function parseHlsMasterCodec(manifestText: string): VideoCodec | undefined {
+  for (const raw of manifestText.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("#EXT-X-STREAM-INF")) continue;
+    const codecs = line.match(/CODECS="([^"]+)"/i)?.[1]?.toLowerCase();
+    if (!codecs) continue;
+    if (/\b(hvc1|hev1)/.test(codecs)) return "hevc";
+    if (/\bav01/.test(codecs)) return "av1";
+    if (/\b(avc1|avc3)/.test(codecs)) return "h264";
+  }
+  return undefined;
+}
+
 function qualityHeightFromDimensions(width: number, height: number): number {
   if (width >= MP4_4K_MIN_WIDTH && height >= MP4_4K_MIN_HEIGHT) return FOUR_K_HEIGHT;
   if (width >= MP4_1440_MIN_WIDTH && height >= MP4_1440_MIN_HEIGHT) return 1440;
@@ -556,6 +720,80 @@ async function probeMp4Dimensions(
   }
 }
 
+/** Bytes a segment probe may read to identify a codec — a few TS packets or an init box. */
+const CODEC_PROBE_BYTE_CAP = 64 * 1024;
+
+/** Bounded prefix fetch. Unlike fetchManifestText this keeps raw bytes and tolerates a partial body. */
+async function fetchBoundedPrefix(
+  url: string,
+  headers: Record<string, string>,
+  byteCap: number
+): Promise<Uint8Array | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), QUALITY_PROBE_TIMEOUT_MS);
+  try {
+    const requestHeaders = new Headers(headers);
+    requestHeaders.set("Range", `bytes=0-${byteCap - 1}`);
+    const res = await fetch(url, {
+      headers: requestHeaders,
+      signal: controller.signal,
+      redirect: "follow",
+    });
+    if (res.status !== 200 && res.status !== 206) {
+      void res.body?.cancel().catch(() => {});
+      return null;
+    }
+    const bounded = await readBoundedBytes(res, byteCap, controller.signal);
+    return bounded.bytes.byteLength > 0 ? bounded.bytes : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function resolveRelativeUrl(candidate: string, base: string): string | null {
+  try {
+    return new URL(candidate, base).toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Codec for a single-rendition HLS media playlist, measured from the stream.
+ *
+ * Prefers the fMP4 init segment (`EXT-X-MAP`, ~1 KB and codec-authoritative);
+ * falls back to a bounded prefix of the first segment, which for the MPEG-TS
+ * CDNs carries the PAT/PMT within the first few packets. One extra bounded
+ * request, and only for playlists that declare no codec any other way.
+ */
+async function probeMediaPlaylistCodec(
+  manifestText: string,
+  playlistUrl: string,
+  headers: Record<string, string>
+): Promise<VideoCodec | undefined> {
+  const mapUri = manifestText.match(/#EXT-X-MAP:URI="([^"]+)"/)?.[1];
+  if (mapUri) {
+    const initUrl = resolveRelativeUrl(mapUri, playlistUrl);
+    if (initUrl) {
+      const bytes = await fetchBoundedPrefix(initUrl, headers, CODEC_PROBE_BYTE_CAP);
+      const codec = bytes ? parseMp4VideoCodec(bytes) : undefined;
+      if (codec) return codec;
+    }
+  }
+  const firstSegment = manifestText
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !line.startsWith("#"));
+  if (!firstSegment) return undefined;
+  const segmentUrl = resolveRelativeUrl(firstSegment, playlistUrl);
+  if (!segmentUrl) return undefined;
+  const bytes = await fetchBoundedPrefix(segmentUrl, headers, CODEC_PROBE_BYTE_CAP);
+  if (!bytes) return undefined;
+  return parseTsVideoCodec(bytes) ?? parseMp4VideoCodec(bytes);
+}
+
 async function fetchManifestText(
   url: string,
   headers: Record<string, string>,
@@ -685,6 +923,8 @@ async function probeQualityOne(
     if (text && isHlsMasterManifest(text)) {
       const ladder = parseHlsMasterLadder(text);
       const bitrateBps = topRenditionBitrate(parseHlsMasterRenditions(text));
+      // Free: the master already declares CODECS, no extra request needed.
+      const masterCodec = parseHlsMasterCodec(text);
       if (ladder.length > 0) {
         info = {
           type: "hls",
@@ -692,6 +932,7 @@ async function probeQualityOne(
           ladder,
           qualitySource: "manifest",
           ...(bitrateBps > 0 ? { bitrateBps } : {}),
+          ...(masterCodec ? { videoCodec: masterCodec } : {}),
         };
       } else if (tokenHeight > 0) {
         info = {
@@ -705,11 +946,16 @@ async function probeQualityOne(
       }
     } else if (text && isHlsMediaManifest(text)) {
       // Confirmed single-rendition media playlist; height from URL token if any.
+      // These declare no CODECS anywhere, so the codec is measured from the
+      // stream — otherwise a 4K HEVC rendition is indistinguishable from a 4K
+      // H.264 one and Chrome/Firefox auto-pick something they cannot decode.
+      const measuredCodec = await probeMediaPlaylistCodec(text, entry.url, headers);
       info = {
         type: "hls",
         maxHeight: tokenHeight > 0 ? tokenHeight : inferHeightFromUrl(entry.url),
         ladder: [],
         qualitySource: tokenHeight > 0 || inferHeightFromUrl(entry.url) > 0 ? "probe" : "unknown",
+        ...(measuredCodec ? { videoCodec: measuredCodec } : {}),
       };
     } else if (tokenHeight > 0) {
       // Fetch failed / empty body — still apply label/URL tokens; never invent.
