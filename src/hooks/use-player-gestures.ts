@@ -6,26 +6,12 @@ export interface UsePlayerGesturesOptions {
   containerRef: RefObject<HTMLDivElement | null>;
   videoRef: RefObject<HTMLVideoElement | null>;
   onSeekRelative: (seconds: number) => void;
-  onTogglePlay: () => void;
-  onToggleFullscreen: () => void;
-  onToggleMute: () => void;
-  onToggleSubtitles?: () => void;
-  onToggleEpisodes?: () => void;
-  onToggleAudioSubtitles?: () => void;
-  isTvShow?: boolean;
 }
 
 export function usePlayerGestures({
   containerRef,
   videoRef,
   onSeekRelative,
-  onTogglePlay,
-  onToggleFullscreen,
-  onToggleMute,
-  onToggleSubtitles,
-  onToggleEpisodes,
-  onToggleAudioSubtitles,
-  isTvShow = false,
 }: UsePlayerGesturesOptions) {
   const [ripple, setRipple] = useState<{ side: "left" | "right"; count: number } | null>(null);
   const [brightness, setBrightness] = useState<number | null>(null);
@@ -174,101 +160,15 @@ export function usePlayerGestures({
     touchStartRef.current = null;
   }, []);
 
-  // Keyboard navigation & hotkeys
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      // Ignore when user is typing in an input / textarea
-      if (
-        document.activeElement instanceof HTMLInputElement ||
-        document.activeElement instanceof HTMLTextAreaElement ||
-        document.activeElement instanceof HTMLSelectElement
-      ) {
-        return;
-      }
-
-      const key = e.key.toLowerCase();
-
-      switch (key) {
-        case " ":
-        case "k":
-          e.preventDefault();
-          onTogglePlay();
-          break;
-        case "f":
-          e.preventDefault();
-          onToggleFullscreen();
-          break;
-        case "m":
-          e.preventDefault();
-          onToggleMute();
-          break;
-        case "c":
-          e.preventDefault();
-          onToggleSubtitles?.();
-          break;
-        case "j":
-        case "arrowleft":
-          e.preventDefault();
-          onSeekRelative(e.shiftKey ? -30 : -10);
-          setRipple({ side: "left", count: e.shiftKey ? 3 : 1 });
-          break;
-        case "l":
-        case "arrowright":
-          e.preventDefault();
-          onSeekRelative(e.shiftKey ? 30 : 10);
-          setRipple({ side: "right", count: e.shiftKey ? 3 : 1 });
-          break;
-        case "arrowup": {
-          e.preventDefault();
-          const video = videoRef.current;
-          if (video) {
-            const next = Math.min(1.0, video.volume + 0.05);
-            video.volume = next;
-            video.muted = false;
-            showHud("volume", next);
-          }
-          break;
-        }
-        case "arrowdown": {
-          e.preventDefault();
-          const video = videoRef.current;
-          if (video) {
-            const next = Math.max(0.0, video.volume - 0.05);
-            video.volume = next;
-            video.muted = next === 0;
-            showHud("volume", next);
-          }
-          break;
-        }
-        case "e":
-          if (isTvShow && onToggleEpisodes) {
-            e.preventDefault();
-            onToggleEpisodes();
-          }
-          break;
-        case "s":
-          if (onToggleAudioSubtitles) {
-            e.preventDefault();
-            onToggleAudioSubtitles();
-          }
-          break;
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [
-    isTvShow,
-    onSeekRelative,
-    onToggleAudioSubtitles,
-    onToggleEpisodes,
-    onToggleFullscreen,
-    onToggleMute,
-    onTogglePlay,
-    onToggleSubtitles,
-    showHud,
-    videoRef,
-  ]);
+  // Keyboard shortcuts deliberately live in video-player.tsx, NOT here.
+  //
+  // This hook used to attach a SECOND capture-phase window keydown listener
+  // handling the same keys as the player's own handler, so every shortcut ran
+  // twice: Space toggled play then immediately paused again (the reported
+  // "space does nothing, but the button works" bug), arrows seeked 20s instead
+  // of 10, and f/m cancelled themselves out. Clicking a control fired once and
+  // therefore always worked, which is what made it look like a shortcut-only
+  // problem. One owner only — this hook keeps touch/pointer gestures.
 
   return {
     ripple,

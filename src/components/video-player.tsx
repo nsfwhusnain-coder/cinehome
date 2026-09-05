@@ -26,6 +26,7 @@ import {
 import { dedupePlaybackSources } from "@/lib/playback/source-identity";
 import { isPoisonStreamUrl } from "@/lib/playback/poison-url";
 import { firstFrameWallMs } from "@/lib/playback/first-frame-wall";
+import { hasStreamProgress, stallThresholdMs } from "@/lib/playback/stall-watchdog";
 import { decidePlayback } from "@/lib/playback/decide-playback";
 import { selectActiveSource } from "@/lib/playback/select-active-source";
 import { buildRemuxUrl } from "@/lib/playback/remux-url";
@@ -282,7 +283,19 @@ const STALL_WATCHDOG_THRESHOLD_MS = 12_000;
  * healthy RD seek latency (~2s).
  */
 const NATIVE_PROGRESSIVE_STALL_THRESHOLD_MS = 8_000;
-const STALL_WATCHDOG_MIN_ADVANCE_S = 0.34;
+/**
+ * How long after a seek the playhead watchdog stays lenient, and the threshold
+ * it uses inside that window.
+ *
+ * A seek discards the buffer and must refetch from a cold position. On a 4K
+ * stream those segments are large (Wicked ships ~10 MB per 6s segment) and a
+ * cold CDN edge can take tens of seconds for the first one. The mid-watch
+ * threshold assumes steady-state playback, so applying it straight after a seek
+ * declared healthy 4K sources dead and removed them from the roster — the
+ * reported "skip 30 minutes and the source fails" bug.
+ */
+const POST_SEEK_STALL_GRACE_MS = 45_000;
+const POST_SEEK_STALL_THRESHOLD_MS = 30_000;
 /** Grace period after background discovery closes before re-checking for a
  * stuck "Finding sources…" spinner with nothing left to try (task 2). */
 const DISCOVERY_CLOSED_GRACE_MS = 1_500;
@@ -1429,8 +1442,19 @@ export function VideoPlayer({
     sourceAttemptControllerRef.current.invalidate();
   }, []);
   /** Engine-agnostic playhead watchdog baseline. The controller permits one
-   * recovery window before a still-dead attempt becomes terminal. */
-  const stallWatchdogBaselineRef = useRef<{ t: number; pos: number }>({ t: 0, pos: 0 });
+   * recovery window before a still-dead attempt becomes terminal.
+   *
+   * `buffered` is tracked alongside the playhead because a stream that is still
+   * PULLING DATA is alive even while `currentTime` is frozen — that is exactly
+   * what a seek into a cold region of a 4K stream looks like. Without it the
+   * watchdog killed healthy sources mid-watch. */
+  const stallWatchdogBaselineRef = useRef<{ t: number; pos: number; buffered: number }>({
+    t: 0,
+    pos: 0,
+    buffered: 0,
+  });
+  /** Wall-clock of the last seek, for the post-seek rebuffer grace below. */
+  const lastSeekAtRef = useRef<number>(0);
   /**
    * User's caption intent (on/off + language), independent of the per-stream
    * store fields that resetStream() clears on every source switch — without
@@ -4070,28 +4094,58 @@ export function VideoPlayer({
      * window expires without actual playhead progress, the generation-bound
      * controller fails over. Real progress resets that recovery budget.
      */
-    stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
+    const bufferedEndOf = (el: HTMLVideoElement): number => {
+      try {
+        return el.buffered.length ? el.buffered.end(el.buffered.length - 1) : 0;
+      } catch {
+        return 0;
+      }
+    };
+    const watchdogSnapshot = (): { t: number; pos: number; buffered: number } => ({
+      t: Date.now(),
+      pos: video.currentTime,
+      buffered: bufferedEndOf(video),
+    });
+    stallWatchdogBaselineRef.current = watchdogSnapshot();
     const watchdogTimer = setInterval(() => {
       // Only a mid-watch safety net — cold-start/resume already has its own
       // (longer) zero-progress watchdog in the stream-setup effect.
       if (!everPlayedRef.current || video.paused || video.seeking || video.ended) {
-        stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
+        stallWatchdogBaselineRef.current = watchdogSnapshot();
         return;
       }
       const baseline = stallWatchdogBaselineRef.current;
-      const advanced = video.currentTime - baseline.pos;
-      if (advanced > STALL_WATCHDOG_MIN_ADVANCE_S) {
+      // Playhead OR buffer movement counts as life — see stall-watchdog.ts. A
+      // frozen playhead whose buffer is still filling is a stream downloading a
+      // cold region, which is precisely what a long seek into a high-bitrate 4K
+      // stream looks like. Failing it there is what made "skip 30 minutes"
+      // report the source as dead and drop it from the roster, and it
+      // contradicted the onWaiting policy below, which never fails a source
+      // over on buffering alone.
+      if (
+        hasStreamProgress({
+          baselinePositionS: baseline.pos,
+          baselineBufferedEndS: baseline.buffered,
+          positionS: video.currentTime,
+          bufferedEndS: bufferedEndOf(video),
+        })
+      ) {
         const attempt = sourceAttemptControllerRef.current.currentToken();
         if (attempt) sourceAttemptControllerRef.current.noteProgress(attempt);
-        stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
+        stallWatchdogBaselineRef.current = watchdogSnapshot();
         return;
       }
       const hasEngineRecovery = Boolean(hlsRef.current || dashRef.current);
       const isNativeProgressive =
         activeSourceRef.current?.type === "mp4" && !hasEngineRecovery;
-      const thresholdMs = isNativeProgressive
-        ? NATIVE_PROGRESSIVE_STALL_THRESHOLD_MS
-        : STALL_WATCHDOG_THRESHOLD_MS;
+      const thresholdMs = stallThresholdMs({
+        baseThresholdMs: isNativeProgressive
+          ? NATIVE_PROGRESSIVE_STALL_THRESHOLD_MS
+          : STALL_WATCHDOG_THRESHOLD_MS,
+        postSeekThresholdMs: POST_SEEK_STALL_THRESHOLD_MS,
+        postSeekGraceMs: POST_SEEK_STALL_GRACE_MS,
+        sinceSeekMs: Date.now() - lastSeekAtRef.current,
+      });
       if (Date.now() - baseline.t < thresholdMs) return;
 
       const attempt = sourceAttemptControllerRef.current.currentToken();
@@ -4101,7 +4155,7 @@ export function VideoPlayer({
           attempt,
           !isNativeProgressive
         );
-      stallWatchdogBaselineRef.current = { t: Date.now(), pos: video.currentTime };
+      stallWatchdogBaselineRef.current = watchdogSnapshot();
       if (stallSignal === "terminal") {
         failActiveSource("silent_stall", attempt);
         return;
@@ -4135,6 +4189,14 @@ export function VideoPlayer({
     video.addEventListener("durationchange", onDurationChange);
     video.addEventListener("loadedmetadata", onDurationChange);
     video.addEventListener("progress", onProgressBuf);
+    // Stamped for the watchdog's post-seek grace. `video.seeking` clears as soon
+    // as the browser has ANY data, long before a cold 4K region is playable, so
+    // the flag alone is not enough to tell a rebuffer from a hang.
+    const onSeekingStamp = () => {
+      lastSeekAtRef.current = Date.now();
+      stallWatchdogBaselineRef.current = watchdogSnapshot();
+    };
+    video.addEventListener("seeking", onSeekingStamp);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("playing", onPlaying);
     video.addEventListener("canplay", onCanPlay);
@@ -4152,6 +4214,7 @@ export function VideoPlayer({
       video.removeEventListener("durationchange", onDurationChange);
       video.removeEventListener("loadedmetadata", onDurationChange);
       video.removeEventListener("progress", onProgressBuf);
+      video.removeEventListener("seeking", onSeekingStamp);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("canplay", onCanPlay);
@@ -4927,12 +4990,12 @@ export function VideoPlayer({
         case "ArrowLeft":
         case "j":
           e.preventDefault();
-          seekRelative(-10);
+          seekRelative(e.shiftKey ? -30 : -10);
           break;
         case "ArrowRight":
         case "l":
           e.preventDefault();
-          seekRelative(10);
+          seekRelative(e.shiftKey ? 30 : 10);
           break;
         case "ArrowUp":
           e.preventDefault();
@@ -4950,6 +5013,18 @@ export function VideoPlayer({
           break;
         case "c":
           toggleSubtitles();
+          break;
+        // Adopted from the gestures hook when its duplicate keyboard listener
+        // was removed, so no shortcut was lost in the consolidation.
+        case "e":
+          if (mediaType === "tv") {
+            e.preventDefault();
+            setEpisodesOpen((v) => !v);
+          }
+          break;
+        case "s":
+          e.preventDefault();
+          setAudioSubtitlesOpen((v) => !v);
           break;
         case "n":
           if (hasNextEpisode) onNextEpisode?.();
@@ -4988,6 +5063,7 @@ export function VideoPlayer({
     closeDock,
     setShowControls,
     resetControlsTimer,
+    mediaType,
   ]);
 
   const onTouchStart = (e: React.TouchEvent) => {
@@ -5138,19 +5214,6 @@ export function VideoPlayer({
     containerRef,
     videoRef,
     onSeekRelative: seekRelative,
-    onTogglePlay: togglePlay,
-    onToggleFullscreen: toggleFullscreen,
-    onToggleMute: toggleMute,
-    onToggleSubtitles: () => {
-      if (activeSubtitleTrack != null) {
-        handleSubtitleChange(null);
-      } else if (subtitleTracks.length > 0) {
-        handleSubtitleChange(typeof subtitleTracks[0].id === "number" ? subtitleTracks[0].id : 0);
-      }
-    },
-    onToggleEpisodes: () => setEpisodesOpen((v) => !v),
-    onToggleAudioSubtitles: () => setAudioSubtitlesOpen((v) => !v),
-    isTvShow: mediaType === "tv",
   });
 
   return (
