@@ -55,6 +55,7 @@ import {
   inferHeightFromUrl,
   type QualityProbeEntry,
   type QualitySource,
+  type VideoCodec,
 } from "./quality-probe";
 import {
   candidateMasterUrls,
@@ -162,10 +163,22 @@ const QUALITY_DISCOVERY_RESERVED_SLOTS = 4;
 /** Hunt / soft-keep target — keep enriching toward this when under cap. */
 const MIN_SOURCES_TARGET = 14;
 /**
- * Stop advertising `partial: true` once we have this many sources.
- * Keep low so the client stops "searching for more…" while PW still runs in bg.
+ * Stop advertising `partial: true` once we have this many auto-playable sources.
+ *
+ * This was 2, which reported a two-source roster as COMPLETE. That is the
+ * signal the client polls on: `watchPlaybackPollInterval` stops hunting once a
+ * response is non-partial, so a cold title that resolved to 1-2 debrid rows was
+ * frozen there for the whole session while background enrichment quietly filled
+ * the cache to 18-20 sources — which the viewer only saw if they came back
+ * later. Measured cold rosters land at 1-3 sources and warm ones at 14-20, so 5
+ * separates "still thin, keep hunting" from "genuinely settled" without keeping
+ * every healthy title in a permanent hunting state.
+ *
+ * The "searching for more…" indicator is independently capped client-side by
+ * DISCOVERY_UI_WALL_MS (18s), so a longer partial window does not mean a
+ * longer-lived spinner.
  */
-const PARTIAL_CLEAR_MIN = 2;
+const PARTIAL_CLEAR_MIN = 5;
 const VERIFY_TIMEOUT_SEC = 12;
 /** Keep alternate CDNs per embed host instead of discarding after the first. */
 const MAX_CAPTURES_PER_EMBED = 3;
@@ -290,6 +303,8 @@ interface SourceEntry {
   qualitySource?: QualitySource;
   /** Declared bitrate for the rendition at maxHeight, when present in a manifest. */
   bitrateBps?: number;
+  /** Video codec measured from the stream (quality-probe.ts), never guessed from the URL. */
+  videoCodec?: VideoCodec;
   /** Alternate progressive URLs on this source (one host, many heights). */
   qualityRungs?: { height: number; url: string; bitrateBps?: number }[];
   audioLanguage?: string;
@@ -793,6 +808,7 @@ async function applyLatencyProbes(
       ...(q.bitrateBps != null && q.bitrateBps > 0
         ? { bitrateBps: q.bitrateBps }
         : {}),
+      ...(q.videoCodec ? { videoCodec: q.videoCodec } : entry.videoCodec ? { videoCodec: entry.videoCodec } : {}),
     };
   });
 
@@ -1436,6 +1452,15 @@ function cacheTtlForResult(result: ScrapeResult): number {
   const url = result.streamUrl ?? "";
   const base = url ? cacheTtlFor(url) : CACHE_TTL_MS;
   if (preferred > 1080 && !rosterHasPlayableHeight(result.sources, preferred)) {
+    return Math.min(Math.max(base, 1_000), ULTRA_MISS_TTL_MS);
+  }
+  // A roster this thin is a symptom of a slow/cold resolve, not a property of
+  // the title — background enrichment routinely takes the same key from 2
+  // sources to 14-20 within a minute. Holding the thin answer for the full 4K
+  // TTL (15 min) below is what pinned titles like Weapons (2 rows, both 4K MKV)
+  // to a two-source roster long after the real one existed. Expire it fast so
+  // the next request re-reads an enriched cache instead of the stale stub.
+  if (countAutoPlayableRosterSources(result.sources) < PARTIAL_CLEAR_MIN) {
     return Math.min(Math.max(base, 1_000), ULTRA_MISS_TTL_MS);
   }
   if (rosterHasPlayableHeight(result.sources, 2160)) {
@@ -2424,6 +2449,27 @@ const FAST_MAX_WAIT_MS = 7_500;
 const FULL_FIRST_GRACE_MS = 2_500;
 /** Leave time inside the route budget for measured probes and serialization. */
 const FULL_API_MAX_WAIT_MS = 7_500;
+/**
+ * Absolute wall for the whole API phase (race + post-race settle), measured
+ * from the start of the scrape.
+ *
+ * The race above is already bounded, but the code after it used to re-await
+ * every arm with an unbounded `Promise.all`, which handed the response back to
+ * the slowest arm and defeated the entire point of racing. Measured on this
+ * box: the API race settled at 3.5s with 7 sources while `notorrent` took
+ * 22.0s, and enrichment plus latency probes still had to run after that — so
+ * the app's 30s `FULL_FETCH_TIMEOUT_MS` fired first and it recorded
+ * `providerCount: 0` for titles this scraper could already serve. Cold
+ * Oppenheimer/Fight Club/Weapons returned 0-2 sources in ~31s; the same titles
+ * answered with 18-20 sources in ~40ms once the cache was warm.
+ *
+ * Late arms are not lost: `onLateEntries` merges them into the shared cache and
+ * `getCached(key)` below folds them back in, so they reach the client through
+ * its progressive poll instead of holding this response hostage.
+ */
+const FULL_API_PHASE_WALL_MS = 10_000;
+/** Minimum grace for an arm that is about to land when the race just ended. */
+const FULL_SETTLE_MIN_MS = 1_200;
 
 /**
  * Fast path: race multi-API providers (no Playwright) so TTFF is stable for TV.
@@ -3385,18 +3431,36 @@ async function executeUnresolvedScrape(
     "info",
     `[scrape] full API race -> ${fullRace.entries.length} source(s) in ${fullRace.totalMs}ms (first@${fullRace.firstHitMs ?? "-"}ms)`
   );
-  const settledArms = await Promise.all([
-    cineproPromise,
-    lunaPromise,
-    cinemaosPromise,
-    vidlinkPromise,
-    videasyPromise,
-    vidrockPromise,
-    notorrentPromise,
-  ]);
+  // Bounded settle — see FULL_API_PHASE_WALL_MS. Never re-await these arms
+  // without a ceiling: one slow provider then owns the whole response.
+  const settleBudgetMs = Math.max(
+    FULL_SETTLE_MIN_MS,
+    FULL_API_PHASE_WALL_MS - (Date.now() - scrapeStarted)
+  );
+  // Bounded per arm, not across the set: an arm that lands inside the budget
+  // still contributes even when a sibling is timing out.
+  const settledArms = await Promise.all(
+    [
+      cineproPromise,
+      lunaPromise,
+      cinemaosPromise,
+      vidlinkPromise,
+      videasyPromise,
+      vidrockPromise,
+      notorrentPromise,
+    ].map(async (arm) => (await withTimeout(arm, settleBudgetMs)) ?? [])
+  );
   const expectedDurationS =
     (await withTimeout(expectedDurationPromise, 1_000)) ?? 0;
   let collected = mergeSourceEntries([...fullRace.entries, ...settledArms.flat()]);
+  // Arms that finished after the race published through `onLateEntries` into the
+  // shared cache rather than into `collected`. Fold them in before deciding
+  // whether we have a primary hit, so a late-but-in-budget provider can still
+  // answer this request instead of only the next one.
+  const settledCache = getCached(key);
+  if (settledCache?.sources.length) {
+    collected = mergeSourceEntries([...collected, ...settledCache.sources]);
+  }
   let merged = buildMergedResult(collected);
 
   if (merged.streamUrl) {
