@@ -298,6 +298,45 @@ export function isEligibleDebridQuality(height: number | null): height is 720 | 
   return height === 720 || height === 1080 || height === 2160;
 }
 
+/**
+ * Explicit stereoscopic layout tokens. A release carrying one of these stores
+ * two eye views inside a normal-looking 1080p frame, so it plays as a squashed
+ * side-by-side (or over-under) pair in any ordinary player.
+ */
+const STEREO_LAYOUT_PATTERN =
+  /\b(?:h[-. _]?sbs|full[-. _]?sbs|half[-. _]?sbs|sbs|h[-. _]?ou|half[-. _]?ou|full[-. _]?ou|over[-. _]?under|side[-. _]?by[-. _]?side|anaglyph|vr180|180vr|mvc)\b/i;
+/** Russian scene descriptions used by the same stereoscopic releases. */
+const STEREO_CYRILLIC_PATTERN = /стереопара|горизонтальная стерео|вертикальная стерео/i;
+/** A bare "3D" tag that sits in the RELEASE section, i.e. after the year. */
+const STEREO_3D_AFTER_YEAR_PATTERN = /\b(?:19|20)\d{2}\b.*?\b3[-. _]?d\b/i;
+/** "3D" immediately qualifying a source token, e.g. "... 3D BluRay 1080p". */
+const STEREO_3D_BEFORE_SOURCE_PATTERN =
+  /\b3[-. _]?d\b[ ._-]*(?:blu[-. _]?ray|bd[-. _]?rip|bdrip|brrip|web[-. _]?dl|webrip|hdtv|remux|x\s?26[45]|h[.\s_-]?26[45]|hevc)/i;
+
+/**
+ * True when a release is stereoscopic 3D / VR rather than ordinary flat video.
+ *
+ * Measured against live Torrentio data: 12 of 134 candidates across five
+ * popular films were 3D — 4 of 11 for Gravity — and `parseReleaseTitle` reported
+ * every one of them as a plain `height=1080 codec=h264`, indistinguishable from
+ * a normal release. They therefore won native slots and played back as the
+ * reported "two images side by side" video.
+ *
+ * The bare-"3D" rules are deliberately positional rather than a blanket match,
+ * so a film whose actual TITLE contains 3D ("Spy Kids 3-D: Game Over") is not
+ * wrongly excluded — its "3D" precedes the year and qualifies no source token.
+ * A false positive only drops one candidate from a pool; a false negative hands
+ * the viewer an unwatchable stream, so the rules lean toward catching layout
+ * tokens outright.
+ */
+export function isStereoscopicRelease(text: string): boolean {
+  const t = text || "";
+  if (STEREO_LAYOUT_PATTERN.test(t)) return true;
+  if (STEREO_CYRILLIC_PATTERN.test(t)) return true;
+  if (STEREO_3D_AFTER_YEAR_PATTERN.test(t)) return true;
+  return STEREO_3D_BEFORE_SOURCE_PATTERN.test(t);
+}
+
 /** Known-size floors so a 800 MB "1080p" cannot occupy a native HD slot. */
 const MIN_DEBRID_SIZE_BYTES: Record<MediaType, Record<720 | 1080 | 2160, number>> = {
   movie: {
@@ -658,6 +697,9 @@ function parseTorrentioStreams(
     const height = parsed.resolutionHeight;
     const sizeBytes = parseSizeBytes(text);
     if (!isEligibleDebridQuality(height)) continue;
+    // Stereoscopic 3D/VR parses as ordinary 1080p but plays as a squashed
+    // side-by-side pair. Never let one occupy a slot.
+    if (isStereoscopicRelease(text)) continue;
 
     const rawTitle = (s.title ?? s.name ?? "Unknown release").split("\n")[0]?.trim();
     candidates.push({

@@ -14,6 +14,7 @@ import {
   effectiveReleaseContainer,
   isDirectPlayDebridRelease,
   isMoviePackRelease,
+  isStereoscopicRelease,
 } from "./torrentio";
 
 describe("buildKindPath season 0", () => {
@@ -695,5 +696,48 @@ describe("parseReleaseTitle - audio evidence", () => {
     );
     expect(release.audioCodec).toBe("aac");
     expect(release.multiAudio).toBe(true);
+  });
+});
+
+describe("isStereoscopicRelease", () => {
+  it("rejects the explicit layout tokens seen in live Torrentio data", () => {
+    const real = [
+      "Avatar.2009.EXTENDED.1080p.3D.BluRay.Half-SBS.x264.DTS-HD.MA.5.1-RARBG",
+      "Avatar.2009.EXTENDED.1080p.3D.BluRay.Half-OU.x264.DTS-HD.MA.5.1-RARBG",
+      "Gravity.2013.1080p.3D.BluRay.Half-SBS.x264.TrueHD.7.1.Atmos-RARBG",
+      "Gravity.3D.2013.1080p.BluRay.Half-SBS.DTS.x264-PublicHD",
+      "Avatar The Way of Water (2022) 3D HSBS BluRay 1080p H264 DolbyD 5.1 + nickarad",
+      "Dune Part Two 2024 1080p 3D FULL SBS HEVC ENG HUN iFA AI3D",
+      "Аватар в 3Д / Avatar 3D [2009 BDRip 1080p] SideBySide / Горизонтальная стереопара",
+      "Avatar: The Way of Water 3D BluRay 1080p48 x264 E-AC3 5.1",
+      "Gravity.2013.3D.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-Asmo",
+    ];
+    for (const title of real) {
+      expect(isStereoscopicRelease(title)).toBe(true);
+    }
+  });
+
+  it("keeps ordinary flat releases", () => {
+    const flat = [
+      "Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.H.265-FLUX",
+      "Gravity.2013.1080p.BluRay.x264.YIFY",
+      "Avatar.2009.EXTENDED.2160p.UHD.BluRay.x265-TERMiNAL",
+      "Top.Gun.Maverick.2022.1080p.WEBRip.x264-RARBG",
+      "The.Batman.2022.2160p.WEB-DL.DDP5.1.Atmos.HDR.HEVC-CMRG",
+    ];
+    for (const title of flat) {
+      expect(isStereoscopicRelease(title)).toBe(false);
+    }
+  });
+
+  it("does not exclude a film whose own title contains 3D", () => {
+    // "3D" here precedes the year and qualifies no source token, so it reads as
+    // part of the movie name rather than a stereoscopic release tag.
+    expect(
+      isStereoscopicRelease("Spy Kids 3-D Game Over 2003 1080p WEBRip x264-RARBG")
+    ).toBe(false);
+    expect(
+      isStereoscopicRelease("Spy.Kids.3D.Game.Over.2003.1080p.AMZN.WEB-DL.DDP5.1.H.264")
+    ).toBe(false);
   });
 });
