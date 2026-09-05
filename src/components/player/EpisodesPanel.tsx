@@ -1,31 +1,30 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { cn } from "@/lib/utils";
-import { Check, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Loader2, X } from "lucide-react";
 import { EpisodeStill } from "@/components/episode-still";
 import { seasonDisplayName } from "@/components/season-picker";
+import { cn } from "@/lib/utils";
 
-export interface SeasonOption {
-  season_number: number;
-  name?: string;
-  episode_count?: number;
-}
+const GLASS_STYLE: CSSProperties = {
+  background: "rgba(18, 18, 22, 0.65)",
+  WebkitBackdropFilter: "blur(32px) saturate(180%) brightness(1.12)",
+  backdropFilter: "blur(32px) saturate(180%) brightness(1.12)",
+  boxShadow:
+    "inset 0 1px 0 rgba(255,255,255,0.32), inset 0 -0.5px 0 rgba(255,255,255,0.06), 0 16px 48px rgba(0,0,0,0.5)",
+};
 
 interface Props {
   open: boolean;
   tvId: number;
-  seasons: SeasonOption[];
+  seasons: { season_number: number; name?: string; episode_count?: number }[];
   season: number;
   episode: number;
   onClose: () => void;
   onSelect: (season: number, episode: number) => void;
 }
 
-/**
- * In-player season/episode picker (TV only).
- */
 export function EpisodesPanel({
   open,
   tvId,
@@ -35,30 +34,30 @@ export function EpisodesPanel({
   onClose,
   onSelect,
 }: Props) {
+  const [panelSeason, setPanelSeason] = useState(season);
+  const seasonRailRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setPanelSeason(season);
+  }, [season]);
+
+  // Escape key closes panel
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
+
   const validSeasons = useMemo(
-    () =>
-      seasons
-        .filter((s) => s.season_number >= 0)
-        .sort((a, b) => a.season_number - b.season_number),
+    () => seasons.filter((s) => (s.episode_count ?? 0) > 0 && s.season_number >= 0),
     [seasons]
   );
-
-  /**
-   * The panel's own season selection resets to the episode being watched each
-   * time it opens, and follows `season` while it stays open. Adjusting that
-   * during render off a sync key is the documented alternative to an effect:
-   * `syncKey` is null while closed, so reopening always counts as a change
-   * even if the season never moved — matching what the effect's [open, season]
-   * deps did.
-   */
-  const [panelSeason, setPanelSeason] = useState(season);
-  const [syncKey, setSyncKey] = useState<string | null>(null);
-  const seasonRailRef = useRef<HTMLDivElement>(null);
-  const openKey = open ? String(season) : null;
-  if (openKey !== syncKey) {
-    setSyncKey(openKey);
-    if (open) setPanelSeason(season);
-  }
 
   const { data, isLoading } = useQuery({
     queryKey: ["tmdb", "tv", "season", tvId, panelSeason],
@@ -104,10 +103,6 @@ export function EpisodesPanel({
     if (next) setPanelSeason(next.season_number);
   };
 
-  // Keep the selected season on screen after opening the panel, clicking a
-  // chevron, or navigating with a TV remote. `nearest` avoids needless motion
-  // when the chip is already visible while `inline:center` makes a long season
-  // roster understandable at a glance.
   useEffect(() => {
     if (!open) return;
     const frame = window.requestAnimationFrame(() => {
@@ -129,134 +124,165 @@ export function EpisodesPanel({
     <>
       <button
         type="button"
-        className="absolute inset-0 z-[55] bg-black/40"
+        className="absolute inset-0 z-[55] bg-black/40 backdrop-blur-[2px]"
         onClick={onClose}
         aria-label="Close episodes"
       />
       <div
-        className="player-episodes-panel absolute left-3 right-3 z-[60] max-h-[min(55vh,420px)] overflow-hidden rounded-xl border border-white/10 bg-[rgba(15,15,15,0.96)] shadow-2xl backdrop-blur-xl sm:left-auto sm:right-4 sm:w-[360px]"
+        className="player-episodes-panel absolute left-3 right-3 z-[60] max-h-[min(55vh,440px)] overflow-hidden rounded-2xl border border-white/20 shadow-2xl animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-200 sm:left-auto sm:right-4 sm:w-[380px]"
+        style={GLASS_STYLE}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label="Episodes"
       >
-        <div className="border-b border-white/10 px-3 py-2.5">
-          <div className="text-sm font-semibold text-white">Episodes</div>
-          <div className="mt-2 flex min-w-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => selectAdjacentSeason(-1)}
-              disabled={panelSeasonIndex <= 0}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-25"
-              aria-label="Previous season"
-            >
-              <ChevronLeft className="h-4 w-4" aria-hidden />
-            </button>
-            <div
-              ref={seasonRailRef}
-              className="scrollbar-thin flex min-w-0 flex-1 touch-pan-x gap-1.5 overflow-x-auto overscroll-x-contain pb-1"
-              onWheel={(event) => {
-                const rail = event.currentTarget;
-                if (
-                  rail.scrollWidth <= rail.clientWidth ||
-                  Math.abs(event.deltaX) >= Math.abs(event.deltaY)
-                ) {
-                  return;
-                }
-                event.preventDefault();
-                rail.scrollBy({ left: event.deltaY, behavior: "smooth" });
-              }}
-              aria-label="Seasons"
-            >
-              {validSeasons.map((s) => {
-                const active = s.season_number === panelSeason;
-                return (
-                  <button
-                    key={s.season_number}
-                    type="button"
-                    data-season-number={s.season_number}
-                    aria-current={active ? "true" : undefined}
-                    onClick={() => setPanelSeason(s.season_number)}
-                    className={cn(
-                      "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-                      active
-                        ? "bg-white text-black"
-                        : "bg-white/10 text-white/80 hover:bg-white/15"
-                    )}
-                  >
-                    {seasonDisplayName(s.season_number, s.name)}
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              type="button"
-              onClick={() => selectAdjacentSeason(1)}
-              disabled={
-                panelSeasonIndex < 0 || panelSeasonIndex >= validSeasons.length - 1
-              }
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-25"
-              aria-label="Next season"
-            >
-              <ChevronRight className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
-        </div>
+        {/* Specular border edge */}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 rounded-2xl"
+          style={{
+            padding: 1,
+            background:
+              "linear-gradient(160deg, rgba(255,255,255,0.48) 0%, rgba(255,255,255,0.06) 42%, rgba(255,255,255,0.16) 100%)",
+            WebkitMask:
+              "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+            WebkitMaskComposite: "xor",
+            mask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+            maskComposite: "exclude",
+          }}
+        />
 
-        <div className="max-h-[min(40vh,320px)] overflow-y-auto p-2">
-          {isLoading ? (
-            <div className="flex items-center justify-center gap-2 py-10 text-sm text-white/60">
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              Loading episodes…
+        <div className="relative z-[1] flex flex-col max-h-[inherit]">
+          {/* Header */}
+          <div className="border-b border-white/10 px-3.5 py-2.5">
+            <div className="flex items-center justify-between">
+              <div className="text-[13px] font-semibold tracking-tight text-white">Episodes</div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-full p-1 text-white/60 hover:bg-white/15 hover:text-white transition"
+                aria-label="Close"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
-          ) : episodes.length === 0 ? (
-            <div className="py-8 text-center text-sm text-white/50">No episodes found</div>
-          ) : (
-            <ul className="space-y-1">
-              {episodes.map((ep) => {
+            {/* Season Rail */}
+            <div className="mt-2 flex min-w-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => selectAdjacentSeason(-1)}
+                disabled={panelSeasonIndex <= 0}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-25"
+                aria-label="Previous season"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+              </button>
+              <div
+                ref={seasonRailRef}
+                className="scrollbar-thin flex min-w-0 flex-1 touch-pan-x gap-1.5 overflow-x-auto overscroll-x-contain pb-0.5"
+                onWheel={(event) => {
+                  const rail = event.currentTarget;
+                  if (
+                    rail.scrollWidth <= rail.clientWidth ||
+                    Math.abs(event.deltaX) >= Math.abs(event.deltaY)
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  rail.scrollBy({ left: event.deltaY, behavior: "smooth" });
+                }}
+                aria-label="Seasons"
+              >
+                {validSeasons.map((s) => {
+                  const active = s.season_number === panelSeason;
+                  return (
+                    <button
+                      key={s.season_number}
+                      type="button"
+                      data-season-number={s.season_number}
+                      aria-current={active ? "true" : undefined}
+                      onClick={() => setPanelSeason(s.season_number)}
+                      className={cn(
+                        "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
+                        active
+                          ? "bg-white text-black font-semibold shadow-sm"
+                          : "bg-white/10 text-white/80 hover:bg-white/15"
+                      )}
+                    >
+                      {seasonDisplayName(s.season_number, s.name)}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => selectAdjacentSeason(1)}
+                disabled={
+                  panelSeasonIndex < 0 || panelSeasonIndex >= validSeasons.length - 1
+                }
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-25"
+                aria-label="Next season"
+              >
+                <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            </div>
+          </div>
+
+          {/* Episode List */}
+          <div className="flex-1 overflow-y-auto p-2 min-h-0 space-y-1">
+            {isLoading ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-xs text-white/60">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                Loading episodes…
+              </div>
+            ) : episodes.length === 0 ? (
+              <div className="py-8 text-center text-xs text-white/50">No episodes found</div>
+            ) : (
+              episodes.map((ep) => {
                 const active =
                   panelSeason === season && ep.episode_number === episode;
                 return (
-                  <li key={ep.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelect(panelSeason, ep.episode_number);
-                        onClose();
-                      }}
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-white/[0.06]",
-                        active && "bg-white/[0.1]"
-                      )}
-                    >
-                      <div className="relative h-12 w-[86px] shrink-0 overflow-hidden rounded-md bg-white/10">
-                        <EpisodeStill
-                          stillPath={ep.still_path}
-                          seasonPosterPath={seasonPoster}
-                          seriesBackdropPath={seriesBackdrop}
-                          seriesPosterPath={seriesPoster}
-                          episodeNumber={ep.episode_number}
-                          compact
-                        />
-                        {active ? (
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                            <Check className="h-4 w-4 text-white" aria-hidden />
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium text-white">
-                          {ep.episode_number}. {ep.name || `Episode ${ep.episode_number}`}
+                  <button
+                    key={ep.id || ep.episode_number}
+                    type="button"
+                    onClick={() => {
+                      onSelect(panelSeason, ep.episode_number);
+                      onClose();
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 rounded-xl p-1.5 text-left transition-colors",
+                      active
+                        ? "bg-white/20 border border-white/30 text-white shadow-sm"
+                        : "hover:bg-white/10 text-zinc-300 border border-transparent"
+                    )}
+                  >
+                    <div className="relative h-11 w-20 shrink-0 overflow-hidden rounded-lg bg-white/10">
+                      <EpisodeStill
+                        stillPath={ep.still_path}
+                        seasonPosterPath={seasonPoster}
+                        seriesBackdropPath={seriesBackdrop}
+                        seriesPosterPath={seriesPoster}
+                        episodeNumber={ep.episode_number}
+                        compact
+                      />
+                      {active && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                          <Check className="h-3.5 w-3.5 text-white" aria-hidden />
                         </div>
-                        {ep.runtime ? (
-                          <div className="text-[11px] text-white/45">{ep.runtime} min</div>
-                        ) : null}
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-semibold text-white">
+                        {ep.episode_number}. {ep.name || `Episode ${ep.episode_number}`}
                       </div>
-                    </button>
-                  </li>
+                      {ep.runtime ? (
+                        <div className="text-[10px] text-white/50">{ep.runtime} min</div>
+                      ) : null}
+                    </div>
+                  </button>
                 );
-              })}
-            </ul>
-          )}
+              })
+            )}
+          </div>
         </div>
       </div>
     </>

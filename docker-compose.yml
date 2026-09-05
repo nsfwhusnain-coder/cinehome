@@ -38,6 +38,16 @@ services:
       # real 4K lives - is dead inventory. Disk is bounded separately
       # (TRANSCODER_REMUX_MIN_FREE_BYTES / _MAX_JOB_BYTES); set to 0 to disable.
       - REMUX_ENABLED=${REMUX_ENABLED:-1}
+      # --- transcode cache bounds (explicit; were code defaults) ---
+      # The cap MUST be >= REMUX_MAX_JOB_BYTES, otherwise a single 4K remux
+      # (40-80 GB, ceiling 96 GB) exceeds the whole cache budget before the
+      # 30-minute eviction sweep runs. 100 GiB holds one big remux with room to
+      # evict the oldest when a second arrives.
+      - TRANSCODER_CACHE_MAX_BYTES=${TRANSCODER_CACHE_MAX_BYTES:-107374182400}
+      # 12h, was a 24h default: a title watched once should not hold disk for a day.
+      - TRANSCODER_CACHE_TTL_MS=${TRANSCODER_CACHE_TTL_MS:-43200000}
+      - TRANSCODER_REMUX_MIN_FREE_BYTES=${TRANSCODER_REMUX_MIN_FREE_BYTES:-26843545600}
+      - TRANSCODER_REMUX_MAX_JOB_BYTES=${TRANSCODER_REMUX_MAX_JOB_BYTES:-103079215104}
       # CinePro stays reachable for opt-in eval, but URL-alone must not enable it.
       - CINEPRO_URL=${CINEPRO_URL:-http://cinepro-core:3000}
       - PROVIDER_CINEPRO=${PROVIDER_CINEPRO:-0}

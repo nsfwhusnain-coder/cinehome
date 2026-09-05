@@ -377,11 +377,7 @@ export function PlayerControls({
               <IconBtn
                 onClick={() => {
                   onCloseDock();
-                  if (onOpenEpisodeDrawer) {
-                    onOpenEpisodeDrawer();
-                  } else {
-                    setShowEpisodes((v) => !v);
-                  }
+                  setShowEpisodes((v) => !v);
                 }}
                 label="Episodes"
                 active={showEpisodes}
@@ -408,14 +404,15 @@ export function PlayerControls({
               <IconBtn
                 onClick={() => {
                   setShowEpisodes(false);
+                  onCloseDock();
                   if (onOpenAudioSubtitles) {
                     onOpenAudioSubtitles();
                   } else {
-                    onToggleSettings?.("subtitles");
+                    onToggleSettings?.("quality");
                   }
                 }}
                 label="Audio & Subtitles"
-                active={settingsOpen && dockSection === "subtitles"}
+                active={false}
               >
                 <Captions className="h-5 w-5" />
               </IconBtn>

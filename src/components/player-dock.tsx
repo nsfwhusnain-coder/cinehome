@@ -210,10 +210,8 @@ function OptionRow({
 const PRIMARY_TABS: Array<{ section: DockSection; label: string }> = [
   { section: "quality", label: "Quality" },
   { section: "server", label: "Sources" },
-  { section: "subtitles", label: "Subtitles" },
-  { section: "audio", label: "Audio" },
   { section: "playback", label: "Speed" },
-  { section: "info", label: "Info" },
+  { section: "info", label: "Stats" },
   { section: "download", label: "Download" },
 ];
 
@@ -682,7 +680,7 @@ export function PlayerDock({
         role="dialog"
         aria-modal="true"
         aria-label="Player settings"
-        className="player-settings-dock absolute left-3 right-3 z-50 w-auto origin-bottom animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-200 sm:left-auto sm:right-4 sm:w-[25rem] sm:origin-bottom-right [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-white/80"
+        className="player-settings-dock absolute left-3 right-3 z-50 w-auto origin-bottom animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-200 sm:left-auto sm:right-4 sm:w-[22rem] sm:origin-bottom-right [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-white/80"
         onClick={(e) => e.stopPropagation()}
       >
         <div

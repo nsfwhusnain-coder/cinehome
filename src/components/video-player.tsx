@@ -5566,16 +5566,7 @@ export function VideoPlayer({
         isMuted={isMuted}
       />
 
-      <EpisodeDrawer
-        open={episodesOpen}
-        onClose={() => setEpisodesOpen(false)}
-        tvId={tvId}
-        tvSeasons={tvSeasons}
-        currentSeason={tvSeason}
-        currentEpisode={tvEpisode}
-        onSelectEpisode={onSelectEpisode}
-        showTitle={title}
-      />
+
 
       <AudioSubtitlesModal
         open={audioSubtitlesOpen}

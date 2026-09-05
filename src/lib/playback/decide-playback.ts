@@ -71,14 +71,16 @@ export function autoLanguagePool(
   const preferredEn = sources.filter((source) =>
     isEnglishPreferredSource(source, contentClass)
   );
-  const preferredEnDirectHd = preferredEn.filter(isDirectHd);
-  if (preferredEnDirectHd.length) return preferredEn;
+
+  // Preserve 4K / UHD and Direct HD streams with unlabeled (und) audio alongside English streams
+  const undHdOr4K = sources.filter(
+    (source) =>
+      (sourceAudioLanguageCode(source) === "und" || !source.audioLanguage) &&
+      (sourceMaxHeight(source) >= HD_FLOOR_HEIGHT || isDirectHd(source))
+  );
 
   if (preferredEn.length) {
-    const undDirectHd = sources.filter(
-      (source) => sourceAudioLanguageCode(source) === "und" && isDirectHd(source)
-    );
-    if (undDirectHd.length) return [...preferredEn, ...undDirectHd];
+    if (undHdOr4K.length) return [...preferredEn, ...undHdOr4K];
     return preferredEn;
   }
 

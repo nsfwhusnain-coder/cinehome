@@ -1,21 +1,19 @@
-import gzip from "node:zlib";
+import gzip from "zlib";
 
 export interface SubtitleTrackOption {
   id: string;
   label: string;
   language: string;
-  subLanguageId: string;
+  subLanguageId?: string;
   format: string;
   downloadUrl: string;
   vttUrl: string;
   isDefault?: boolean;
 }
 
-// In-memory 24h subtitle metadata cache
-const subtitleCache = new Map<string, { timestamp: number; tracks: SubtitleTrackOption[] }>();
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const subtitleCache = new Map<string, { timestamp: number; tracks: SubtitleTrackOption[] }>();
 
-// Language code to human friendly display names
 const LANGUAGE_NAMES: Record<string, string> = {
   eng: "English",
   en: "English",
@@ -27,11 +25,11 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ger: "German",
   deu: "German",
   de: "German",
-  por: "Portuguese",
-  pob: "Portuguese (BR)",
-  pt: "Portuguese",
   ita: "Italian",
   it: "Italian",
+  por: "Portuguese",
+  pt: "Portuguese",
+  pob: "Portuguese (BR)",
   rus: "Russian",
   ru: "Russian",
   ara: "Arabic",
@@ -81,18 +79,19 @@ export function getLanguageDisplayName(code: string, rawName?: string): string {
 }
 
 /**
- * Converts raw SubRip (SRT) string into clean standard WebVTT format.
+ * Converts raw SubRip (SRT) or VTT string into clean standard WebVTT format.
  * Strips HTML ads/watermarks and normalizes timestamp formats.
  */
 export function convertSrtToVtt(srtContent: string): string {
   if (!srtContent || !srtContent.trim()) return "WEBVTT\n\n";
 
-  // Normalize newlines
   const text = srtContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-  // Regex to match timestamp lines: 00:00:20,000 --> 00:00:24,400
-  const timestampRegex = /(\d{2}:\d{2}:\d{2}),(\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}),(\d{3})/;
+  if (text.startsWith("WEBVTT")) {
+    return text;
+  }
 
+  const timestampRegex = /(\d{2}:\d{2}:\d{2}),(\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}),(\d{3})/;
   const lines = text.split("\n");
   const output: string[] = ["WEBVTT", ""];
 
@@ -118,9 +117,7 @@ export function convertSrtToVtt(srtContent: string): string {
 
   const flushCue = () => {
     if (currentTimestamp && currentCueText.length > 0) {
-      // Filter out promotional / spam text
       const cleanLines = currentCueText.filter((line) => !isAdLine(line));
-
       if (cleanLines.length > 0) {
         output.push(currentTimestamp);
         output.push(cleanLines.join("\n"));
@@ -141,17 +138,14 @@ export function convertSrtToVtt(srtContent: string): string {
       continue;
     }
 
-    // Check if line is timestamp
     const tsMatch = trimmed.match(timestampRegex);
     if (tsMatch) {
       flushCue();
       inCue = true;
-      // Convert comma to dot: 00:00:20.000 --> 00:00:24.400
       currentTimestamp = `${tsMatch[1]}.${tsMatch[2]} --> ${tsMatch[3]}.${tsMatch[4]}`;
       continue;
     }
 
-    // Skip numeric sequence identifiers
     if (/^\d+$/.test(trimmed) && !inCue) {
       continue;
     }
@@ -165,9 +159,6 @@ export function convertSrtToVtt(srtContent: string): string {
   return output.join("\n");
 }
 
-/**
- * Resolves TMDB ID to IMDb ID via TMDB API.
- */
 export async function getImdbIdFromTmdb(
   tmdbId: number,
   mediaType: "movie" | "tv",
@@ -191,9 +182,6 @@ export async function getImdbIdFromTmdb(
   }
 }
 
-/**
- * Searches and fetches subtitles for a title from OpenSubtitles.
- */
 export async function fetchSubtitlesForTitle(options: {
   tmdbId: number;
   mediaType: "movie" | "tv";
@@ -219,31 +207,28 @@ export async function fetchSubtitlesForTitle(options: {
     return [];
   }
 
-  const numericImdb = imdbId.replace(/^tt/, "");
-  let queryUrl = `https://rest.opensubtitles.org/search/imdbid-${numericImdb}`;
-  if (mediaType === "tv" && season != null && episode != null) {
-    queryUrl += `/season-${season}/episode-${episode}`;
-  }
+  const queryUrl =
+    mediaType === "tv"
+      ? `https://opensubtitles-v3.strem.io/subtitles/series/${imdbId}:${season ?? 1}:${episode ?? 1}.json`
+      : `https://opensubtitles-v3.strem.io/subtitles/movie/${imdbId}.json`;
 
   try {
     const res = await fetch(queryUrl, {
       headers: {
         "User-Agent": "CinehomeStream/2.0",
-        "X-User-Agent": "CinehomeStream/2.0",
       },
+      signal: AbortSignal.timeout(6000),
     });
 
     if (!res.ok) {
       return [];
     }
 
-    const items = (await res.json()) as Array<{
-      IDSubtitleFile: string;
-      SubFileName: string;
-      SubLanguageID: string;
-      LanguageName: string;
-      SubFormat: string;
-      SubDownloadLink: string;
+    const data = await res.json();
+    const items = (data.subtitles || []) as Array<{
+      id: string;
+      url: string;
+      lang: string;
       SubEncoding?: string;
     }>;
 
@@ -251,39 +236,36 @@ export async function fetchSubtitlesForTitle(options: {
       return [];
     }
 
-    // Group and pick highest quality / distinct subtitle per language
     const tracksByLang = new Map<string, SubtitleTrackOption>();
-    const seenFiles = new Set<string>();
+    const seenUrls = new Set<string>();
 
     for (const item of items) {
-      if (!item.SubDownloadLink || seenFiles.has(item.IDSubtitleFile)) continue;
-      seenFiles.add(item.IDSubtitleFile);
+      if (!item.url || seenUrls.has(item.url)) continue;
+      seenUrls.add(item.url);
 
-      const langCode = (item.SubLanguageID || "eng").toLowerCase();
-      const langName = getLanguageDisplayName(langCode, item.LanguageName);
+      const langCode = (item.lang || "eng").toLowerCase();
+      const langName = getLanguageDisplayName(langCode);
 
-      // Keep up to 3 variants per language (e.g. English, English (SDH), English (CC))
       const count = [...tracksByLang.keys()].filter((k) => k.startsWith(langCode)).length;
       if (count >= 3) continue;
 
       const suffix = count === 0 ? "" : ` [${count + 1}]`;
       const key = `${langCode}${suffix}`;
 
-      const vttUrl = `/api/subtitles/vtt?url=${encodeURIComponent(item.SubDownloadLink)}&id=${item.IDSubtitleFile}`;
+      const vttUrl = `/api/subtitles/vtt?url=${encodeURIComponent(item.url)}&id=${item.id}`;
 
       tracksByLang.set(key, {
-        id: `sub_${item.IDSubtitleFile}`,
+        id: `sub_${item.id}`,
         label: `${langName}${suffix}`,
         language: langCode === "pob" ? "pt-BR" : langCode,
         subLanguageId: langCode,
-        format: item.SubFormat || "srt",
-        downloadUrl: item.SubDownloadLink,
+        format: "srt",
+        downloadUrl: item.url,
         vttUrl,
-        isDefault: langCode === "eng" || langCode === "en",
+        isDefault: (langCode === "eng" || langCode === "en") && count === 0,
       });
     }
 
-    // Sort English and common languages first
     const tracks = [...tracksByLang.values()].sort((a, b) => {
       if (a.language.startsWith("en") && !b.language.startsWith("en")) return -1;
       if (!a.language.startsWith("en") && b.language.startsWith("en")) return 1;
@@ -300,15 +282,13 @@ export async function fetchSubtitlesForTitle(options: {
   }
 }
 
-/**
- * Downloads .gz subtitle archive and converts it to WebVTT.
- */
 export async function downloadAndConvertVtt(downloadUrl: string): Promise<string | null> {
   try {
     const res = await fetch(downloadUrl, {
       headers: {
         "User-Agent": "CinehomeStream/2.0",
       },
+      signal: AbortSignal.timeout(8000),
     });
 
     if (!res.ok) return null;
@@ -316,7 +296,6 @@ export async function downloadAndConvertVtt(downloadUrl: string): Promise<string
     const buffer = Buffer.from(await res.arrayBuffer());
     let rawText = "";
 
-    // Check if gzipped
     if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
       const decompressed = gzip.gunzipSync(buffer);
       rawText = decompressed.toString("utf-8");

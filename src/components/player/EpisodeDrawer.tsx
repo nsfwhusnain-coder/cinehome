@@ -45,6 +45,18 @@ export function EpisodeDrawer({
     }
   }, [currentSeason]);
 
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
+
   // Query TMDB for season episodes
   const { data: seasonData, isLoading } = useQuery<{ episodes: EpisodeMeta[] }>({
     queryKey: ["tv-season-episodes", tvId, selectedSeason],
