@@ -4,6 +4,7 @@
  */
 
 import { db } from "@/lib/db";
+import { trimTmdbDetails } from "@/lib/tmdb-detail-trim";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
@@ -331,8 +332,8 @@ export const tmdb = {
       }
     >(`/movie/${id}`, {
       append_to_response:
-        "credits,videos,recommendations,similar,reviews,watch/providers,release_dates",
-    }),
+        "credits,videos,recommendations,similar,reviews,release_dates",
+    }).then(trimTmdbDetails),
 
   movieImages: (id: number) =>
     tmdbFetch<TmdbImages>(`/movie/${id}/images`, { include_image_language: "en,null" }),
@@ -352,8 +353,8 @@ export const tmdb = {
       }
     >(`/tv/${id}`, {
       append_to_response:
-        "credits,videos,recommendations,similar,reviews,watch/providers,content_ratings",
-    }),
+        "credits,videos,recommendations,similar,reviews,content_ratings",
+    }).then(trimTmdbDetails),
 
   /**
    * Light details + keywords only. Used by playback to decide contentClass=anime
