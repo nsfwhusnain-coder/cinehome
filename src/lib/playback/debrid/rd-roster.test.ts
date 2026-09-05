@@ -53,6 +53,7 @@ mock.module("./cached-stream", () => ({
 
 type ResolveFn = typeof import("./index").resolveDebridSources;
 type ResolveFastFn = typeof import("./index").resolveFastDebridSources;
+type ResetSlotMissesFn = typeof import("./index").__resetRdSlotMissCacheForTests;
 
 const NATIVE_2160_HASH = "a".repeat(40);
 const SAFARI_2160_HASH = "b".repeat(40);
@@ -69,6 +70,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
 
   let resolveDebridSources: ResolveFn;
   let resolveFastDebridSources: ResolveFastFn;
+  let resetSlotMisses: ResetSlotMissesFn;
   let server: ReturnType<typeof Bun.serve>;
 
   beforeAll(async () => {
@@ -106,7 +108,11 @@ describe("Real-Debrid roster — full + fast paths", () => {
     });
     // Dynamic import AFTER the mock.module calls so index.ts + torrentio.ts
     // bind the mocked tmdb / cached-stream.
-    ({ resolveDebridSources, resolveFastDebridSources } = await import("./index"));
+    ({
+      resolveDebridSources,
+      resolveFastDebridSources,
+      __resetRdSlotMissCacheForTests: resetSlotMisses,
+    } = await import("./index"));
   });
 
   afterAll(() => {
@@ -119,6 +125,7 @@ describe("Real-Debrid roster — full + fast paths", () => {
     delete process.env.TORBOX_API_KEY;
     cacheStore.clear();
     clearMediaValidationCache();
+    resetSlotMisses();
   });
 
   afterEach(() => {
@@ -361,6 +368,94 @@ describe("Real-Debrid roster — full + fast paths", () => {
     const second = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
     expect(second.length).toBeGreaterThanOrEqual(6);
     expect(calls).toBe(0);
+  });
+
+  /** Inventory with no 4K release at all — the 2160 slots can never fill. */
+  function build1080OnlyStreams(): unknown[] {
+    return NATIVE_1080_HASHES.map((hash, i) => ({
+      title: `Movie.2024.1080p.WEB-DL.H264-GRP${i}\n\u{1F464} ${30 - i * 5} \u{1F4BE} 3 GB \u2699\uFE0F X`,
+      infoHash: hash,
+      fileIdx: 0,
+      url: resolveProxyUrl(hash, 0, `movie.1080p.${i}.h264.mp4`),
+    }));
+  }
+
+  it("full path: a slot with no candidate is not re-hunted on the next resolve", async () => {
+    // Regression: without a negative cache the unfillable 2160 slots were
+    // re-hunted on EVERY request, burning the whole RD_FULL_DEADLINE_MS on a
+    // title whose inventory simply has no 4K release. Measured live at 12-16s
+    // per watch, forever, versus 4-6s for a title whose slots all fill.
+    let torrentioCalls = 0;
+    mockTorrentioStreams(build1080OnlyStreams(), () => {
+      torrentioCalls++;
+    });
+
+    const first = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(first.length).toBeGreaterThan(0);
+    expect(first.some((s) => s.maxHeight === 2160)).toBe(false);
+    expect(torrentioCalls).toBe(1);
+
+    // Second resolve must be a pure cache read: every still-missing slot was
+    // proven empty, so there is nothing left worth spending the deadline on.
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      throw new Error("should not re-hunt a slot already proven unfillable");
+    }) as unknown as typeof fetch;
+
+    const second = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(second.length).toBe(first.length);
+    expect(calls).toBe(0);
+  });
+
+  it("full path: a slot whose every candidate is rejected is not re-hunted immediately", async () => {
+    // The RD-uncached case: candidates exist, but each resolves to the same
+    // ~150 KB stub, so media-validation refuses them all. Before the negative
+    // cache this re-ran the entire deadline on every single request.
+    const rejectAll = NATIVE_1080_HASHES.map((_hash, i) => ({
+      title: `Movie.2024.1080p.WEB-DL.H264-STUB${i}\n\u{1F464} 30 \u{1F4BE} 3 GB \u2699\uFE0F X`,
+      infoHash: SMALL_CLIP_HASH,
+      fileIdx: i,
+      url: resolveProxyUrl(SMALL_CLIP_HASH, i, `movie.stub.${i}.mp4`),
+    }));
+
+    let torrentioCalls = 0;
+    mockTorrentioStreams(rejectAll, () => {
+      torrentioCalls++;
+    });
+    const first = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(first).toEqual([]);
+    expect(torrentioCalls).toBe(1);
+
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      throw new Error("should not immediately re-hunt slots whose candidates all failed");
+    }) as unknown as typeof fetch;
+
+    const second = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(second).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  it("full path: forceRefresh re-hunts slots previously proven unfillable", async () => {
+    mockTorrentioStreams(build1080OnlyStreams());
+    const first = await resolveDebridSources({ tmdbId: 1, mediaType: "movie" });
+    expect(first.some((s) => s.maxHeight === 2160)).toBe(false);
+
+    // The 4K release exists now. Recovery must not be served a remembered miss.
+    let torrentioCalls = 0;
+    mockTorrentioStreams(buildStreams(), () => {
+      torrentioCalls++;
+    });
+    const refreshed = await resolveDebridSources({
+      tmdbId: 1,
+      mediaType: "movie",
+      forceRefresh: true,
+    });
+
+    expect(torrentioCalls).toBe(1);
+    expect(refreshed.some((s) => s.maxHeight === 2160)).toBe(true);
   });
 
   it("full recovery: expires signed RD slots and resolves a fresh roster", async () => {

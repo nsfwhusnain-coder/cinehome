@@ -161,6 +161,85 @@ const RD_MEDIA_VALIDATION_TIMEOUT_MS = 2_000;
 const RD_FAST_VALIDATION_TIMEOUT_MS = 1_000;
 
 /**
+ * Negative cache for RD slots that cannot currently be filled.
+ *
+ * Without this, a title whose inventory simply has no release for a required
+ * slot (most commonly `native-2160` — a 4K release in H.264/MP4 rather than
+ * the near-universal HEVC/MKV) re-hunts that slot on EVERY playback request
+ * and burns the whole `RD_FULL_DEADLINE_MS` doing it. Measured on this box:
+ * titles whose required slots all fill settle in 4.1-6.6s, while titles with
+ * one permanently unfillable slot cost 12-16s on every single watch, repeat
+ * views included, because nothing remembers that the last four attempts found
+ * nothing to even try.
+ *
+ * The three TTLs encode how much the miss actually proved:
+ *  - EMPTY: Torrentio returned no candidate for the slot at all. Nothing was
+ *    attempted and nothing failed, so this is a real property of the release
+ *    inventory and is safe to trust for a while.
+ *  - REJECTED: candidates existed and every one of them was tried and refused
+ *    (on this box, an RD link for a torrent it has not actually cached comes
+ *    back as the same ~150 KB stub, which media-validation correctly rejects as
+ *    `too_small`). That is a genuine answer about current RD cache state, so it
+ *    is worth remembering — but it flips as soon as someone caches the torrent,
+ *    so it expires far sooner than an inventory fact.
+ *  - EXHAUSTED: candidates existed but the budget ran out before they were all
+ *    tried. Nothing was proven, so this is re-checked soonest.
+ *
+ * `forceRefresh` (the player's dead-roster recovery) bypasses and clears these
+ * entries, so a viewer hitting "try again" is never served a remembered miss.
+ */
+const RD_SLOT_MISS_EMPTY_TTL_MS = 30 * 60 * 1000;
+const RD_SLOT_MISS_REJECTED_TTL_MS = 10 * 60 * 1000;
+const RD_SLOT_MISS_EXHAUSTED_TTL_MS = 2 * 60 * 1000;
+/** Bound the map so a long-lived process cannot grow it without limit. */
+const RD_SLOT_MISS_MAX_ENTRIES = 2_000;
+const rdSlotMisses = new Map<string, number>();
+
+function slotMissKey(keyBase: KeyBase, slot: DebridSlot): string {
+  return `${keyBase.imdbId}:${keyBase.mediaType}:${keyBase.season ?? 0}:${keyBase.episode ?? 0}:${slot}`;
+}
+
+function isSlotRecentlyUnfillable(keyBase: KeyBase, slot: DebridSlot): boolean {
+  const expiresAt = rdSlotMisses.get(slotMissKey(keyBase, slot));
+  if (expiresAt == null) return false;
+  if (Date.now() >= expiresAt) {
+    rdSlotMisses.delete(slotMissKey(keyBase, slot));
+    return false;
+  }
+  return true;
+}
+
+const RD_SLOT_MISS_TTLS: Record<"empty" | "rejected" | "exhausted", number> = {
+  empty: RD_SLOT_MISS_EMPTY_TTL_MS,
+  rejected: RD_SLOT_MISS_REJECTED_TTL_MS,
+  exhausted: RD_SLOT_MISS_EXHAUSTED_TTL_MS,
+};
+
+function rememberUnfillableSlot(
+  keyBase: KeyBase,
+  slot: DebridSlot,
+  kind: "empty" | "rejected" | "exhausted"
+): void {
+  if (rdSlotMisses.size >= RD_SLOT_MISS_MAX_ENTRIES) {
+    // Cheap FIFO trim — insertion order is Map iteration order.
+    const oldest = rdSlotMisses.keys().next();
+    if (!oldest.done) rdSlotMisses.delete(oldest.value);
+  }
+  rdSlotMisses.set(slotMissKey(keyBase, slot), Date.now() + RD_SLOT_MISS_TTLS[kind]);
+}
+
+function forgetUnfillableSlots(keyBase: KeyBase): void {
+  for (const slot of RD_SLOTS) {
+    rdSlotMisses.delete(slotMissKey(keyBase, slot));
+  }
+}
+
+/** Test seam — the map is module state that would otherwise leak between cases. */
+export function __resetRdSlotMissCacheForTests(): void {
+  rdSlotMisses.clear();
+}
+
+/**
  * QUOTA CAP — TorBox's FREE tier allows only ~10 torrent adds/month, and each
  * `createtorrent` consumes one. A single lookup therefore adds AT MOST this
  * many torrents across all surfaced quality tiers AND any fallback attempts
@@ -846,11 +925,14 @@ async function resolveRealDebridSlots(
   preFetchedCandidates?: DebridCandidate[]
 ): Promise<{ sources: PlaybackSource[]; candidates: DebridCandidate[] }> {
   const { hits, missing, occupiedIdentities } = await readCachedRdSlots(keyBase, rdToken);
+  if (req.forceRefresh) forgetUnfillableSlots(keyBase);
   const requiredMissing = missing.filter(
     (slot) =>
       slot !== "safari-2160-2" &&
       slot !== "native-2160-2" &&
-      slot !== "native-1080-4"
+      slot !== "native-1080-4" &&
+      // A slot we recently proved unfillable is not worth the whole deadline.
+      !isSlotRecentlyUnfillable(keyBase, slot)
   );
   if (!requiredMissing.length) {
     return { sources: hits, candidates: preFetchedCandidates ?? [] };
@@ -973,6 +1055,26 @@ async function resolveRealDebridSlots(
   resolvedPerSlot.sort(
     (a, b) => RD_SLOTS.indexOf(a.slot) - RD_SLOTS.indexOf(b.slot)
   );
+
+  // Remember what this attempt could not fill, so the next request spends its
+  // budget on slots that can still yield something. A slot with no candidate
+  // at all is an inventory fact; one that had candidates but ran out of
+  // deadline is only a slow minute and expires much sooner.
+  const filledSlots = new Set(resolvedPerSlot.map((entry) => entry.slot));
+  const deadlineExhausted = Date.now() >= deadline;
+  for (const slot of requiredMissing) {
+    if (filledSlots.has(slot)) continue;
+    const hadCandidates = Boolean(slotOptions[slot]?.length);
+    if (!hadCandidates) {
+      rememberUnfillableSlot(keyBase, slot, "empty");
+    } else {
+      rememberUnfillableSlot(
+        keyBase,
+        slot,
+        deadlineExhausted ? "exhausted" : "rejected"
+      );
+    }
+  }
 
   const newSources: PlaybackSource[] = [];
   for (const entry of resolvedPerSlot) {
