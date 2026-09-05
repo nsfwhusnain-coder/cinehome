@@ -1,8 +1,10 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
 import {
+  PLAYBACK_PARTIAL_THIN_TTL_MS,
   PLAYBACK_PARTIAL_TTL_MS,
   PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS,
+  PLAYBACK_THIN_ROSTER_MAX,
   PLAYBACK_TTL_MS,
   playbackCacheKey,
   playbackResponseTtlMs,
@@ -40,17 +42,43 @@ describe("playback response TTL", () => {
   });
 
   it("does not expire a playable partial every 1.5s", () => {
+    // A thin partial is still cached for meaningfully longer than an empty one
+    // — it just must not outlive the client's 5s poll (see below).
     expect(
       playbackResponseTtlMs({
         partial: true,
         sources: [{ id: "a" }],
       })
-    ).toBe(PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS);
+    ).toBeGreaterThan(PLAYBACK_PARTIAL_TTL_MS);
     expect(
       playbackResponseTtlMs({
         partial: true,
         sources: [],
         streamUrl: "https://example/master.m3u8",
+      })
+    ).toBeGreaterThan(PLAYBACK_PARTIAL_TTL_MS);
+  });
+
+  it("expires a THIN partial fast enough that the client poll can observe enrichment", () => {
+    // The client polls a thin roster every 5s; a 45s cache made every one of
+    // those polls a hit, so the viewer kept the cold roster all session.
+    const thin = playbackResponseTtlMs({
+      partial: true,
+      sources: Array.from({ length: PLAYBACK_THIN_ROSTER_MAX - 1 }, (_, i) => ({
+        id: String(i),
+      })),
+    });
+    expect(thin).toBe(PLAYBACK_PARTIAL_THIN_TTL_MS);
+    expect(thin).toBeLessThan(PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS);
+  });
+
+  it("keeps a healthy-but-partial roster cached long enough to absorb stray refetches", () => {
+    expect(
+      playbackResponseTtlMs({
+        partial: true,
+        sources: Array.from({ length: PLAYBACK_THIN_ROSTER_MAX }, (_, i) => ({
+          id: String(i),
+        })),
       })
     ).toBe(PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS);
   });

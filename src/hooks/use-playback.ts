@@ -380,6 +380,7 @@ export function useWatchPlayback(args: Omit<Args, "enabled" | "prefetch"> & { en
           : usableSourceCount(fastData),
         preferredQualityPending:
           preferredQualityDiscoveryPending(discoveryResponse),
+        rosterPartial: Boolean(discoveryResponse?.partial),
         extraFetches: playbackPollRefetchCount(
           query.state.dataUpdateCount,
           pollBudgetRef.current.baselineUpdates

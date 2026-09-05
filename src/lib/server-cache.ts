@@ -67,16 +67,28 @@ export const PLAYBACK_TTL_MS = 3 * 60 * 1000;
 export const PLAYBACK_PARTIAL_TTL_MS = 1_500;
 /** Partial with playable sources — long enough that a stray refetch is a cache hit. */
 export const PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS = 45 * 1000;
+/**
+ * Partial AND still thin. The client polls such a roster every 5s
+ * (`watchPlaybackPollInterval`), so caching the thin answer for the full 45s
+ * turned every one of those polls into a cache hit and the viewer stayed on the
+ * cold roster for the whole session. Short enough that a poll re-reads the
+ * enriched scraper cache, long enough to absorb duplicate/parallel requests.
+ */
+export const PLAYBACK_PARTIAL_THIN_TTL_MS = 6 * 1000;
+/** Mirrors the scraper's PARTIAL_CLEAR_MIN / client SOURCE_POLL_HEALTHY_MIN. */
+export const PLAYBACK_THIN_ROSTER_MAX = 5;
 
 export function playbackResponseTtlMs(result: {
   partial?: boolean;
   sources?: unknown[] | null;
   streamUrl?: string | null;
 }): number {
-  const hasSources = Boolean(
-    (result.sources && result.sources.length > 0) || result.streamUrl
-  );
+  const sourceCount = result.sources?.length ?? 0;
+  const hasSources = Boolean(sourceCount > 0 || result.streamUrl);
   if (result.partial && !hasSources) return PLAYBACK_PARTIAL_TTL_MS;
+  if (result.partial && sourceCount < PLAYBACK_THIN_ROSTER_MAX) {
+    return PLAYBACK_PARTIAL_THIN_TTL_MS;
+  }
   if (result.partial) return PLAYBACK_PARTIAL_WITH_SOURCES_TTL_MS;
   return PLAYBACK_TTL_MS;
 }

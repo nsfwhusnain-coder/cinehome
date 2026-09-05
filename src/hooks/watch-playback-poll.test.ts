@@ -6,6 +6,7 @@ import {
   POLL_INTERVAL_LATER_MS,
   POLL_WALL_MS,
   PREFERRED_QUALITY_POLL_MAX,
+  SOURCE_POLL_HEALTHY_MIN,
   playbackPollRefetchCount,
   watchPlaybackPollInterval,
 } from "./watch-playback-poll";
@@ -16,6 +17,7 @@ const hunting = {
   fetching: false,
   playableCount: 0,
   preferredQualityPending: false,
+  rosterPartial: false,
   extraFetches: 0,
   elapsedMs: 0,
 };
@@ -30,14 +32,60 @@ describe("watchPlaybackPollInterval", () => {
     ).toBe(false);
   });
 
-  it("does not keep hunting just because the scraper is still partial", () => {
+  it("does not keep hunting a healthy roster just because it is still partial", () => {
+    // The anti-storm rule: `partial` alone is not a reason to refetch once the
+    // roster is big enough to be worth watching.
+    expect(
+      watchPlaybackPollInterval({
+        ...hunting,
+        playableCount: SOURCE_POLL_HEALTHY_MIN,
+        rosterPartial: true,
+        preferredQualityPending: false,
+        extraFetches: 1,
+      })
+    ).toBe(false);
+  });
+
+  it("keeps hunting while a partial roster is still thin", () => {
+    // A cold resolve lands at 1-3 sources and enrichment reaches 14-20 shortly
+    // after; without this the viewer keeps the cold roster all session.
     expect(
       watchPlaybackPollInterval({
         ...hunting,
         playableCount: 2,
+        rosterPartial: true,
         preferredQualityPending: false,
         extraFetches: 1,
       })
+    ).toBe(POLL_INTERVAL_LATER_MS);
+  });
+
+  it("stops hunting a thin roster the server calls complete", () => {
+    // Not partial means the server has nothing more to give — polling then is
+    // pure load for no new sources.
+    expect(
+      watchPlaybackPollInterval({
+        ...hunting,
+        playableCount: 2,
+        rosterPartial: false,
+        preferredQualityPending: false,
+        extraFetches: 1,
+      })
+    ).toBe(false);
+  });
+
+  it("bounds thin-roster hunting by the same follow-up budget and wall", () => {
+    const thin = {
+      ...hunting,
+      playableCount: 2,
+      rosterPartial: true,
+      preferredQualityPending: false,
+    };
+    expect(
+      watchPlaybackPollInterval({ ...thin, extraFetches: PREFERRED_QUALITY_POLL_MAX })
+    ).toBe(false);
+    expect(
+      watchPlaybackPollInterval({ ...thin, extraFetches: 0, elapsedMs: POLL_WALL_MS })
     ).toBe(false);
   });
 

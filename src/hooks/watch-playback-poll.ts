@@ -10,6 +10,17 @@ export const SOURCE_POLL_AGGRESSIVE_UNTIL = 3;
 export const POLL_WALL_MS = 45_000;
 /** Extra full fetches after HD exists while still hunting the Ultra 4K source. */
 export const PREFERRED_QUALITY_POLL_MAX = 4;
+/**
+ * Below this many usable sources a roster is treated as still-forming, so the
+ * poll keeps hunting even though something is already playable.
+ *
+ * Mirrors the scraper's PARTIAL_CLEAR_MIN. A cold resolve lands at 1-3 sources
+ * and background enrichment takes the same title to 14-20 within a minute;
+ * without this the poll stopped at the first playable row and the viewer kept
+ * the thin roster (often a single server, no quality choice) for the whole
+ * session. Still bounded by PREFERRED_QUALITY_POLL_MAX and POLL_WALL_MS.
+ */
+export const SOURCE_POLL_HEALTHY_MIN = 5;
 
 export function playbackPollRefetchCount(
   dataUpdateCount: number,
@@ -26,6 +37,8 @@ export interface WatchPlaybackPollInput {
   fetching: boolean;
   playableCount: number;
   preferredQualityPending: boolean;
+  /** Server still reports the roster as forming (scraper `partial`). */
+  rosterPartial: boolean;
   extraFetches: number;
   elapsedMs: number;
 }
@@ -46,13 +59,25 @@ export function watchPlaybackPollInterval(
   if (input.rateLimited) return false;
   if (!input.hasFullData || input.fetching) return false;
 
-  if (input.playableCount >= 1 && !input.preferredQualityPending) {
+  // Something plays, but the server says the roster is still forming and it is
+  // still thin — keep hunting so background enrichment reaches this session.
+  const rosterStillForming =
+    input.rosterPartial && input.playableCount < SOURCE_POLL_HEALTHY_MIN;
+
+  if (
+    input.playableCount >= 1 &&
+    !input.preferredQualityPending &&
+    !rosterStillForming
+  ) {
     return false;
   }
 
   if (input.elapsedMs >= POLL_WALL_MS) return false;
 
-  if (input.playableCount >= 1 && input.preferredQualityPending) {
+  if (
+    input.playableCount >= 1 &&
+    (input.preferredQualityPending || rosterStillForming)
+  ) {
     if (input.extraFetches >= PREFERRED_QUALITY_POLL_MAX) return false;
     return POLL_INTERVAL_LATER_MS;
   }
