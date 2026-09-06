@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import type { PlayerFeedbackEvent } from "@/lib/playback/types";
 import { providerHealthRegistry } from "@/lib/playback/health-registry";
+import { sourceMemoryScope } from "@/lib/playback/source-memory";
+import {
+  MAX_WATCHED_MS_PER_EVENT,
+  recordSourceFeedback,
+} from "@/lib/playback/source-memory-store";
 import { RateLimiter } from "@/lib/rate-limit";
 
 const FEEDBACK_LIMIT = 180;
@@ -17,6 +22,7 @@ const EVENTS = new Set<PlayerFeedbackEvent>([
   "stall",
   "handoff_failed",
   "decode_error",
+  "sustained_play",
 ]);
 
 export async function POST(req: NextRequest) {
@@ -106,5 +112,26 @@ export async function POST(req: NextRequest) {
     })
   );
   providerHealthRegistry.observe({ provider, viewerId: userId }, feedback);
+
+  // Durable per-title memory. The registry above is ephemeral and keyed by
+  // provider; this remembers what THIS source actually delivered for THIS
+  // title so the next visit can lead with it. Awaited so a burst of events
+  // folds in order (streaks and rolling averages are order-dependent), but it
+  // can never fail the request — the store swallows its own errors.
+  const tmdbId = text(body.tmdbId, 24);
+  const mediaType = body.mediaType === "tv" ? "tv" : "movie";
+  if (tmdbId) {
+    const watchedMs = finite(body.watchedMs, MAX_WATCHED_MS_PER_EVENT);
+    await recordSourceFeedback(
+      sourceMemoryScope(
+        tmdbId,
+        mediaType,
+        finite(body.season, 100) ?? 0,
+        finite(body.episode, 10_000) ?? 0
+      ),
+      { ...feedback, watchedMs },
+      text(body.label, 80) ?? provider
+    );
+  }
   return new NextResponse(null, { status: 204 });
 }

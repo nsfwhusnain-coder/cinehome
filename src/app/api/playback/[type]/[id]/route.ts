@@ -22,6 +22,12 @@ import {
   providerHealthRegistry,
   sourcesWithProviderHealth,
 } from "@/lib/playback/health-registry";
+import {
+  applySourceMemory,
+  sourceMemoryScope,
+  type SourceMemoryRecord,
+} from "@/lib/playback/source-memory";
+import { loadSourceMemory } from "@/lib/playback/source-memory-store";
 import { tvQueryIndex } from "@/lib/playback/tv-index";
 import { resolvePlaybackContentClass } from "@/lib/playback/content-class";
 import { rememberPlaybackRoster } from "@/lib/playback/source-url-cache";
@@ -211,6 +217,14 @@ export async function GET(
     contentClass
   );
 
+  // Per-title source memory. Loaded once and used by both the cache-hit and
+  // the fresh path, so a proven source leads the roster even on an instant
+  // cache hit. Never throws — an unavailable store yields an empty map and
+  // ranking falls back to exactly the previous behaviour.
+  const sourceMemory = await loadSourceMemory(
+    sourceMemoryScope(String(tmdbId), mediaType, season, episode)
+  );
+
   if (!noCache) {
     const cached = getCachedPlayback<PlaybackResponse>(cacheKey);
     if (cached) {
@@ -218,7 +232,8 @@ export async function GET(
         cached,
         userId,
         mediaType,
-        decideOptions
+        decideOptions,
+        sourceMemory
       );
       rememberPlaybackRoster(sourceCacheIdentity, healthAware.sources);
       tracker.mark("cache_hit");
@@ -328,7 +343,8 @@ export async function GET(
     result,
     userId,
     mediaType,
-    decideOptions
+    decideOptions,
+    sourceMemory
   );
   rememberPlaybackRoster(sourceCacheIdentity, healthAwareResult.sources);
 
@@ -358,14 +374,23 @@ function withRuntimeProviderHealth(
   result: PlaybackResponse,
   viewerId: string,
   contentClass: MediaType,
-  decideOptions: DecidePlaybackOptions
+  decideOptions: DecidePlaybackOptions,
+  /** Per-title track record. Empty map = behave exactly as before. */
+  memory: ReadonlyMap<string, SourceMemoryRecord> = new Map()
 ): PlaybackResponse {
   if (!result.sources?.length) return result;
-  const sources = sourcesWithProviderHealth(
+  const healthy = sourcesWithProviderHealth(
     result.sources,
     providerHealthRegistry,
     { contentClass, viewerId }
   );
+  // Reorder by what these sources actually did for THIS title, but only within
+  // an equal-resolution band — a fondly-remembered 1080p can never displace an
+  // available 4K. Provider health above stays the cross-title signal; this is
+  // the per-title one, and it runs last so it breaks ties health left open.
+  const sources = memory.size
+    ? applySourceMemory(healthy, memory, (source) => source.id)
+    : healthy;
   const best = decideImmediateSource(sources, decideOptions);
   const ticketed = stampSourceUrlTickets(sources, viewerId);
   return {

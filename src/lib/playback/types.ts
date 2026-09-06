@@ -297,7 +297,14 @@ export type PlayerFeedbackEvent =
   | "decoded_resolution"
   | "stall"
   | "handoff_failed"
-  | "decode_error";
+  | "decode_error"
+  /**
+   * Watch time accumulated on one source, reported on teardown/unload. A first
+   * frame proves a stream opened; only this proves it was *watchable*, which is
+   * what separates a good source from a corrupt or wrong-title file that also
+   * renders one frame. Carries `watchedMs`. See `source-memory.ts`.
+   */
+  | "sustained_play";
 
 export interface PlayerFeedback {
   event: PlayerFeedbackEvent;
@@ -314,6 +321,13 @@ export interface PlayerFeedback {
   engine?: "hlsjs" | "native_hls" | "native_file" | "dash";
   errorDetail?: string;
   reason?: string;
+  /** Milliseconds actually watched on this source. Only on `sustained_play`. */
+  watchedMs?: number;
+  /** Title this attempt belongs to, so memory can be scoped per-title. */
+  tmdbId?: string;
+  mediaType?: "movie" | "tv";
+  season?: number;
+  episode?: number;
 }
 
 export interface PlayerFeedbackEmitter {

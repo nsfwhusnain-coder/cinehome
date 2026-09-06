@@ -72,6 +72,7 @@ import { activeBufferProfile } from "@/lib/playback/device-profile";
 import { warmDecodeCapabilities } from "@/lib/playback/decode-capability";
 import { assessMediaDuration } from "@/lib/playback/media-duration";
 import { emitPlayerFeedback } from "@/lib/playback/player-feedback";
+import { useWatchReporter } from "@/hooks/use-watch-reporter";
 import {
   normalizeTrackLanguage,
   selectAudioTrack,
@@ -1339,6 +1340,18 @@ export function VideoPlayer({
    * during render (only `mediaFaulted` did, and it is state now).
   */
   const activeSourceRef = useRef(activeSource);
+  // Observational only — accumulates watch time so per-title source memory can
+  // tell a genuinely watchable source from one that merely rendered a frame.
+  useWatchReporter({
+    videoRef,
+    sourceId: activeSource?.id,
+    provider: activeSource?.provider,
+    label: activeSource?.label,
+    tmdbId,
+    mediaType,
+    season: tvSeason,
+    episode: tvEpisode,
+  });
   const lastStallFeedbackAtRef = useRef(0);
   /** Stable roster snapshot — failActiveSource must not change identity on enrich. */
   const orderedSourcesRef = useRef(orderedSources);

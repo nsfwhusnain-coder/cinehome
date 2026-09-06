@@ -112,3 +112,43 @@ model CachedStream {
   @@unique([imdbId, mediaType, season, episode, quality, provider])
   @@index([imdbId])
 }
+
+/// Durable per-title record of how each logical source actually behaved.
+/// Deliberately stores source *identity plus evidence*, never a URL: debrid
+/// links and HLS sessions expire within hours, so a remembered URL is a
+/// guaranteed dead link, while "Quasar served real 2160p H.264 for this title
+/// and it was watched for 40 minutes" stays true. Metadata only — no media.
+model SourceMemory {
+  id        String @id @default(cuid())
+  tmdbId    String
+  mediaType String // "movie" | "tv"
+  season    Int    @default(0) // movies: sentinel 0, matching CachedStream
+  episode   Int    @default(0)
+
+  sourceKey String // sourceIdentity(provider, label) — the stable server identity
+  provider  String
+  label     String
+
+  // Evidence the player measured, never a label or a guess.
+  decodedHeight Int?
+  codec         String?
+  container     String?
+  bitrateBps    Int?
+
+  playCount      Int @default(0) // reached a first frame
+  failCount      Int @default(0) // terminal transport/decode failure
+  shortPlayCount Int @default(0) // opened then abandoned — sample/trailer/wrong title
+  stallCount     Int @default(0)
+  failStreak     Int @default(0) // consecutive failures; reset by any first frame
+  watchedMs      Int @default(0) // the signal that proves "watchable", not just "opens"
+  ttffMsAvg      Int?
+
+  lastGoodAt DateTime?
+  lastFailAt DateTime?
+  lastReason String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([tmdbId, mediaType, season, episode, sourceKey])
+  @@index([tmdbId, mediaType, season, episode])
+}

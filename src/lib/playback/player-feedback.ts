@@ -1,6 +1,33 @@
 import type { PlayerFeedback } from "./types";
 import { platformSummary } from "./device-profile";
 
+/** Which title the open player is showing. See {@link setFeedbackTitleContext}. */
+export interface FeedbackTitleContext {
+  tmdbId?: string;
+  mediaType?: "movie" | "tv";
+  season?: number;
+  episode?: number;
+}
+
+let titleContext: FeedbackTitleContext = {};
+
+/**
+ * Stamp every subsequent emission with the title being watched.
+ *
+ * Set centrally rather than threaded through each call site: source memory is
+ * per-title, and the six existing emitters live deep inside the player's
+ * attempt/watchdog machinery where adding four more arguments each would be
+ * far more likely to break something than a single module-level assignment.
+ * Cleared on teardown so a stale title can never mislabel the next session.
+ */
+export function setFeedbackTitleContext(context: FeedbackTitleContext): void {
+  titleContext = context;
+}
+
+export function clearFeedbackTitleContext(): void {
+  titleContext = {};
+}
+
 /** Best-effort observation channel. Playback never waits for telemetry. */
 export function emitPlayerFeedback(
   feedback: Omit<PlayerFeedback, "occurredAt">
@@ -12,6 +39,7 @@ export function emitPlayerFeedback(
   // cross-device playback differences went unnoticed in production.
   const platform = platformSummary();
   const body = JSON.stringify({
+    ...titleContext,
     ...feedback,
     ...(platform ? { platform } : {}),
     occurredAt: Date.now(),
